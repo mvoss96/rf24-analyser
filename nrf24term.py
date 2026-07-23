@@ -1,15 +1,21 @@
 #!/usr/bin/env python3
-"""nrf24term - serial terminal / REPL for the Nrf24Sniffer dongle.
+"""nrf24term - serial terminal / REPL for the nrf24-sniffer dongle.
 
-A reader thread prints everything the dongle emits (command replies and live
-RX lines); the main thread forwards typed lines to the dongle. With
---pretty, incoming "RX ..." frames are additionally decoded as
-[4-byte sender id][BTHome v2 service data].
+A reader thread prints everything the dongle emits (command replies, live RX
+lines, scan results); the main thread forwards typed lines to the dongle. Local
+commands start with ':' and are handled here rather than sent on.
+
+Comfort features:
+  * --pretty / :pretty on|off   decode RX frames as BTHome v2
+  * :preset bthome              apply the full BTHome-over-nRF24 radio config
+  * :log <file> / :log off      tee everything from the dongle to a file
+  * :scan [passes]              convenience wrapper for the dongle scan command
+  * scan results render as a small activity bar
 
 Only dependency: pyserial.
 
-    python nrf24term.py COM5
-    python nrf24term.py COM5 --pretty
+    python nrf24term.py COM18
+    python nrf24term.py COM18 --pretty
     python nrf24term.py /dev/ttyUSB0 --baud 115200
 """
 
@@ -89,7 +95,6 @@ def decode_frame(data):
         flags.append("trigger-based")
     lines.append(f"  bthome    : v{version}" + (" " + ", ".join(flags) if flags else ""))
 
-    # Objects begin after the device-info byte.
     obj = sd[3:]
     i = 0
     button_n = 0
@@ -134,7 +139,6 @@ def try_pretty(line):
     if not line.startswith("RX "):
         return None
     parts = line.split()
-    # RX p<pipe> len=<n> <hex bytes...>
     hex_tokens = []
     pipe = "?"
     length = "?"
@@ -153,7 +157,30 @@ def try_pretty(line):
     return "\n".join([header] + decode_frame(data))
 
 
+def render_scan(line):
+    """Turn 'SCAN ch=<n> hits=<h>' into a labelled bar; else return None."""
+    if not line.startswith("SCAN ch="):
+        return None
+    try:
+        _, ch_tok, hits_tok = line.split()
+        ch = int(ch_tok.split("=")[1])
+        hits = int(hits_tok.split("=")[1])
+    except (ValueError, IndexError):
+        return None
+    freq = 2400 + ch  # MHz
+    bar = "#" * min(hits, 40)
+    return f"  ch {ch:3d} ({freq} MHz) {hits:3d} {bar}"
+
+
 # --- Terminal ---------------------------------------------------------------
+
+def _emit(state, text):
+    sys.stdout.write(text + "\n")
+    lf = state.get("logfile")
+    if lf:
+        lf.write(text + "\n")
+        lf.flush()
+
 
 def reader_loop(ser, state):
     buf = b""
@@ -161,7 +188,7 @@ def reader_loop(ser, state):
         try:
             chunk = ser.read(256)
         except serial.SerialException:
-            sys.stdout.write("\n[serial disconnected]\n")
+            _emit(state, "[serial disconnected]")
             state["stop"] = True
             break
         if not chunk:
@@ -170,32 +197,48 @@ def reader_loop(ser, state):
         while b"\n" in buf:
             raw, buf = buf.split(b"\n", 1)
             line = raw.decode("ascii", errors="replace").rstrip("\r")
+
+            scan = render_scan(line)
+            if scan is not None:
+                _emit(state, scan)
+                continue
             if state["pretty"]:
                 pretty = try_pretty(line)
                 if pretty is not None:
-                    sys.stdout.write(pretty + "\n")
+                    _emit(state, pretty)
                     continue
-            sys.stdout.write(line + "\n")
+            _emit(state, line)
         sys.stdout.flush()
 
 
+# Radio config applied by ':preset bthome' (matches the firmware defaults, and
+# starts listening).
+PRESET_BTHOME = [
+    "stop", "aw 5", "crc 16", "rate 250", "ch 100",
+    "dpl 1", "ack 0", "pa low", "pipe 1 42:54:48:4D:45", "listen",
+]
+
 LOCAL_HELP = """\
 Local commands (handled by nrf24term, not sent to the dongle):
-  :pretty on|off   toggle BTHome pretty-printing of RX frames
-  :help            show this help
-  :quit / :exit    close the terminal
+  :pretty on|off    toggle BTHome pretty-printing of RX frames
+  :preset bthome    apply the full BTHome-over-nRF24 config and listen
+  :scan [passes]    run a channel activity scan (default 64 passes)
+  :log <file>       tee everything from the dongle to a file
+  :log off          stop logging
+  :help             show this help
+  :quit / :exit     close the terminal
 
 Everything else is sent verbatim to the dongle. Dongle commands:
   ch <0-125>            rate <250|1000|2000>   crc <0|8|16>    aw <3|4|5>
   pipe <0-5> <addr|off> ack <0|1>              dpl <0|1>       plsize <1-32>
-  pa <min|low|high|max> listen   stop   info
+  pa <min|low|high|max> listen   stop   info   scan [passes]
   tx <addr> <hex...> [ack|noack]
 """
 
 
 def main():
-    ap = argparse.ArgumentParser(description="Serial terminal for the Nrf24Sniffer dongle.")
-    ap.add_argument("port", help="serial port, e.g. COM5 or /dev/ttyUSB0")
+    ap = argparse.ArgumentParser(description="Serial terminal for the nrf24-sniffer dongle.")
+    ap.add_argument("port", help="serial port, e.g. COM18 or /dev/ttyUSB0")
     ap.add_argument("--baud", type=int, default=115200, help="baud rate (default 115200)")
     ap.add_argument("--pretty", action="store_true", help="decode RX frames as BTHome v2")
     args = ap.parse_args()
@@ -210,7 +253,7 @@ def main():
     time.sleep(2.0)
     ser.reset_input_buffer()
 
-    state = {"stop": False, "pretty": args.pretty}
+    state = {"stop": False, "pretty": args.pretty, "logfile": None}
     t = threading.Thread(target=reader_loop, args=(ser, state), daemon=True)
     t.start()
 
@@ -218,6 +261,9 @@ def main():
                      f"(pretty={'on' if args.pretty else 'off'}). "
                      f"Type :help for local commands, Ctrl-C to quit.\n")
     ser.write(b"info\n")
+
+    def send(line):
+        ser.write((line + "\n").encode("ascii", errors="replace"))
 
     try:
         while not state["stop"]:
@@ -240,13 +286,39 @@ def main():
                 state["pretty"] = False
                 sys.stdout.write("[pretty off]\n")
                 continue
+            if s == ":preset bthome":
+                for cmd in PRESET_BTHOME:
+                    send(cmd)
+                    time.sleep(0.05)
+                sys.stdout.write("[preset bthome applied]\n")
+                continue
+            if s.startswith(":scan"):
+                parts = s.split()
+                passes = parts[1] if len(parts) > 1 else ""
+                send(("scan " + passes).strip())
+                continue
+            if s.startswith(":log"):
+                parts = s.split(maxsplit=1)
+                if len(parts) == 2 and parts[1] != "off":
+                    if state["logfile"]:
+                        state["logfile"].close()
+                    state["logfile"] = open(parts[1], "a", encoding="utf-8")
+                    sys.stdout.write(f"[logging to {parts[1]}]\n")
+                else:
+                    if state["logfile"]:
+                        state["logfile"].close()
+                        state["logfile"] = None
+                    sys.stdout.write("[logging off]\n")
+                continue
 
-            ser.write((line + "\n").encode("ascii", errors="replace"))
+            send(line)
     except KeyboardInterrupt:
         pass
     finally:
         state["stop"] = True
         time.sleep(0.2)
+        if state["logfile"]:
+            state["logfile"].close()
         ser.close()
         sys.stdout.write("\nbye\n")
 

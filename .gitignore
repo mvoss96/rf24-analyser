@@ -1,10 +1,13 @@
+# PlatformIO
+.pio/
+.pioenvs/
+.piolibdeps/
+
 # Python
 __pycache__/
 *.py[cod]
 .venv/
 venv/
 
-# Arduino build artifacts
-firmware/**/build/
-*.hex
-*.elf
+# Logs
+*.log
