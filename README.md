@@ -6,8 +6,12 @@ A debug / sniffer tool for raw nRF24L01 traffic, built to validate and debug the
 
 1. **PlatformIO firmware** (`platformio.ini`, `src/`, `include/`) for an
    ATmega328P + CH340 + nRF24L01 USB dongle.
-2. **`nrf24term.py`** — a Python serial terminal that streams live output,
-   decodes BTHome v2 frames, applies presets, and can log to a file.
+2. **[`nrf24gui.py`](#gui)** — a tkinter GUI: every setting, a frame table with a
+   detail pane, and a switchable decoder.
+3. **`nrf24term.py`** — a serial terminal / REPL for the same protocol.
+
+Both front ends share the serial client (`nrf24_dongle.py`) and the decoder
+registry (`nrf24_parsers.py`).
 
 ## Design: nothing is assumed
 
