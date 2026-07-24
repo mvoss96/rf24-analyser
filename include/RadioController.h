@@ -65,8 +65,11 @@ public:
   bool listening() const { return listening_; }
   bool chipConnected() { return radio_.isChipConnected(); }
 
-  // "unconfigured" | "idle" | "listening"
+  // "nohw" | "unconfigured" | "idle" | "listening"
   const __FlashStringHelper *stateName() const;
+
+  // Prints the wiring as "ce=9 csn=10 irq=2 led_rx=8 led_tx=A1" (no newline).
+  void printWiring() const;
 
   // Output filter: when false, identical back-to-back frames are printed once.
   void setShowRepeats(bool on) { showRepeats_ = on; }
@@ -92,6 +95,9 @@ private:
   // A frame repeated within this window counts as a retransmit of the previous
   // one (a sender typically repeats each event a few ms apart).
   static constexpr uint16_t REPEAT_WINDOW_MS = 500;
+
+  // Upper bound for one transmit attempt; see transmit().
+  static constexpr uint32_t TX_TIMEOUT_MS = 50;
 
   RF24 radio_; // pinless constructor: pins are supplied at begin() time
   RadioConfig cfg_;

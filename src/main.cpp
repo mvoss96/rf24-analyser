@@ -38,7 +38,8 @@ void setup() {
   // nohw rather than pretending to be ready.
   const __FlashStringHelper *hwSource = F("none");
   HwConfig stored;
-  if (HwStore::load(stored)) {
+  const bool haveStored = HwStore::load(stored);
+  if (haveStored) {
     hwSource = g_radio.setHardware(stored) ? F("eeprom") : F("eeprom-failed");
   }
 
@@ -47,7 +48,15 @@ void setup() {
   Serial.print(F(" state="));
   Serial.print(g_radio.stateName());
   Serial.print(F(" hw="));
-  Serial.println(hwSource);
+  Serial.print(hwSource);
+  // Spell the wiring out rather than just its provenance: a stored-but-wrong
+  // pin is otherwise invisible, and a wrong CE cannot be detected electrically
+  // (isChipConnected() exercises SPI only). Seeing the pins is the check.
+  if (haveStored) {
+    Serial.print(' ');
+    g_radio.printWiring();
+  }
+  Serial.println();
 }
 
 void loop() {

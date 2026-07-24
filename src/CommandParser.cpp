@@ -151,6 +151,23 @@ void CommandParser::handleHwset(char *args) {
     return;
   }
 
+  // Two roles on one pin is always a wiring mistake - they would drive each
+  // other (an LED write on the CE line, say). Catch it before touching the chip.
+  {
+    const uint8_t assigned[5] = {hw.ce, hw.csn, hw.irq, hw.ledRx, hw.ledTx};
+    for (uint8_t i = 0; i < 5; i++) {
+      if (assigned[i] == NO_PIN) continue;
+      for (uint8_t j = i + 1; j < 5; j++) {
+        if (assigned[i] == assigned[j]) {
+          Serial.print(F("ERR pin "));
+          Serial.print(assigned[i]);
+          Serial.println(F(" assigned twice"));
+          return;
+        }
+      }
+    }
+  }
+
   // setHardware() emits its own WARN if the IRQ pin cannot interrupt.
   if (!radio_.setHardware(hw)) {
     err(F("chip not responding - check ce/csn wiring and power"));

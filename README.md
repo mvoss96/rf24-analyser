@@ -65,12 +65,13 @@ terminal works unconfigured. Every command is answered with `OK ...` or `ERR ...
 ### Greeting
 
 ```
-NRF24SNIFFER fw=2.1.0 api=2 state=unconfigured hw=eeprom
+NRF24SNIFFER fw=2.1.0 api=2 state=unconfigured hw=eeprom ce=9 csn=10 irq=2 led_rx=8 led_tx=A1
 ```
 
 `fw` is the firmware version, `api` the command-protocol version — the host can
-check it and refuse to talk to an incompatible build. `hw` states where the
-wiring came from:
+check it and refuse to talk to an incompatible build. When a wiring is loaded the
+pins are spelled out, because a stored-but-wrong pin is otherwise invisible (see
+[Verifying the wiring](#verifying-the-wiring)). `hw` states where it came from:
 
 | `hw=` | Meaning |
 |---|---|
@@ -97,13 +98,33 @@ wiring came from:
 plain numbers or `A0`–`A7`. Re-issuing it is allowed while not listening; it
 discards the radio configuration.
 
+Assigning one pin two roles is rejected (`ERR pin 8 assigned twice`) — that is
+always a wiring mistake, and an LED write on the CE line is a miserable thing to
+debug.
+
 Every successful `hwset` is **stored in EEPROM** and restored on the next boot,
 so a dongle keeps working without the host restating its wiring. This is the one
-piece of remembered state, and it is deliberate: pins are a physical property of
-the board, and unlike radio parameters a wrong pin fails loudly — the chip simply
-does not answer — so remembering them cannot cause a silently wrong result. The
-greeting always reports the provenance, so it never becomes hidden state. Use
-`hwclear` to return to a virgin dongle.
+piece of remembered state. The greeting reports both the provenance and the pins
+themselves, so it never becomes hidden state; `hwclear` returns the dongle to a
+virgin state.
+
+### Verifying the wiring
+
+`chip=connected` comes from `isChipConnected()`, which exercises **SPI only** —
+CSN, MOSI, MISO, SCK. **CE is never involved**: it only switches the radio
+between standby and active TX/RX. A wrong CE pin therefore passes `hwset` without
+complaint and then silently receives nothing.
+
+The one practical check is a transmit. With CE not actually wired the
+transmission never starts, so:
+
+```
+> tx 4254484D45 AABBCC noack
+OK tx sent=0 ack=no      <- CE is wrong (sent=1 means the pin is good)
+```
+
+Transmits are bounded by a timeout for this reason; `RF24::write()` would spin
+forever waiting for a `TX_DS`/`MAX_RT` that never arrives.
 
 On the ATmega328P only D2/D3 can raise interrupts — any other `irq` pin is
 accepted but degrades to polling with a warning:

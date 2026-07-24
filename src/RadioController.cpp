@@ -178,7 +178,14 @@ bool RadioController::transmit(const uint8_t *addr, const uint8_t *data,
   radio_.stopListening();
   radio_.openWritingPipe(addr);
   led(hw_.ledTx, true);
-  bool sent = radio_.write(data, len, noack); // 3rd arg true => NO_ACK
+  // Bounded, deliberately not RF24::write(): if the CE pin is not actually
+  // wired to the chip the transmission never starts, TX_DS/MAX_RT never arrive
+  // and write() spins forever. With a timeout this becomes a reported failure -
+  // and sent=0 doubles as the only practical check that CE is correct, since
+  // isChipConnected() exercises SPI only and never touches CE.
+  radio_.startFastWrite(data, len, noack); // noack => NO_ACK flag
+  bool sent = radio_.txStandBy(TX_TIMEOUT_MS);
+  if (!sent) radio_.flush_tx();
   led(hw_.ledTx, false);
   // openWritingPipe clobbers pipe 0; restore reading pipes and listen state.
   reconfigure();
@@ -227,9 +234,25 @@ static void printAddr(const uint8_t *a, uint8_t width) {
   }
 }
 
+// Prints analog pins as A0..A7 so the output can be pasted back into `hwset`.
 static void printPin(uint8_t pin) {
-  if (pin == NO_PIN) Serial.print(F("none"));
-  else Serial.print(pin);
+  if (pin == NO_PIN) { Serial.print(F("none")); return; }
+#ifdef A0
+  if (pin >= A0 && pin <= A0 + 7) {
+    Serial.print('A');
+    Serial.print((int)(pin - A0));
+    return;
+  }
+#endif
+  Serial.print(pin);
+}
+
+void RadioController::printWiring() const {
+  Serial.print(F("ce="));      printPin(hw_.ce);
+  Serial.print(F(" csn="));    printPin(hw_.csn);
+  Serial.print(F(" irq="));    printPin(hw_.irq);
+  Serial.print(F(" led_rx=")); printPin(hw_.ledRx);
+  Serial.print(F(" led_tx=")); printPin(hw_.ledTx);
 }
 
 void RadioController::printInfo() {
@@ -242,11 +265,7 @@ void RadioController::printInfo() {
   }
 
   Serial.print(F("  chip="));    Serial.println(radio_.isChipConnected() ? F("connected") : F("NOT connected"));
-  Serial.print(F("  ce="));      printPin(hw_.ce);
-  Serial.print(F(" csn="));      printPin(hw_.csn);
-  Serial.print(F(" irq="));      printPin(hw_.irq);
-  Serial.print(F(" led_rx="));   printPin(hw_.ledRx);
-  Serial.print(F(" led_tx="));   printPin(hw_.ledTx);
+  Serial.print(F("  "));         printWiring();
   Serial.println();
   Serial.print(F("  repeats=")); Serial.println(showRepeats_ ? 1 : 0);
 
