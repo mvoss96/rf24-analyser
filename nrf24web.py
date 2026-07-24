@@ -10,7 +10,10 @@ this tool silently swallow dimmer events.
 Standard library only: http.server for the pages and JSON endpoints,
 Server-Sent Events for the live stream. No web framework, no websocket package.
 
-    python nrf24web.py [--port COM18] [--http 8724] [--no-browser]
+    python nrf24web.py [--http 8724] [--no-browser]
+
+The serial port is chosen in the UI, which remembers the last one that worked -
+there is deliberately no --port flag duplicating that.
 """
 
 import argparse
@@ -308,7 +311,6 @@ class Handler(BaseHTTPRequestHandler):
 
 def main():
     ap = argparse.ArgumentParser(description="Browser front end for the nrf24-sniffer dongle.")
-    ap.add_argument("--port", help="serial port to connect to on startup, e.g. COM18")
     ap.add_argument("--http", type=int, default=8724, help="http port (default 8724)")
     ap.add_argument("--no-browser", action="store_true", help="do not open a browser")
     args = ap.parse_args()
@@ -317,12 +319,6 @@ def main():
     session = Session(hub)
     Handler.hub = hub
     Handler.session = session
-
-    if args.port:
-        try:
-            session.connect(args.port)
-        except Exception as exc:
-            print(f"could not open {args.port}: {exc}")
 
     server = ThreadingHTTPServer(("127.0.0.1", args.http), Handler)
     url = f"http://127.0.0.1:{args.http}/"

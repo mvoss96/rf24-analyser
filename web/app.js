@@ -175,10 +175,12 @@ function handle(event) {
 
 // --- wiring up -------------------------------------------------------------
 
+const LAST_PORT = "nrf24.lastPort";
+
 async function loadPorts() {
   const ports = await (await fetch("/api/ports")).json();
   const select = $("port");
-  const previous = select.value;
+  const previous = select.value || localStorage.getItem(LAST_PORT);
   select.replaceChildren();
   for (const p of ports) {
     const option = document.createElement("option");
@@ -186,7 +188,10 @@ async function loadPorts() {
     option.textContent = p.description ? `${p.device} — ${p.description}` : p.device;
     select.appendChild(option);
   }
-  if (previous) select.value = previous;
+  // Only ever preselect a port that actually worked before. Guessing from the
+  // description picks the wrong adapter as readily as the right one, and a
+  // wrong guess here reads as "the dongle is broken" rather than "wrong port".
+  if (previous && ports.some((p) => p.device === previous)) select.value = previous;
 }
 
 async function loadParsers() {
@@ -215,9 +220,11 @@ function init() {
   }
 
   $("refresh").addEventListener("click", loadPorts);
-  $("connect").addEventListener("click", () => {
-    if (connected) post("/api/disconnect");
-    else post("/api/connect", { port: $("port").value });
+  $("connect").addEventListener("click", async () => {
+    if (connected) return void post("/api/disconnect");
+    const port = $("port").value;
+    const data = await post("/api/connect", { port });
+    if (data.ok !== false) localStorage.setItem(LAST_PORT, port);
   });
 
   $("setup-toggle").addEventListener("click", () => {

@@ -306,11 +306,13 @@ loss directly. Log a session (`:log run.txt`) and count distinct ids and gaps:
 ## Web UI
 
 ```bash
-python nrf24web.py --port COM18
+python nrf24web.py
 ```
 
-Opens a browser at `http://127.0.0.1:8724/`. Python owns the serial port and does
-the decoding; the browser is presentation only.
+Opens a browser at `http://127.0.0.1:8724/`. Pick the port there — the UI
+preselects the one that worked last time, so there is no --port flag duplicating
+the selector. Python owns the serial port and does the decoding; the browser is
+presentation only.
 
 That split is deliberate. `bthome-ble` is the reference parser and it is a Python
 library, so letting the browser talk to the dongle directly (WebSerial) would
