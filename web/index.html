@@ -18,76 +18,14 @@
   <span id="state" class="pill idle"><i class="dot"></i><span id="state-text">not connected</span></span>
 </header>
 
-<section class="setup">
-  <div class="setup-head">
-    <button id="setup-toggle" class="btn ghost" aria-expanded="false">
-      <span id="setup-caret">▸</span> Setup
-    </button>
-    <code id="summary" class="summary"></code>
-    <span class="spacer"></span>
-    <button class="btn ghost" data-cmd="stop">Stop</button>
-    <button class="btn ghost" data-cmd="info">Info</button>
-    <button class="btn ghost" data-cmd="scan">Scan</button>
-    <button id="start" class="btn primary">Start</button>
-  </div>
-
-  <div id="setup-body" class="setup-body" hidden>
-    <fieldset>
-      <legend>Wiring</legend>
-      <div class="fields" id="wiring">
-        <label>ce<input id="ce" value="9"></label>
-        <label>csn<input id="csn" value="10"></label>
-        <label>irq<input id="irq" value="2"></label>
-        <label>led_rx<input id="led_rx" value="8"></label>
-        <label>led_tx<input id="led_tx" value="A1"></label>
-      </div>
-      <div class="fieldset-foot">
-        <button class="btn ghost small" data-cmd="hwclear">Forget stored wiring</button>
-      </div>
-    </fieldset>
-
-    <fieldset>
-      <legend>Radio</legend>
-      <div class="fields">
-        <label>ch<input id="ch" value="100"></label>
-        <label>rate
-          <select id="rate"><option>250</option><option>1000</option><option>2000</option></select>
-        </label>
-        <label>crc
-          <select id="crc"><option>0</option><option>8</option><option selected>16</option></select>
-        </label>
-        <label>aw
-          <select id="aw"><option>3</option><option>4</option><option selected>5</option></select>
-        </label>
-        <label>pa
-          <select id="pa"><option>min</option><option selected>low</option><option>high</option><option>max</option></select>
-        </label>
-        <label>plsize<input id="plsize" value="32"></label>
-      </div>
-      <div class="checks">
-        <label class="check"><input type="checkbox" id="ack"> ack</label>
-        <label class="check"><input type="checkbox" id="dpl" checked> dpl</label>
-        <label class="check"><input type="checkbox" id="repeats" checked> show repeats</label>
-      </div>
-    </fieldset>
-
-    <fieldset>
-      <legend>Pipe addresses</legend>
-      <div class="fields column" id="pipes">
-        <label>1<input id="pipe1" value="42:54:48:4D:45"></label>
-      </div>
-      <div class="fields column" id="pipes-more" hidden>
-        <label>0<input id="pipe0"></label>
-        <label>2<input id="pipe2"></label>
-        <label>3<input id="pipe3"></label>
-        <label>4<input id="pipe4"></label>
-        <label>5<input id="pipe5"></label>
-      </div>
-      <div class="fieldset-foot">
-        <button id="pipes-toggle" class="btn ghost small">more</button>
-      </div>
-    </fieldset>
-  </div>
+<section class="toolbar">
+  <button id="setup-open" class="btn ghost">Setup…</button>
+  <code id="summary" class="summary"></code>
+  <span class="spacer"></span>
+  <button class="btn ghost" data-cmd="stop">Stop</button>
+  <button class="btn ghost" data-cmd="info">Info</button>
+  <button class="btn ghost" data-cmd="scan">Scan</button>
+  <button id="start" class="btn primary">Start</button>
 </section>
 
 <main>
@@ -146,6 +84,73 @@
     </div>
   </div>
 </main>
+
+<dialog id="setup" class="setup">
+  <!-- method=dialog closes on submit, so anything in here that is not "close"
+       has to say type=button explicitly. -->
+  <form method="dialog" class="setup-form">
+    <header class="dialog-head">
+      <h2>Setup</h2>
+      <span class="spacer"></span>
+      <button class="btn ghost small" aria-label="Close">✕</button>
+    </header>
+
+    <div class="dialog-body">
+      <h3 class="group">Wiring</h3>
+      <div class="pairs">
+        <label><span>ce</span><input id="ce" value="9"></label>
+        <label><span>csn</span><input id="csn" value="10"></label>
+        <label><span>irq</span><input id="irq" value="2"></label>
+        <label><span>led_rx</span><input id="led_rx" value="8"></label>
+        <label><span>led_tx</span><input id="led_tx" value="A1"></label>
+      </div>
+
+      <h3 class="group">Radio</h3>
+      <div class="pairs">
+        <label><span>ch</span><input id="ch" value="100"></label>
+        <label><span>rate</span>
+          <select id="rate"><option>250</option><option>1000</option><option>2000</option></select>
+        </label>
+        <label><span>crc</span>
+          <select id="crc"><option>0</option><option>8</option><option selected>16</option></select>
+        </label>
+        <label><span>aw</span>
+          <select id="aw"><option>3</option><option>4</option><option selected>5</option></select>
+        </label>
+        <label><span>pa</span>
+          <select id="pa"><option>min</option><option selected>low</option><option>high</option><option>max</option></select>
+        </label>
+        <label><span>plsize</span><input id="plsize" value="32"></label>
+      </div>
+      <div class="checks">
+        <label class="check"><input type="checkbox" id="ack"> ack</label>
+        <label class="check"><input type="checkbox" id="dpl" checked> dpl</label>
+        <label class="check"><input type="checkbox" id="repeats" checked> show repeats</label>
+      </div>
+
+      <h3 class="group">Pipe addresses</h3>
+      <div class="pairs wide" id="pipes">
+        <label><span>1</span><input id="pipe1" value="42:54:48:4D:45"></label>
+      </div>
+      <div class="pairs wide" id="pipes-more" hidden>
+        <label><span>0</span><input id="pipe0"></label>
+        <label><span>2</span><input id="pipe2"></label>
+        <label><span>3</span><input id="pipe3"></label>
+        <label><span>4</span><input id="pipe4"></label>
+        <label><span>5</span><input id="pipe5"></label>
+      </div>
+      <div class="indent">
+        <button id="pipes-toggle" class="btn ghost small" type="button">more</button>
+      </div>
+    </div>
+
+    <footer class="dialog-foot">
+      <button class="btn ghost small" data-cmd="hwclear" type="button">Forget stored wiring</button>
+      <span class="spacer"></span>
+      <button class="btn">Close</button>
+    </footer>
+  </form>
+</dialog>
 
 <script src="/app.js"></script>
 </body>

@@ -323,9 +323,13 @@ It also keeps the UI working in any browser, not just Chrome.
 **Standard library only** — `http.server` for the pages and JSON endpoints,
 Server-Sent Events for the live stream. No web framework, no websocket package.
 
-The setup strip collapses to a one-line summary of the active configuration, so
-after `Start` (which sends `hwset` and `listen` in one go) the frame table gets
-the window. Frames arrive with **millisecond timestamps and a Δ column** — the
+Settings live in a **dialog**, with a one-line summary of the active
+configuration left in the toolbar. Settings are read and changed in bursts,
+while frames arrive continuously, so an in-flow panel spent its life either
+collapsed or shoving the frame table down the window every time it opened.
+`Start` sends `hwset` and `listen` in one go, preceded by `stop` when a capture
+is already running — the firmware refuses `hwset` while listening.
+Frames arrive with **millisecond timestamps and a Δ column** — the
 three repeats of one event sit ~4 ms apart, which per-second resolution hides.
 Selecting a row shows **decoded fields and the hex dump side by side**; frames the
 decoder objected to are drawn in red. The log and the free-text command line share

@@ -135,25 +135,19 @@ input[type="text"], input:not([type]) {
 .pill.warn { background: var(--surface-2); color: var(--warn); }
 .pill.bad { background: var(--danger-bg); color: var(--danger); }
 
-/* --- setup --- */
+/* --- toolbar --- */
 
-.setup {
-  display: flex;
-  flex-direction: column;
-  flex: 0 1 auto;
-  min-height: 0;
-  background: var(--surface);
-  border-bottom: 1px solid var(--border);
-}
-.setup-head {
+.toolbar {
   display: flex;
   align-items: center;
   flex-wrap: wrap;
   gap: 8px;
   padding: 8px 14px;
+  background: var(--surface);
+  border-bottom: 1px solid var(--border);
 }
-.setup-head .summary { flex: 1 1 200px; }
 .summary {
+  flex: 1 1 200px;
   font-family: var(--mono);
   font-size: 12px;
   color: var(--text-dim);
@@ -161,69 +155,76 @@ input[type="text"], input:not([type]) {
   overflow: hidden;
   text-overflow: ellipsis;
 }
-.setup-body {
-  /* Columns rather than wrapped flex items: three groups of unrelated width
-     wrapping freely just produced a ragged staircase. */
-  display: grid;
-  grid-template-columns: repeat(auto-fit, minmax(250px, 1fr));
-  align-items: start;
-  gap: 12px;
-  padding: 0 14px 12px;
-  /* Expanded setup gives way to the frame list rather than the other way round:
-     it shrinks and scrolls, main keeps its min-height. */
-  flex: 1 1 auto;
-  min-height: 0;
-  max-height: 45vh;
-  overflow: auto;
-}
-fieldset {
-  border: 1px solid var(--border);
-  border-radius: 8px;
-  padding: 8px 12px 10px;
-  margin: 0;
-  min-width: 0;
-}
-legend { color: var(--text-dim); font-size: 12px; padding: 0 4px; }
 
-/* Equal-width cells so the labelled inputs line up in rows and columns
-   regardless of how long the label happens to be. */
-.fields {
-  display: grid;
-  grid-template-columns: repeat(auto-fill, minmax(58px, 1fr));
-  gap: 8px 10px;
-  align-items: end;
+/* --- setup dialog --- */
+
+/* A dialog, not a panel in the flow: settings are read and changed in bursts,
+   and an in-flow panel moved the frame list every time it opened. */
+dialog.setup {
+  width: min(470px, calc(100vw - 24px));
+  max-height: calc(100vh - 48px);
+  padding: 0;
+  border: 1px solid var(--border-strong);
+  border-radius: 10px;
+  background: var(--surface);
+  color: var(--text);
+  box-shadow: 0 18px 48px rgba(0, 0, 0, .35);
 }
-.fields label {
+dialog.setup::backdrop { background: rgba(0, 0, 0, .45); }
+
+.setup-form {
   display: flex;
   flex-direction: column;
-  gap: 3px;
-  min-width: 0;
+  max-height: calc(100vh - 48px);
+}
+.dialog-head, .dialog-foot {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 10px 14px;
+}
+.dialog-head { border-bottom: 1px solid var(--border); }
+.dialog-head h2 { margin: 0; font-size: 14px; font-weight: 500; }
+.dialog-foot { border-top: 1px solid var(--border); }
+.dialog-body { padding: 4px 16px 16px; overflow: auto; }
+
+.group {
+  margin: 18px 0 9px;
   font-size: 11px;
+  font-weight: 500;
+  letter-spacing: .7px;
+  text-transform: uppercase;
+  color: var(--text-faint);
+}
+.group:first-child { margin-top: 14px; }
+
+/* Two label/field pairs per row on a fixed track, so the fields line up in the
+   same place whatever the label reads and whatever the window does. */
+.pairs {
+  display: grid;
+  grid-template-columns: 58px minmax(72px, 1fr) 58px minmax(72px, 1fr);
+  gap: 8px 10px;
+  align-items: center;
+}
+.pairs.wide { grid-template-columns: 58px 1fr; }
+.pairs label { display: contents; }               /* the span and the field are the grid items */
+.pairs label > span {
+  text-align: right;
+  font-size: 12px;
   color: var(--text-dim);
 }
-.fields input, .fields select { width: 100%; min-width: 0; }
+.pairs input, .pairs select { width: 100%; min-width: 0; }
+#pipes-more { margin-top: 8px; }
 
-.checks { display: flex; flex-wrap: wrap; gap: 6px 14px; margin-top: 10px; }
-.checks .check { color: var(--text); }
-
-/* Pipe addresses are one full-width row each, prefixed by the pipe number. */
-.fields.column { display: flex; flex-direction: column; gap: 5px; }
-.fields.column label { flex-direction: row; align-items: center; gap: 8px; font-size: 12px; }
-.fields.column input { flex: 1; }
-#pipes-more { margin-top: 5px; }
-
-.fieldset-foot { margin-top: 10px; }
+.checks { display: flex; flex-wrap: wrap; gap: 6px 16px; }
+.checks, .indent { margin-top: 10px; margin-left: 68px; }   /* line up with the fields */
 
 /* --- main --- */
 
 main {
-  /* Basis 0, not auto: sized from the space left over, otherwise a long frame
-     list claims the whole window and squeezes the setup panel to a sliver. */
   flex: 1 1 0;
   display: flex;
   flex-direction: column;
-  /* A floor, not a fixed size - it is what makes the setup panel yield first,
-     and the vh term keeps it from clipping on genuinely short windows. */
   min-height: min(280px, 55vh);
   padding: 10px 14px;
   gap: 10px;
@@ -347,8 +348,7 @@ pre.log { padding-bottom: 4px; }
 
 @media (max-width: 760px) {
   main { padding: 8px; gap: 8px; }
-  .topbar, .setup-head { padding-left: 10px; padding-right: 10px; }
-  .setup-body { padding: 0 10px 10px; }
+  .topbar, .toolbar { padding-left: 10px; padding-right: 10px; }
   /* decoded next to raw stops being readable long before this width */
   .split { flex-direction: column; }
   .pane + .pane {
@@ -359,4 +359,8 @@ pre.log { padding-bottom: 4px; }
 }
 @media (max-width: 560px) {
   .brand { display: none; }
+}
+@media (max-width: 430px) {
+  /* one pair per row rather than squeezing two into a phone-width dialog */
+  .pairs { grid-template-columns: 58px 1fr; }
 }

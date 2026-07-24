@@ -29,7 +29,10 @@ function log(text, kind) {
   pre.scrollTop = pre.scrollHeight;
 }
 
+let state = "not connected";
+
 function setState(text, cls) {
+  state = text;
   $("state-text").textContent = text;
   $("state").className = "pill " + cls;
 }
@@ -82,6 +85,13 @@ function buildListen() {
 }
 
 const send = (line) => post("/api/command", { line });
+
+async function sendSequence(lines, gap = 150) {
+  for (const line of lines) {
+    await send(line);
+    await new Promise((resolve) => setTimeout(resolve, gap));
+  }
+}
 
 // --- frame table -----------------------------------------------------------
 
@@ -241,11 +251,11 @@ function init() {
     else localStorage.setItem(LAST_PORT, port);
   });
 
-  $("setup-toggle").addEventListener("click", () => {
-    const body = $("setup-body");
-    body.hidden = !body.hidden;
-    $("setup-caret").textContent = body.hidden ? "▸" : "▾";
-    $("setup-toggle").setAttribute("aria-expanded", String(!body.hidden));
+  $("setup-open").addEventListener("click", () => $("setup").showModal());
+  // Esc comes free with showModal(); clicking the backdrop does not. The form
+  // fills the dialog box, so a click landing on the dialog itself is outside.
+  $("setup").addEventListener("click", (e) => {
+    if (e.target === $("setup")) $("setup").close();
   });
   $("pipes-toggle").addEventListener("click", () => {
     const more = $("pipes-more");
@@ -254,10 +264,13 @@ function init() {
   });
 
   // Start is the one primary action: the wiring and the radio config always go
-  // together, and always in that order.
-  $("start").addEventListener("click", async () => {
-    await send(buildHwset());
-    setTimeout(() => send(buildListen()), 150);
+  // together, and always in that order. The firmware refuses hwset while it is
+  // listening, so restarting a capture has to stop first - without that the
+  // wiring silently kept whatever it was set to before.
+  $("start").addEventListener("click", () => {
+    const lines = [buildHwset(), buildListen()];
+    if (state === "listening") lines.unshift("stop");
+    sendSequence(lines);
   });
   for (const btn of document.querySelectorAll("[data-cmd]")) {
     btn.addEventListener("click", () => send(btn.dataset.cmd));
