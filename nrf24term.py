@@ -246,6 +246,17 @@ def reader_loop(ser, state):
             raw, buf = buf.split(b"\n", 1)
             line = raw.decode("ascii", errors="replace").rstrip("\r")
 
+            if line.startswith("NRF24SNIFFER"):
+                _emit(state, line)
+                api = None
+                for field in line.split():
+                    if field.startswith("api="):
+                        api = field[4:]
+                if api is not None and api != str(EXPECTED_API):
+                    _emit(state, f"[warning] firmware speaks api={api}, "
+                                 f"this tool expects api={EXPECTED_API}")
+                continue
+
             scan = render_scan(line)
             if scan is not None:
                 _emit(state, scan)
@@ -259,17 +270,24 @@ def reader_loop(ser, state):
         sys.stdout.flush()
 
 
-# Radio config applied by ':preset bthome' (matches the firmware defaults, and
-# starts listening).
+# Command-protocol version this tool speaks; compared against the firmware's
+# greeting so a mismatch is reported instead of producing cryptic errors.
+EXPECTED_API = 2
+
+# The firmware has no built-in pin map and no default radio settings - the host
+# owns both. This is the wiring of the ATmega328P + CH340 + nRF24L01 dongle...
+PRESET_HW = "hwset ce=9 csn=10 irq=2 led_rx=8 led_tx=A1"
+
+# ...and the radio configuration of the BTHome-over-nRF24 protocol.
 PRESET_BTHOME = [
-    "stop", "aw 5", "crc 16", "rate 250", "ch 100",
-    "dpl 1", "ack 0", "pa low", "pipe 1 42:54:48:4D:45", "listen",
+    PRESET_HW,
+    "listen ch=100 rate=250 crc=16 aw=5 pa=low ack=0 dpl=1 pipe1=42:54:48:4D:45",
 ]
 
 LOCAL_HELP = """\
 Local commands (handled by nrf24term, not sent to the dongle):
   :pretty on|off    toggle BTHome pretty-printing of RX frames
-  :preset bthome    apply the full BTHome-over-nRF24 config and listen
+  :preset bthome    send hwset for this dongle + the BTHome listen line
   :scan [passes]    run a channel activity scan (default 64 passes)
   :log <file>       tee everything from the dongle to a file
   :log off          stop logging
@@ -277,10 +295,13 @@ Local commands (handled by nrf24term, not sent to the dongle):
   :quit / :exit     close the terminal
 
 Everything else is sent verbatim to the dongle. Dongle commands:
-  ch <0-125>            rate <250|1000|2000>   crc <0|8|16>    aw <3|4|5>
-  pipe <0-5> <addr|off> ack <0|1>              dpl <0|1>       plsize <1-32>
-  pa <min|low|high|max> repeats <0|1>          listen   stop   info
-  scan [passes]         tx <addr> <hex...> [ack|noack]
+  hwset ce=<pin> csn=<pin> [irq=<pin|none>] [led_rx=<pin|none>] [led_tx=<pin|none>]
+  listen ch= rate= crc= aw= pa= ack= dpl= [plsize=] pipeN=<addr>
+  listen | stop | info | scan [passes] | repeats <0|1>
+  tx <addr> <hex...> [ack|noack]
+
+The firmware has no defaults: hwset defines the wiring, listen the radio
+parameters. Both are mandatory before anything is received.
 """
 
 

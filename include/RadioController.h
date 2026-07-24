@@ -1,30 +1,47 @@
 #pragma once
 #include <Arduino.h>
 #include <RF24.h>
-#include "pins.h"
 
 // Maximum nRF24 address width in bytes.
 constexpr uint8_t MAX_ADDR_WIDTH = 5;
 
-// Full radio configuration. Defaults match the BTHome-over-nRF24 target
-// protocol: channel 100, 250 kbps, CRC16, 5-byte address, pipe 1 = "BTHME",
-// dynamic payloads on, auto-ack off, PA level low.
+// Sentinel for "this pin is not used".
+constexpr uint8_t NO_PIN = 255;
+
+// LEDs are assumed to be wired active-low (the usual arrangement on these
+// dongles). Everything else about the board comes from the host via `hwset`.
+constexpr uint8_t LED_ON = LOW;
+constexpr uint8_t LED_OFF = HIGH;
+
+// Board wiring, supplied at runtime by the `hwset` command. Nothing about the
+// board is compiled in, so one firmware image serves any nRF24 wiring.
+struct HwConfig {
+  uint8_t ce = NO_PIN;    // mandatory
+  uint8_t csn = NO_PIN;   // mandatory
+  uint8_t irq = NO_PIN;   // optional; NO_PIN falls back to polling
+  uint8_t ledRx = NO_PIN; // optional
+  uint8_t ledTx = NO_PIN; // optional
+};
+
+// Full radio configuration.
+//
+// There are deliberately NO defaults: the host must supply every parameter via
+// the `listen` command before the radio does anything. A sniffer that silently
+// comes up on some built-in channel invites the worst kind of error - concluding
+// "nothing is being transmitted" when in truth the wrong question was asked.
+// The values below are placeholders and are only meaningful once
+// RadioController::configured() is true.
 struct RadioConfig {
-  uint8_t  channel   = 100;
-  uint16_t rateKbps  = 250;  // 250 | 1000 | 2000
-  uint8_t  crcBits   = 16;   // 0 | 8 | 16
-  uint8_t  addrWidth = 5;    // 3 | 4 | 5
+  uint8_t  channel   = 0;
+  uint16_t rateKbps  = 0;     // 250 | 1000 | 2000
+  uint8_t  crcBits   = 0;     // 0 | 8 | 16
+  uint8_t  addrWidth = 0;     // 3 | 4 | 5
   bool     autoAck   = false;
-  bool     dpl       = true; // dynamic payloads
-  uint8_t  plSize    = 32;   // static payload size when dpl == false
-  uint8_t  paLevel   = 1;    // 0=min 1=low 2=high 3=max
-  bool     showRepeats = true; // false: suppress identical back-to-back frames
-  bool     pipeEn[6] = {false, true, false, false, false, false};
-  uint8_t  pipeAddr[6][MAX_ADDR_WIDTH] = {
-    {0},
-    {0x42, 0x54, 0x48, 0x4D, 0x45}, // "BTHME"
-    {0}, {0}, {0}, {0},
-  };
+  bool     dpl       = false; // dynamic payloads
+  uint8_t  plSize    = 32;    // static payload size when dpl == false
+  uint8_t  paLevel   = 0;     // 0=min 1=low 2=high 3=max
+  bool     pipeEn[6] = {false, false, false, false, false, false};
+  uint8_t  pipeAddr[6][MAX_ADDR_WIDTH] = {{0}, {0}, {0}, {0}, {0}, {0}};
 };
 
 // Wraps the RF24 radio and applies a RadioConfig to it. Owns RX draining,
@@ -33,16 +50,27 @@ class RadioController {
 public:
   RadioController();
 
-  // Initialises the radio and applies the current config. Returns true if the
-  // nRF24 chip responds.
-  bool begin();
+  // Adopts a board wiring and brings the radio up on it. Emits a WARN and
+  // falls back to polling if the requested IRQ pin cannot raise interrupts.
+  // Returns true if the nRF24 chip responds. Discards any radio configuration.
+  bool setHardware(const HwConfig &hw);
 
-  RadioConfig &config() { return cfg_; }
+  // Adopts a complete configuration and applies it to the chip.
+  void applyConfig(const RadioConfig &cfg);
+
+  const RadioConfig &config() const { return cfg_; }
+  const HwConfig &hw() const { return hw_; }
+  bool hwReady() const { return hwReady_; }
+  bool configured() const { return configured_; }
   bool listening() const { return listening_; }
   bool chipConnected() { return radio_.isChipConnected(); }
 
-  // Applies the full config to the radio, preserving listen state.
-  void reconfigure();
+  // "unconfigured" | "idle" | "listening"
+  const __FlashStringHelper *stateName() const;
+
+  // Output filter: when false, identical back-to-back frames are printed once.
+  void setShowRepeats(bool on) { showRepeats_ = on; }
+  bool showRepeats() const { return showRepeats_; }
 
   void startListening();
   void stopListening();
@@ -51,29 +79,36 @@ public:
   void poll();
 
   // Transmits one payload to `addr`. noack=true sends with the NO_ACK flag
-  // (per-packet), matching the broadcast sender. Returns radio.write() result.
+  // (per-packet), matching a broadcast sender. Returns radio.write() result.
   bool transmit(const uint8_t *addr, const uint8_t *data, uint8_t len, bool noack);
 
   // Energy scan across all 126 channels, `passes` sweeps. Prints hits.
   void scan(uint16_t passes);
 
-  // Prints the current configuration and chip status.
+  // Prints the current state and configuration.
   void printInfo();
 
 private:
   // A frame repeated within this window counts as a retransmit of the previous
-  // one (the sender repeats each event a few ms apart).
+  // one (a sender typically repeats each event a few ms apart).
   static constexpr uint16_t REPEAT_WINDOW_MS = 500;
 
-  RF24 radio_;
+  RF24 radio_; // pinless constructor: pins are supplied at begin() time
   RadioConfig cfg_;
+  HwConfig hw_;
+  bool hwReady_ = false;
+  bool configured_ = false;
   bool listening_ = false;
+  bool showRepeats_ = true;
+
+  void led(uint8_t pin, bool on);
 
   // Last frame seen, for the repeat filter.
   uint8_t lastFrame_[32] = {0};
   uint8_t lastLen_ = 0;
   uint32_t lastMs_ = 0;
 
+  void reconfigure();
   void drainRx();
   // Records the frame and reports whether it repeats the previous one.
   bool isRepeat(const uint8_t *buf, uint8_t len);

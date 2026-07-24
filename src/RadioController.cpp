@@ -1,33 +1,52 @@
 #include "RadioController.h"
 
-// RX-ready interrupt flag. The dongle's IRQ pin is masked to fire on received
-// data only (see reconfigure()), so any edge means "a frame is waiting".
+// RX-ready interrupt flag. The IRQ pin is masked to fire on received data only
+// (see reconfigure()), so any edge means "a frame is waiting".
 static volatile bool s_rxFlag = false;
 static void onRadioIrq() { s_rxFlag = true; }
 
-RadioController::RadioController() : radio_(Pins::RADIO_CE, Pins::RADIO_CSN) {}
+RadioController::RadioController() {}
 
-bool RadioController::begin() {
-  pinMode(Pins::LED_TX, OUTPUT);
-  pinMode(Pins::LED_RX, OUTPUT);
-  digitalWrite(Pins::LED_TX, Pins::LED_OFF);
-  digitalWrite(Pins::LED_RX, Pins::LED_OFF);
+void RadioController::led(uint8_t pin, bool on) {
+  if (pin != NO_PIN) digitalWrite(pin, on ? LED_ON : LED_OFF);
+}
 
-  bool chip = radio_.begin();
-  reconfigure();
+bool RadioController::setHardware(const HwConfig &hw) {
+  // Tear down whatever the previous wiring installed.
+  if (hw_.irq != NO_PIN) detachInterrupt(digitalPinToInterrupt(hw_.irq));
+  listening_ = false;
+  configured_ = false;
+  hwReady_ = false;
 
-  if (chip) {
-    attachInterrupt(digitalPinToInterrupt(Pins::RADIO_IRQ), onRadioIrq, FALLING);
+  hw_ = hw;
+
+  // An IRQ pin that cannot raise an interrupt is not fatal - polling works,
+  // it just reacts a little later. Say so rather than pretending.
+  if (hw_.irq != NO_PIN && digitalPinToInterrupt(hw_.irq) == NOT_AN_INTERRUPT) {
+    Serial.print(F("WARN irq pin "));
+    Serial.print(hw_.irq);
+    Serial.println(F(" is not interrupt-capable, falling back to polling"));
+    hw_.irq = NO_PIN;
   }
 
-  // Startup blink: 1x = radio present, 2x = radio not detected.
-  for (uint8_t i = 0; i < (chip ? 1 : 2); i++) {
-    digitalWrite(Pins::LED_RX, Pins::LED_ON);
-    delay(120);
-    digitalWrite(Pins::LED_RX, Pins::LED_OFF);
-    delay(120);
+  if (hw_.ledRx != NO_PIN) pinMode(hw_.ledRx, OUTPUT);
+  if (hw_.ledTx != NO_PIN) pinMode(hw_.ledTx, OUTPUT);
+  led(hw_.ledRx, false);
+  led(hw_.ledTx, false);
+
+  bool chip = radio_.begin(hw_.ce, hw_.csn);
+  if (!chip) return false;
+
+  hwReady_ = true;
+  if (hw_.irq != NO_PIN) {
+    attachInterrupt(digitalPinToInterrupt(hw_.irq), onRadioIrq, FALLING);
   }
-  return chip;
+
+  // Single blink confirms the radio answered on the given pins.
+  led(hw_.ledRx, true);
+  delay(120);
+  led(hw_.ledRx, false);
+  return true;
 }
 
 static rf24_datarate_e rateEnum(uint16_t kbps) {
@@ -44,6 +63,12 @@ static rf24_crclength_e crcEnum(uint8_t bits) {
     case 8:  return RF24_CRC_8;
     default: return RF24_CRC_16;
   }
+}
+
+void RadioController::applyConfig(const RadioConfig &cfg) {
+  cfg_ = cfg;
+  configured_ = true;
+  reconfigure();
 }
 
 void RadioController::reconfigure() {
@@ -78,6 +103,12 @@ void RadioController::reconfigure() {
     radio_.startListening();
     listening_ = true;
   }
+}
+
+const __FlashStringHelper *RadioController::stateName() const {
+  if (!hwReady_) return F("nohw");
+  if (!configured_) return F("unconfigured");
+  return listening_ ? F("listening") : F("idle");
 }
 
 void RadioController::startListening() {
@@ -116,10 +147,9 @@ void RadioController::drainRx() {
     uint8_t buf[32];
     radio_.read(buf, len);
 
-    bool repeat = isRepeat(buf, len);
-    if (repeat && !cfg_.showRepeats) continue;
+    if (isRepeat(buf, len) && !showRepeats_) continue;
 
-    digitalWrite(Pins::LED_RX, Pins::LED_ON);
+    led(hw_.ledRx, true);
     // Compact hex (no separators) keeps the line short - the serial link is
     // the bottleneck during fast bursts.
     Serial.print(F("RX p"));
@@ -132,7 +162,7 @@ void RadioController::drainRx() {
       Serial.print(buf[i], HEX);
     }
     Serial.println();
-    digitalWrite(Pins::LED_RX, Pins::LED_OFF);
+    led(hw_.ledRx, false);
   }
   s_rxFlag = false;
 }
@@ -147,9 +177,9 @@ bool RadioController::transmit(const uint8_t *addr, const uint8_t *data,
                               uint8_t len, bool noack) {
   radio_.stopListening();
   radio_.openWritingPipe(addr);
-  digitalWrite(Pins::LED_TX, Pins::LED_ON);
+  led(hw_.ledTx, true);
   bool sent = radio_.write(data, len, noack); // 3rd arg true => NO_ACK
-  digitalWrite(Pins::LED_TX, Pins::LED_OFF);
+  led(hw_.ledTx, false);
   // openWritingPipe clobbers pipe 0; restore reading pipes and listen state.
   reconfigure();
   return sent;
@@ -189,7 +219,7 @@ void RadioController::scan(uint16_t passes) {
   Serial.println(F("OK scan done"));
 }
 
-static void printAddr(uint8_t *a, uint8_t width) {
+static void printAddr(const uint8_t *a, uint8_t width) {
   for (uint8_t i = 0; i < width; i++) {
     if (i) Serial.print(':');
     if (a[i] < 0x10) Serial.print('0');
@@ -197,25 +227,55 @@ static void printAddr(uint8_t *a, uint8_t width) {
   }
 }
 
+static void printPin(uint8_t pin) {
+  if (pin == NO_PIN) Serial.print(F("none"));
+  else Serial.print(pin);
+}
+
 void RadioController::printInfo() {
   Serial.println(F("info:"));
-  Serial.print(F("  chip="));      Serial.println(radio_.isChipConnected() ? F("connected") : F("NOT connected"));
-  Serial.print(F("  listening=")); Serial.println(listening_ ? 1 : 0);
-  Serial.print(F("  channel="));   Serial.println(cfg_.channel);
-  Serial.print(F("  rate="));      Serial.print(cfg_.rateKbps); Serial.println(F("kbps"));
-  Serial.print(F("  crc="));       Serial.println(cfg_.crcBits);
-  Serial.print(F("  aw="));        Serial.println(cfg_.addrWidth);
-  Serial.print(F("  pa="));        Serial.println(cfg_.paLevel); // 0=min 1=low 2=high 3=max
-  Serial.print(F("  autoack="));   Serial.println(cfg_.autoAck ? 1 : 0);
-  Serial.print(F("  dpl="));       Serial.println(cfg_.dpl ? 1 : 0);
-  Serial.print(F("  plsize="));    Serial.println(cfg_.plSize);
-  Serial.print(F("  repeats="));   Serial.println(cfg_.showRepeats ? 1 : 0);
+  Serial.print(F("  state="));   Serial.println(stateName());
+
+  if (!hwReady_) {
+    Serial.println(F("OK"));
+    return;
+  }
+
+  Serial.print(F("  chip="));    Serial.println(radio_.isChipConnected() ? F("connected") : F("NOT connected"));
+  Serial.print(F("  ce="));      printPin(hw_.ce);
+  Serial.print(F(" csn="));      printPin(hw_.csn);
+  Serial.print(F(" irq="));      printPin(hw_.irq);
+  Serial.print(F(" led_rx="));   printPin(hw_.ledRx);
+  Serial.print(F(" led_tx="));   printPin(hw_.ledTx);
+  Serial.println();
+  Serial.print(F("  repeats=")); Serial.println(showRepeats_ ? 1 : 0);
+
+  if (!configured_) {
+    Serial.println(F("OK"));
+    return;
+  }
+
+  Serial.print(F("  channel="));  Serial.println(cfg_.channel);
+  Serial.print(F("  rate="));     Serial.print(cfg_.rateKbps); Serial.println(F("kbps"));
+  Serial.print(F("  crc="));      Serial.println(cfg_.crcBits);
+  Serial.print(F("  aw="));       Serial.println(cfg_.addrWidth);
+  // Printed by name so `info` output matches what `listen pa=` accepts.
+  Serial.print(F("  pa="));
+  switch (cfg_.paLevel) {
+    case 0:  Serial.println(F("min"));  break;
+    case 1:  Serial.println(F("low"));  break;
+    case 2:  Serial.println(F("high")); break;
+    default: Serial.println(F("max"));  break;
+  }
+  Serial.print(F("  ack="));      Serial.println(cfg_.autoAck ? 1 : 0);
+  Serial.print(F("  dpl="));      Serial.println(cfg_.dpl ? 1 : 0);
+  Serial.print(F("  plsize="));   Serial.println(cfg_.plSize);
   for (uint8_t p = 0; p < 6; p++) {
+    if (!cfg_.pipeEn[p]) continue;
     Serial.print(F("  pipe"));
     Serial.print(p);
     Serial.print('=');
-    if (cfg_.pipeEn[p]) printAddr(cfg_.pipeAddr[p], cfg_.addrWidth);
-    else Serial.print(F("off"));
+    printAddr(cfg_.pipeAddr[p], cfg_.addrWidth);
     Serial.println();
   }
   Serial.println(F("OK"));
