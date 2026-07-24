@@ -314,12 +314,16 @@ setting: port selection, the wiring fields for `hwset`, all radio parameters and
 the six pipe addresses for `listen`, plus buttons for listen / stop / info / scan
 and a free-text command line.
 
-Received frames land in a table — time, pipe, length, and the decoder's one-line
-summary — and clicking a row shows the decoded fields plus a hex dump. Frames the
-decoder objected to are drawn in red, so a non-conformant sender stands out
-without reading every row. The wiring fields are prefilled from the dongle's
-greeting, and the greeting itself is shown in the title bar area (red on an api
-mismatch or a failed wiring).
+The setup strip collapses to a one-line summary of the active configuration, so
+after `Start` (which sends `hwset` and `listen` in one go) the frame table gets
+the window — but you can still see what you are listening to at a glance.
+
+Received frames land in a table with **millisecond timestamps and a Δ column**,
+which is what makes retransmission bursts and sender pauses readable: the three
+repeats of one event show up ~4 ms apart. Selecting a row shows **decoded fields
+and the hex dump side by side**. Frames the decoder objected to are drawn in red.
+The log and the free-text command line share their own tab, so dongle replies and
+frame details no longer fight over one widget.
 
 **The decoder is switchable at runtime** via the dropdown, and switching
 re-renders frames already captured, so the same capture can be looked at through
