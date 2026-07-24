@@ -52,16 +52,46 @@ DIMMER_EVENTS = {
     0x02: "rotate right",
 }
 
-# Known BTHome object ids -> number of value bytes (excluding the id byte).
-# Objects not listed here cannot be length-decoded, so parsing stops and the
-# remainder is dumped as raw hex.
-OBJECT_LEN = {
+COMMAND_EVENTS = {
+    0x00: "off",
+    0x01: "on",
+    0x02: "toggle",
+    0x03: "step up",
+    0x04: "step down",
+}
+
+# Fixed-length BTHome objects -> number of value bytes (excluding the id byte).
+FIXED_LEN = {
     0x00: 1,  # packet id
     0x01: 1,  # battery %
     0x0C: 2,  # voltage, uint16 LE, factor 0.001 V
     0x3A: 1,  # button event
-    0x3C: 2,  # dimmer event: direction + steps
 }
+
+
+def object_value_len(oid, rest):
+    """Number of value bytes for object `oid`; `rest` are the bytes after the id.
+
+    Several BTHome objects are variable length, so the count depends on the
+    payload itself:
+      0x3C dimmer  - None (0x00) carries no step byte, rotate events do
+      0x3B command - [argument count][opcode][arguments...]
+      0x53 / 0x54  - text / raw, prefixed with an explicit length byte
+    Returns None when the length cannot be inferred (unknown object).
+    """
+    if oid == 0x3C:
+        if not rest:
+            return None
+        return 1 if rest[0] == 0x00 else 2
+    if oid == 0x3B:
+        if not rest:
+            return None
+        return 2 + rest[0]
+    if oid in (0x53, 0x54):
+        if not rest:
+            return None
+        return 1 + rest[0]
+    return FIXED_LEN.get(oid)
 
 
 def _ascii(b):
@@ -101,7 +131,7 @@ def decode_frame(data):
     dimmer_n = 0
     while i < len(obj):
         oid = obj[i]
-        vlen = OBJECT_LEN.get(oid)
+        vlen = object_value_len(oid, obj[i + 1:])
         if vlen is None:
             lines.append(
                 f"  0x{oid:02X}      : unknown object, raw = "
@@ -127,7 +157,20 @@ def decode_frame(data):
         elif oid == 0x3C:
             dimmer_n += 1
             name = DIMMER_EVENTS.get(val[0], f"0x{val[0]:02X}")
-            lines.append(f"  dimmer {dimmer_n}  : {name} ({val[1]} steps)")
+            # None is a placeholder addressing a later dimmer and has no steps.
+            steps = f" ({val[1]} steps)" if len(val) > 1 else ""
+            lines.append(f"  dimmer {dimmer_n}  : {name}{steps}")
+        elif oid == 0x3B:
+            opcode = COMMAND_EVENTS.get(val[1], f"0x{val[1]:02X}")
+            args = " ".join(f"{b:02X}" for b in val[2:])
+            lines.append(f"  command   : {opcode}" + (f" [{args}]" if args else ""))
+        elif oid in (0x53, 0x54):
+            payload = bytes(val[1:])
+            if oid == 0x53:
+                shown = payload.decode("utf-8", errors="replace")
+                lines.append(f"  text      : \"{shown}\"")
+            else:
+                lines.append("  raw       : " + " ".join(f"{b:02X}" for b in payload))
 
         i += 1 + vlen
 

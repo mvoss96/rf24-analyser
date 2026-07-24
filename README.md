@@ -191,10 +191,23 @@ With `--pretty` (or `:pretty on`), a frame laid out as
 
 Service data must start with the BTHome UUID `D2 FC` followed by a device-info
 byte. Decoded objects: packet id (`0x00`), battery % (`0x01`), voltage (`0x0C`,
-uint16 LE × 0.001 V), button event (`0x3A`), dimmer event (`0x3C`, direction +
-steps). The k-th `0x3A`/`0x3C` object maps to button/dimmer *k*. Unknown object
-ids can't be length-decoded, so the parser prints the remaining bytes as raw hex
-and stops.
+uint16 LE × 0.001 V), button event (`0x3A`), dimmer event (`0x3C`), command
+event (`0x3B`) and text / raw (`0x53` / `0x54`). The k-th `0x3A`/`0x3C` object
+maps to button/dimmer *k*. Unknown object ids can't be length-decoded, so the
+parser prints the remaining bytes as raw hex and stops.
+
+**Not every object is fixed length** — the length can depend on the value:
+
+| Object | Layout |
+|--------|--------------------------------------------------------------|
+| `0x3C` dimmer  | `3C 00` for `None` (**no** step byte), `3C <dir> <steps>` otherwise |
+| `0x3B` command | `3B <argument count> <opcode> <arguments...>`                 |
+| `0x53` / `0x54`| `<id> <length> <bytes...>`                                    |
+
+The dimmer case matters for multi-dimmer packets: a rotation on dimmer 2 is sent
+as `3C 00 3C 02 01` — instance 1 padded with `None`, then the real event.
+Assuming a fixed 2-byte dimmer value swallows the second object id as a step
+count and desynchronises the rest of the packet.
 
 ## Verifying against the real remote
 
