@@ -38,8 +38,10 @@ static void err(const __FlashStringHelper *m) { Serial.print(F("ERR ")); Serial.
 // --- Command handlers ------------------------------------------------------
 
 void CommandParser::feed(char c) {
-  if (c == '\r') return;
-  if (c == '\n') {
+  // Accept CR, LF or CRLF as the line terminator, so any terminal works
+  // unconfigured (PuTTY sends CR on Enter, miniterm CRLF). The trailing empty
+  // line a CRLF produces is dispatched too, but dispatch() ignores it.
+  if (c == '\n' || c == '\r') {
     buf_[len_] = '\0';
     dispatch(buf_);
     len_ = 0;
