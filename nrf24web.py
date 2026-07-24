@@ -42,7 +42,8 @@ GREETING_TIMEOUT = 4.5
 
 def column_spec(parser):
     """The decoder's table columns, as the browser wants them."""
-    return [{"key": key, "label": label, "width": width}
+    return [{"key": key, "label": label, "width": width,
+             "packet": key == parser.packet_column}
             for key, label, width in parser.columns]
 
 
@@ -175,9 +176,10 @@ class Session:
             cells = {key: str(value) for key, value in self.parser.cells(data).items()}
             detail = self.parser.detail(data)
             identity = self.parser.identity(data)
+            source, packet_id = self.parser.source(data), self.parser.packet_id(data)
         except Exception as exc:
             cells, detail = {"data": f"!! decoder error: {exc}"}, [str(exc)]
-            identity = bytes(data).hex()
+            identity, source, packet_id = bytes(data).hex(), None, None
         flagged = any("!!" in value for value in cells.values())
         return {
             "type": "frame",
@@ -187,6 +189,10 @@ class Session:
             "pipe": pipe,
             "len": len(data),
             "cells": cells,
+            # Neutral metadata the table reasons about without knowing the
+            # protocol: who sent it, and the sender's own count for it.
+            "source": source,
+            "packetId": packet_id,
             "detail": detail,
             "hex": parsers.hexdump(data),
             "flagged": flagged,

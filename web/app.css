@@ -139,6 +139,16 @@ input[type="text"], input:not([type]) {
 }
 .pill .dot { width: 7px; height: 7px; border-radius: 50%; background: currentColor; }
 .pill.live { background: var(--accent-bg); color: var(--ok); }
+/* Listening is the one state that is still happening while you look at it.
+   A steady dot says the same thing as a stopped one. */
+.pill.live .dot { animation: pulse 1.6s ease-in-out infinite; }
+@keyframes pulse {
+  0%, 100% { opacity: 1; transform: scale(1); }
+  50%      { opacity: .3; transform: scale(.7); }
+}
+@media (prefers-reduced-motion: reduce) {
+  .pill.live .dot { animation: none; }
+}
 .pill.warn { background: var(--surface-2); color: var(--warn); }
 .pill.bad { background: var(--danger-bg); color: var(--danger); }
 
@@ -302,6 +312,16 @@ tbody tr.flagged td { color: var(--danger); }
 /* The one piece of metadata worth reading at full contrast: it says this row
    stands for more than one frame. */
 tbody tr.repeated td.c-rep { color: var(--text); }
+
+/* How many counter values were skipped before this packet. Amber because it is
+   the one thing in the row that is about what is *not* there. */
+.lost {
+  margin-left: 6px;
+  color: var(--warn);
+  font-size: 11px;
+}
+
+#count.has-loss { color: var(--warn); }
 .c-time { width: 96px; }
 .c-delta { width: 74px; text-align: right; }
 .c-pipe { width: 52px; }

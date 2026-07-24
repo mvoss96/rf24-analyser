@@ -164,17 +164,21 @@ const RADIO_COLUMNS = [
   { key: "len", label: "Len", cls: "c-len" },
   // How many times the sender repeated this event, and over what span. Reception
   // metadata like the rest of this list - appended to the decoder's last column
-  // it read as though the protocol had said it.
-  { key: "repeats", label: "Repeats", cls: "c-rep",
+  // it read as though the protocol had said it. Ungrouped, every row stands for
+  // one frame, so the column has nothing left to say and goes away.
+  { key: "repeats", label: "Repeats", cls: "c-rep", grouped: true,
     title: "Frames folded into this row, and the span from the first to the last" },
 ];
 let decoderColumns = [];
 
+const radioColumns = () =>
+  RADIO_COLUMNS.filter((column) => !column.grouped || $("group").checked);
+
 function setColumns(columns) {
-  decoderColumns = columns || [];
+  if (columns) decoderColumns = columns;
   const head = $("head");
   head.replaceChildren();
-  for (const { label, cls, title } of RADIO_COLUMNS) {
+  for (const { label, cls, title } of radioColumns()) {
     const th = document.createElement("th");
     th.className = cls;
     th.textContent = label;
@@ -218,28 +222,71 @@ function paintRow(group) {
   const [head] = group.frames;
   const count = group.frames.length;
   const ms = spread(group);
-  const cells = [
-    [head.time, "c-time"],
-    [group.gap === null ? "" : group.gap.toFixed(1), "c-delta"],
-    [head.pipe, "c-pipe"],
-    [head.len, "c-len"],
-    [count > 1 ? `×${count}` + (ms !== null ? `  ${ms} ms` : "") : "", "c-rep"],
-  ];
-  for (const column of decoderColumns) cells.push([head.cells[column.key] ?? "", ""]);
+  const values = {
+    time: head.time,
+    delta: group.gap === null ? "" : group.gap.toFixed(1),
+    pipe: head.pipe,
+    len: head.len,
+    repeats: count > 1 ? `×${count}` + (ms !== null ? `  ${ms} ms` : "") : "",
+  };
+  const cells = radioColumns().map(({ key, cls }) => [values[key], cls, null]);
+  for (const column of decoderColumns) {
+    // Skipped counter values are marked on the packet number itself: a row of
+    // its own said the same thing in far more space, and pushed the frames
+    // apart to say it.
+    const lost = column.packet && group.missing ? group.missing : null;
+    cells.push([head.cells[column.key] ?? "", "", lost]);
+  }
 
   const tds = group.tr.children;
   while (tds.length > cells.length) group.tr.removeChild(group.tr.lastChild);
-  cells.forEach(([text, cls], i) => {
+  cells.forEach(([text, cls, lost], i) => {
     const td = tds[i] || group.tr.appendChild(document.createElement("td"));
     td.className = cls;
     td.textContent = text;
+    td.title = "";
+    if (lost) {
+      const mark = document.createElement("span");
+      mark.className = "lost";
+      mark.textContent = `−${lost}`;
+      td.appendChild(mark);
+      td.title = missingNote(head, lost);
+    }
   });
   group.tr.classList.toggle("flagged", head.flagged);
   group.tr.classList.toggle("repeated", count > 1);
 }
 
+// Packet counters run in sequence per sender, so a jump in one is the only
+// direct evidence a sniffer has that something never arrived. The counter is a
+// byte, hence the wrap.
+const lastPacket = new Map();   // source -> last packet id seen
+let missingTotal = 0;
+
+function missingBefore(frame) {
+  if (frame.packetId === null || frame.packetId === undefined || !frame.source) return 0;
+  const previous = lastPacket.get(frame.source);
+  lastPacket.set(frame.source, frame.packetId);
+  // Equal means a retransmission of the event we just saw, not a new one.
+  if (previous === undefined || previous === frame.packetId) return 0;
+  return (frame.packetId - previous - 1) & 0xFF;
+}
+
+function missingNote(frame, missing) {
+  const from = (frame.packetId - missing) & 0xFF;
+  const range = missing === 1 ? `#${from}` : `#${from} to #${(frame.packetId - 1) & 0xFF}`;
+  // The counter is a byte, so a gap of n is really n, n+256, n+512... For small
+  // gaps that is pedantry; past half a cycle a wrap is plausible enough to say.
+  const floor = missing >= 128 ? "at least " : "";
+  return `${floor}${missing} packet${missing === 1 ? "" : "s"} never arrived before this `
+       + `one — ${range} from ${frame.source}`;
+}
+
 function addRow(frame) {
   frames.push(frame);
+
+  const missing = missingBefore(frame);
+  if (missing) missingTotal += missing;
 
   const existing = groupable(frame);
   if (existing) {
@@ -255,7 +302,7 @@ function addRow(frame) {
     if (previous && frame.deviceMs !== null && previous.frames[0].deviceMs !== null) {
       gap = frame.deviceMs - previous.frames[0].deviceMs;
     }
-    const group = { identity: frame.identity, frames: [frame], gap,
+    const group = { identity: frame.identity, frames: [frame], gap, missing,
                     tr: document.createElement("tr") };
     const index = groups.length;
     groups.push(group);
@@ -275,19 +322,22 @@ function addRow(frame) {
 
 function updateCount() {
   const total = frames.length;
-  const text = `${total} frame${total === 1 ? "" : "s"}`;
-  $("count").textContent =
-    groups.length && groups.length !== total ? `${groups.length} events · ${text}` : text;
+  const parts = [];
+  if (groups.length && groups.length !== total) parts.push(`${groups.length} events`);
+  parts.push(`${total} frame${total === 1 ? "" : "s"}`);
+  if (missingTotal) parts.push(`${missingTotal} missing`);
+  $("count").textContent = parts.join(" · ");
+  $("count").classList.toggle("has-loss", missingTotal > 0);
 }
 
 function select(index) {
   const group = groups[index];
   if (!group) return;
   selected = index;
+  // The row is held on the group rather than found by index: gap rows sit in
+  // the same tbody, so the two no longer line up.
   for (const tr of $("rows").children) tr.classList.remove("sel");
-  const offset = groups.length - $("rows").children.length;
-  const row = $("rows").children[index - offset];
-  if (row) row.classList.add("sel");
+  group.tr.classList.add("sel");
 
   const [head] = group.frames;
   const lines = [...head.detail];
@@ -306,6 +356,8 @@ function rebuild(list) {
   $("rows").replaceChildren();
   frames = [];
   groups = [];
+  lastPacket.clear();
+  missingTotal = 0;
   for (const frame of list) addRow(frame);
   if (!list.length) {
     $("empty").hidden = false;
@@ -321,7 +373,7 @@ function showTab(name) {
   }
   $("panel-detail").hidden = name !== "detail";
   $("panel-scan").hidden = name !== "scan";
-  $("panel-log").hidden = name !== "log";
+  $("panel-terminal").hidden = name !== "terminal";
 }
 
 // --- channel scan ----------------------------------------------------------
@@ -538,7 +590,12 @@ function init() {
   });
 
   // Regrouping is a pure view change, so it works on what is already here.
-  $("group").addEventListener("change", () => rebuild(frames.slice()));
+  // The header changes with it: ungrouped, the repeat column has nothing to say.
+  $("group").addEventListener("change", () => {
+    const list = frames.slice();
+    setColumns();
+    rebuild(list);
+  });
 
   document.addEventListener("keydown", (e) => {
     if (e.key === "ArrowDown" || e.key === "ArrowUp") {

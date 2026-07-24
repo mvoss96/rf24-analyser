@@ -34,6 +34,10 @@ class Parser:
     # and a payload should be able to say so.
     columns = (("summary", "Decoded", None),)
 
+    # Which of `columns` shows packet_id(), if any. The table marks skipped
+    # counter values there rather than in a row of its own.
+    packet_column = None
+
     def available(self):
         """Returns None if usable, otherwise a reason string."""
         return None
@@ -49,6 +53,14 @@ class Parser:
     def detail(self, data):
         """List of text lines describing the frame in full."""
         raise NotImplementedError
+
+    def source(self, data):
+        """Which sender this frame came from, or None if the protocol says.
+
+        Packet counters only run in sequence per sender, so gaps can only be
+        counted once frames are attributed to one.
+        """
+        return None
 
     def packet_id(self, data):
         """The sender's own counter for this frame, or None if it has none.
@@ -188,8 +200,9 @@ class NRF24SmartParser(Parser):
     label = "NRF24Smart (legacy)"
     description = "The pre-BTHome protocol: device, host and remote packets."
 
-    columns = (("id", "Msg#", 56), ("uuid", "UUID", 116),
+    columns = (("id", "Msg#", 64), ("uuid", "UUID", 116),
                ("kind", "Kind", 130), ("data", "Content", None))
+    packet_column = "id"
 
     # -- identification --
 
@@ -214,6 +227,11 @@ class NRF24SmartParser(Parser):
         uuid = ":".join(f"{b:02X}" for b in data[1:5])
         kind = SMART_MSG_TYPES.get(data[5], f"type{data[5]}")
         return data[0], uuid, kind
+
+    def source(self, data):
+        if len(data) < 8:
+            return None
+        return ":".join(f"{b:02X}" for b in data[1:5])
 
     def packet_id(self, data):
         """Only device packets count their messages; host and remote do not."""
@@ -360,7 +378,8 @@ class BTHomeParser(Parser):
     label = "BTHome v2 (over nRF24)"
     description = "4-byte sender id + BTHome v2 service data, decoded by bthome-ble."
 
-    columns = (("id", "Pkt#", 56), ("sender", "Sender", 116), ("data", "Measurements", None))
+    columns = (("id", "Pkt#", 64), ("sender", "Sender", 116), ("data", "Measurements", None))
+    packet_column = "id"
 
     def available(self):
         try:
@@ -421,6 +440,10 @@ class BTHomeParser(Parser):
             if getattr(key, "key", None) == "packet_id":
                 return value.native_value
         return None
+
+    def source(self, data):
+        split = self._split(data)
+        return None if split is None else ":".join(f"{b:02X}" for b in split[0])
 
     def packet_id(self, data):
         split = self._split(data)
