@@ -22,7 +22,7 @@
 #include "HwStore.h"
 
 // Firmware version, and the command-protocol version the host can check.
-#define FW_VERSION "2.2.0"
+#define FW_VERSION "2.3.0"
 #define API_VERSION 2
 
 static RadioController g_radio;
@@ -36,22 +36,23 @@ void setup() {
   // A stored wiring is restored, but never silently: the greeting states where
   // the pins came from, and a chip that does not answer on them drops back to
   // nohw rather than pretending to be ready.
-  const __FlashStringHelper *hwSource = F("none");
-  const __FlashStringHelper *ceTest = nullptr;
+  // At boot a wiring can only have come from EEPROM, so its provenance carries
+  // no information - what matters is whether it works. "connected" therefore
+  // means both checks passed: the chip answers over SPI and CE actually keys
+  // it. Why a wiring failed goes into a WARN line rather than the greeting.
+  const __FlashStringHelper *hwState = F("none");
   HwConfig stored;
   const bool haveStored = HwStore::load(stored);
   if (haveStored) {
     if (!g_radio.setHardware(stored)) {
-      hwSource = F("eeprom-failed");
-    } else if (g_radio.selfTestCe()) {
-      hwSource = F("eeprom");
-      ceTest = F("ok");
-    } else {
-      // The chip talks over SPI but CE does not key it - unusable, so do not
-      // pretend the wiring is ready.
-      hwSource = F("eeprom-failed");
-      ceTest = F("FAIL");
+      Serial.println(F("WARN stored wiring: chip does not answer over spi"));
+      hwState = F("failed");
+    } else if (!g_radio.selfTestCe()) {
+      Serial.println(F("WARN stored wiring: ce pin does not key the radio"));
       g_radio.invalidateHw();
+      hwState = F("failed");
+    } else {
+      hwState = F("connected");
     }
   }
 
@@ -60,11 +61,7 @@ void setup() {
   Serial.print(F(" state="));
   Serial.print(g_radio.stateName());
   Serial.print(F(" hw="));
-  Serial.print(hwSource);
-  if (ceTest != nullptr) {
-    Serial.print(F(" cetest="));
-    Serial.print(ceTest);
-  }
+  Serial.print(hwState);
   // Spell the wiring out rather than just its provenance: a stored-but-wrong
   // pin is otherwise invisible, and a wrong CE cannot be detected electrically
   // (isChipConnected() exercises SPI only). Seeing the pins is the check.

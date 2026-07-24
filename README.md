@@ -47,7 +47,7 @@ pio run -e nano -t upload
 ```
 
 If that ends in an avrdude sync timeout, use `-e nano_old`. Only dependency is
-`nrf24/RF24` (TMRh20), pulled automatically. Build size: **flash ~12.7 KB (41%)**,
+`nrf24/RF24` (TMRh20), pulled automatically. Build size: **flash ~12.8 KB (42%)**,
 **RAM ~795 B (39%)**.
 
 ## Serial protocol
@@ -65,20 +65,28 @@ terminal works unconfigured. Every command is answered with `OK ...` or `ERR ...
 ### Greeting
 
 ```
-NRF24SNIFFER fw=2.2.0 api=2 state=unconfigured hw=eeprom cetest=ok ce=9 csn=10 irq=2 led_rx=8 led_tx=A1
+NRF24SNIFFER fw=2.3.0 api=2 state=unconfigured hw=connected ce=9 csn=10 irq=2 led_rx=8 led_tx=A1
 ```
 
 `fw` is the firmware version, `api` the command-protocol version — the host can
 check it and refuse to talk to an incompatible build. When a wiring is loaded the
-pins are spelled out, because a stored-but-wrong pin is otherwise invisible, and
-`cetest=` reports the [CE self-test](#the-ce-self-test). `hw` states where the
-wiring came from:
+pins are spelled out, because a stored-but-wrong pin is otherwise invisible.
 
 | `hw=` | Meaning |
 |---|---|
 | `none` | nothing stored; `hwset` required |
-| `eeprom` | wiring restored from EEPROM, radio is up |
-| `eeprom-failed` | a wiring is stored but failed to come up (see `cetest=`) |
+| `connected` | wiring restored, chip answers over SPI **and** [CE keys it](#the-ce-self-test) |
+| `failed` | a wiring is stored but did not come up |
+
+Provenance is not reported because it carries no information: at boot a wiring
+can only have come from EEPROM. Likewise `connected` covers both checks rather
+than reporting them separately. When a wiring fails, the reason is stated in a
+`WARN` line ahead of the greeting:
+
+```
+WARN stored wiring: ce pin does not key the radio
+NRF24SNIFFER fw=2.3.0 api=2 state=nohw hw=failed ce=8 csn=10 irq=2 led_rx=8 led_tx=A1
+```
 
 ### Commands
 
@@ -105,9 +113,8 @@ debug.
 
 Every successful `hwset` is **stored in EEPROM** and restored on the next boot,
 so a dongle keeps working without the host restating its wiring. This is the one
-piece of remembered state. The greeting reports both the provenance and the pins
-themselves, so it never becomes hidden state; `hwclear` returns the dongle to a
-virgin state.
+piece of remembered state, and it never becomes hidden state: the greeting spells
+the pins out on every connect. `hwclear` returns the dongle to a virgin state.
 
 ### The CE self-test
 
@@ -121,7 +128,6 @@ restored from EEPROM) and on every `hwset`, it transmits one packet and checks
 that the radio actually keyed up:
 
 ```
-NRF24SNIFFER fw=2.2.0 api=2 state=unconfigured hw=eeprom cetest=ok ce=9 csn=10 ...
 > hwset ce=7 csn=10 irq=2 led_rx=8 led_tx=A1
 ERR ce pin does not key the radio (spi ok) - check the ce wiring
 ```
@@ -163,9 +169,9 @@ the sender's address array — `pipe1=42:54:48:4D:45` is ASCII `"BTHME"`.
 ### Example session
 
 ```
-NRF24SNIFFER fw=2.2.0 api=2 state=nohw hw=none
+NRF24SNIFFER fw=2.3.0 api=2 state=nohw hw=none
 > hwset ce=9 csn=10 irq=2 led_rx=8 led_tx=A1
-OK hw chip=connected cetest=ok saved
+OK hw connected saved
 > listen ch=100 rate=250 crc=16 aw=5 pa=low ack=0 dpl=1 pipe1=42:54:48:4D:45
 OK listening
 RX p1 len=16 4D565202D2FC44004501350C8B093A01

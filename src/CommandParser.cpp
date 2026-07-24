@@ -182,7 +182,7 @@ void CommandParser::handleHwset(char *args) {
   // Persist what is actually in use (setHardware may have downgraded irq), so
   // the dongle comes back on the same wiring after a reset.
   HwStore::save(radio_.hw());
-  Serial.println(F("OK hw chip=connected cetest=ok saved"));
+  Serial.println(F("OK hw connected saved"));
 }
 
 void CommandParser::handleListen(char *args) {
