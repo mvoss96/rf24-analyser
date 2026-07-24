@@ -4,7 +4,8 @@ const $ = (id) => document.getElementById(id);
 const MAX_ROWS = 5000;
 
 let connected = false;
-let frames = [];      // decoded frame objects, parallel to the table rows
+let frames = [];      // every decoded frame, in arrival order
+let groups = [];      // table rows: frames folded by event identity
 let selected = -1;
 
 // --- helpers ---------------------------------------------------------------
@@ -148,53 +149,120 @@ async function sendSequence(lines, gap = 150) {
 
 // --- frame table -----------------------------------------------------------
 
-function addRow(frame) {
-  const tbody = $("rows");
-  const tr = document.createElement("tr");
-  if (frame.flagged) tr.className = "flagged";
+// A row is one event, not one frame. A sender repeating an event three times
+// produced three near-identical rows that pushed everything else off screen and
+// made the interesting number - how far apart the repeats were - something you
+// had to reconstruct by subtracting timestamps.
+const GROUP_WINDOW_MS = 2000;
+
+function groupable(frame) {
+  if (!$("group").checked || !groups.length) return null;
+  const last = groups[groups.length - 1];
+  if (last.identity !== frame.identity) return null;
+  // A window as well as an identity: a sender stuck on one packet id must not
+  // collapse minutes of traffic into a row that hides when any of it happened.
+  const first = last.frames[0];
+  if (frame.deviceMs !== null && first.deviceMs !== null) {
+    return frame.deviceMs - first.deviceMs <= GROUP_WINDOW_MS ? last : null;
+  }
+  return last;
+}
+
+function spread(group) {
+  const first = group.frames[0], last = group.frames[group.frames.length - 1];
+  if (first.deviceMs === null || last.deviceMs === null) return null;
+  return last.deviceMs - first.deviceMs;
+}
+
+function paintRow(group) {
+  const [head] = group.frames;
+  const count = group.frames.length;
+  const badge = count > 1 ? `  ×${count}` + (spread(group) !== null ? ` (${spread(group)} ms)` : "") : "";
   const cells = [
-    [frame.time, "c-time"],
-    [frame.delta === null ? "" : frame.delta.toFixed(1), "c-delta"],
-    [frame.pipe, "c-pipe"],
-    [frame.len, "c-len"],
-    [frame.summary, ""],
+    [head.time, "c-time"],
+    [group.gap === null ? "" : group.gap.toFixed(1), "c-delta"],
+    [head.pipe, "c-pipe"],
+    [head.len, "c-len"],
+    [head.summary + badge, ""],
   ];
-  for (const [text, cls] of cells) {
-    const td = document.createElement("td");
+  const tds = group.tr.children;
+  cells.forEach(([text, cls], i) => {
+    const td = tds[i] || group.tr.appendChild(document.createElement("td"));
     if (cls) td.className = cls;
     td.textContent = text;
-    tr.appendChild(td);
-  }
-  const index = frames.length;
-  frames.push(frame);
-  tr.addEventListener("click", () => select(index));
-  tbody.appendChild(tr);
+  });
+  group.tr.classList.toggle("flagged", head.flagged);
+  group.tr.classList.toggle("repeated", count > 1);
+}
 
-  while (tbody.children.length > MAX_ROWS) tbody.removeChild(tbody.firstChild);
+function addRow(frame) {
+  frames.push(frame);
+
+  const existing = groupable(frame);
+  if (existing) {
+    existing.frames.push(frame);
+    paintRow(existing);
+  } else {
+    const tbody = $("rows");
+    const previous = groups[groups.length - 1];
+    // The gap between events, measured head to head. Between two rows the
+    // server's frame-to-frame delta would be the gap to the previous event's
+    // last repeat, which is not what the column claims to show.
+    let gap = frame.delta;
+    if (previous && frame.deviceMs !== null && previous.frames[0].deviceMs !== null) {
+      gap = frame.deviceMs - previous.frames[0].deviceMs;
+    }
+    const group = { identity: frame.identity, frames: [frame], gap,
+                    tr: document.createElement("tr") };
+    const index = groups.length;
+    groups.push(group);
+    group.tr.addEventListener("click", () => select(index));
+    paintRow(group);
+    tbody.appendChild(group.tr);
+    while (tbody.children.length > MAX_ROWS) tbody.removeChild(tbody.firstChild);
+  }
+
   $("empty").hidden = true;
-  $("count").textContent = `${frames.length} frame${frames.length === 1 ? "" : "s"}`;
+  updateCount();
   if ($("follow").checked) {
     const wrap = document.querySelector(".table-wrap");
     wrap.scrollTop = wrap.scrollHeight;
   }
 }
 
+function updateCount() {
+  const total = frames.length;
+  const text = `${total} frame${total === 1 ? "" : "s"}`;
+  $("count").textContent =
+    groups.length && groups.length !== total ? `${groups.length} events · ${text}` : text;
+}
+
 function select(index) {
-  const frame = frames[index];
-  if (!frame) return;
+  const group = groups[index];
+  if (!group) return;
   selected = index;
   for (const tr of $("rows").children) tr.classList.remove("sel");
-  const offset = frames.length - $("rows").children.length;
+  const offset = groups.length - $("rows").children.length;
   const row = $("rows").children[index - offset];
   if (row) row.classList.add("sel");
-  $("detail").textContent = frame.detail.join("\n");
-  $("raw").textContent = frame.hex.join("\n");
+
+  const [head] = group.frames;
+  const lines = [...head.detail];
+  if (group.frames.length > 1) {
+    const gaps = group.frames.slice(1).map((f, i) =>
+      f.deviceMs !== null && group.frames[i].deviceMs !== null
+        ? `${f.deviceMs - group.frames[i].deviceMs} ms` : "?");
+    lines.push("", `  repeats   : ${group.frames.length} frames, ${gaps.join(" + ")} apart`);
+  }
+  $("detail").textContent = lines.join("\n");
+  $("raw").textContent = head.hex.join("\n");
   showTab("detail");
 }
 
 function rebuild(list) {
   $("rows").replaceChildren();
   frames = [];
+  groups = [];
   for (const frame of list) addRow(frame);
   if (!list.length) {
     $("empty").hidden = false;
@@ -209,7 +277,48 @@ function showTab(name) {
     tab.classList.toggle("active", tab.dataset.tab === name);
   }
   $("panel-detail").hidden = name !== "detail";
+  $("panel-scan").hidden = name !== "scan";
   $("panel-log").hidden = name !== "log";
+}
+
+// --- channel scan ----------------------------------------------------------
+
+const CHANNELS = 126;   // 0..125 = 2400..2525 MHz
+
+function renderScan(event) {
+  const note = $("scan-note");
+  if (event.state === "running") {
+    note.textContent = "Scanning all 126 channels…  (reception is paused meanwhile)";
+    $("scan-chart").replaceChildren();
+    showTab("scan");
+    return;
+  }
+
+  const hits = event.hits || {};
+  const busiest = Math.max(1, ...Object.values(hits).map(Number));
+  const listening = Number($("ch").value);
+
+  const chart = $("scan-chart");
+  chart.replaceChildren();
+  for (let ch = 0; ch < CHANNELS; ch++) {
+    const count = Number(hits[ch] || 0);
+    const bar = document.createElement("div");
+    bar.className = "scan-bar" + (ch === listening ? " here" : "");
+    bar.style.setProperty("--h", `${Math.round((count / busiest) * 100)}%`);
+    bar.title = `ch ${ch} — ${2400 + ch} MHz — ${count}/${event.passes} passes`
+                + (ch === listening ? " (listening here)" : "");
+    chart.appendChild(bar);
+  }
+
+  const found = Object.keys(hits).length;
+  note.textContent = found
+    ? `${found} of 126 channels showed activity in ${event.passes} passes`
+      + `  ·  busiest ${busiest}/${event.passes}`
+    // Not the same as "nothing is transmitting": the detector only reports
+    // carriers above roughly -64 dBm, and a scan is over in about a second.
+    : `No channel exceeded the detector threshold in ${event.passes} passes.`
+      + " The scan takes about a second — a sender that transmits every"
+      + " minute is very unlikely to be caught by it.";
 }
 
 // --- event stream ----------------------------------------------------------
@@ -238,6 +347,8 @@ function handle(event) {
     setLinkControls(connected);
     const text = event.state || (connected ? "connected" : "not connected");
     setState(text, stateClass(text, connected));
+  } else if (event.type === "scan") {
+    renderScan(event);
   } else if (event.type === "parser") {
     // Another tab switched decoder. Matching selects first stops this from
     // bouncing: the request below publishes the same event straight back.
@@ -375,11 +486,14 @@ function init() {
     rebuild([]);
   });
 
+  // Regrouping is a pure view change, so it works on what is already here.
+  $("group").addEventListener("change", () => rebuild(frames.slice()));
+
   document.addEventListener("keydown", (e) => {
     if (e.key === "ArrowDown" || e.key === "ArrowUp") {
       if (document.activeElement.tagName === "INPUT") return;
       e.preventDefault();
-      select(Math.min(frames.length - 1, Math.max(0, selected + (e.key === "ArrowDown" ? 1 : -1))));
+      select(Math.min(groups.length - 1, Math.max(0, selected + (e.key === "ArrowDown" ? 1 : -1))));
     }
   });
 

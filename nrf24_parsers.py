@@ -35,6 +35,17 @@ class Parser:
         """List of text lines describing the frame in full."""
         raise NotImplementedError
 
+    def identity(self, data):
+        """A string identifying the *event* this frame carries.
+
+        Senders repeat one event as several frames. Frames sharing an identity
+        are retransmissions of the same thing, and the UI folds them into one
+        row. Identical bytes are the safe default; a protocol with a packet
+        counter should say so instead, because that is what the sender means by
+        "the same event".
+        """
+        return bytes(data).hex()
+
 
 _REGISTRY = {}
 
@@ -171,6 +182,13 @@ class NRF24SmartParser(Parser):
         uuid = ":".join(f"{b:02X}" for b in data[1:5])
         kind = SMART_MSG_TYPES.get(data[5], f"type{data[5]}")
         return data[0], uuid, kind
+
+    def identity(self, data):
+        """Device packets carry MSG_NUM; nothing else here counts its messages."""
+        if len(data) >= 12 and self._shape(data)[0] == "device":
+            uuid = ":".join(f"{b:02X}" for b in data[1:5])
+            return f"{uuid}#{data[9]}"
+        return super().identity(data)
 
     # -- Parser API --
 
@@ -351,6 +369,29 @@ class BTHomeParser(Parser):
 
     # -- Parser API --
 
+    @staticmethod
+    def _packet_id(sensors):
+        for key, value in sensors.items():
+            if getattr(key, "key", None) == "packet_id":
+                return value.native_value
+        return None
+
+    def identity(self, data):
+        """sender + packet id: what the sender itself calls one event.
+
+        Falling back to the raw bytes would work for a plain retransmission, but
+        the packet id is the sender's own statement about it and survives a
+        frame that differs in some byte while describing the same event.
+        """
+        split = self._split(data)
+        if split is None:
+            return super().identity(data)
+        sender, _info, payload = split
+        packet_id = self._packet_id(self._parse_objects(payload)[0])
+        if packet_id is None:
+            return super().identity(data)
+        return ":".join(f"{b:02X}" for b in sender) + f"#{packet_id}"
+
     def summary(self, data):
         split = self._split(data)
         if split is None:
@@ -359,19 +400,25 @@ class BTHomeParser(Parser):
         sender_hex = ":".join(f"{b:02X}" for b in sender)
 
         sensors, events, _units, records = self._parse_objects(payload)
+        packet_id = self._packet_id(sensors)
+
         parts = []
         for value in events.values():
             props = value.event_properties or {}
             extra = " " + ", ".join(f"{k}={v}" for k, v in props.items()) if props else ""
             parts.append(f"{value.name}: {value.event_type}{extra}")
         if not parts:
-            for value in sensors.values():
-                parts.append(f"{value.name} {value.native_value}")
+            # Sensor readings, minus the packet id - it is shown as #n instead of
+            # sitting in the middle of the measurements it is not one of.
+            for key, value in sensors.items():
+                if getattr(key, "key", None) != "packet_id":
+                    parts.append(f"{value.name} {value.native_value}")
         if not parts:
             return f"{sender_hex}  !! rejected by bthome-ble"
 
+        head = sender_hex + (f"  #{packet_id}" if packet_id is not None else "")
         flagged = any(level >= logging.WARNING for level, _ in records)
-        return f"{sender_hex}  " + "; ".join(parts) + ("  !!" if flagged else "")
+        return f"{head}  " + "; ".join(parts) + ("  !!" if flagged else "")
 
     def detail(self, data):
         if len(data) < 4:

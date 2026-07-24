@@ -79,6 +79,7 @@ class Session:
         # the greeting only arrives once, at reset.
         self.greeting = None
         self.state_text = "not connected"
+        self.scan = None
         self._pump = None
         self._stop = threading.Event()
 
@@ -160,26 +161,31 @@ class Session:
 
     def decoded_history(self):
         """Every retained frame, decoded with the current parser."""
-        return [self._decode(stamp, delta, pipe, data)
-                for stamp, delta, pipe, data in self.frames]
+        return [self._decode(*frame) for frame in self.frames]
 
-    def _decode(self, stamp, delta, pipe, data):
+    def _decode(self, stamp, delta, device_ms, pipe, data):
         try:
             summary = self.parser.summary(data)
             detail = self.parser.detail(data)
+            identity = self.parser.identity(data)
         except Exception as exc:
             summary, detail = f"(decoder error: {exc})", [str(exc)]
+            identity = bytes(data).hex()
         flagged = "!!" in summary or "rejected" in summary.lower()
         return {
             "type": "frame",
             "time": stamp,
             "delta": delta,
+            "deviceMs": device_ms,
             "pipe": pipe,
             "len": len(data),
             "summary": summary,
             "detail": detail,
             "hex": parsers.hexdump(data),
             "flagged": flagged,
+            # Retransmissions of one event share this; the UI folds them into a
+            # single row. Decoder-specific, so it is recomputed on every switch.
+            "identity": identity,
         }
 
     # -- serial pump --
@@ -211,8 +217,8 @@ class Session:
             else:
                 delta = None if self.last_stamp is None else round((now - self.last_stamp) * 1000, 1)
             self.last_stamp = now
-            self.frames.append((stamp, delta, pipe, data))
-            self.hub.publish(self._decode(stamp, delta, pipe, data))
+            self.frames.append((stamp, delta, device_ms, pipe, data))
+            self.hub.publish(self._decode(stamp, delta, device_ms, pipe, data))
             return
 
         greeting = dongle.parse_greeting(line)
@@ -224,6 +230,22 @@ class Session:
             self.state_text = greeting.get("state", "connected")
             self.hub.publish(event)
             return
+
+        # A scan answers with one line per channel that had a hit, so a quiet
+        # band produces nothing between "passes=" and "done". Collected into one
+        # event, an empty result can say it is empty instead of looking broken.
+        if line.startswith("SCAN passes="):
+            self.scan = {"passes": int(line.split("=", 1)[1]), "hits": {}}
+            self.hub.publish({"type": "scan", "state": "running"})
+            return
+        if line.startswith("SCAN ch="):
+            hit = dongle.parse_scan(line)
+            if hit is not None and self.scan is not None:
+                self.scan["hits"][hit[0]] = hit[1]
+            return
+        if line.startswith("OK scan done") and self.scan is not None:
+            self.hub.publish({"type": "scan", "state": "done", **self.scan})
+            self.scan = None
 
         if line.startswith("OK listening"):
             self.state_text = "listening"

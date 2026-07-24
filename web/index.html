@@ -34,6 +34,8 @@
       <select id="decoder" class="control"></select>
       <span class="spacer"></span>
       <span id="count" class="dim">0 frames</span>
+      <label class="check" title="Fold a sender's retransmissions of one event into a single row">
+        <input type="checkbox" id="group" checked> Group repeats</label>
       <label class="check"><input type="checkbox" id="follow" checked> Follow</label>
       <button id="clear" class="btn ghost small">Clear</button>
     </div>
@@ -58,6 +60,7 @@
   <div class="bottom">
     <div class="tabs">
       <button class="tab active" data-tab="detail">Detail</button>
+      <button class="tab" data-tab="scan">Scan</button>
       <button class="tab" data-tab="log">Log</button>
     </div>
 
@@ -72,6 +75,11 @@
           <pre id="raw" class="mono"></pre>
         </div>
       </div>
+    </div>
+
+    <div class="panel" id="panel-scan" hidden>
+      <div class="scan-head"><span id="scan-note" class="dim">No scan yet — press <b>Scan</b>.</span></div>
+      <div class="scan-chart" id="scan-chart"></div>
     </div>
 
     <div class="panel" id="panel-log" hidden>

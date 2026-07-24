@@ -262,6 +262,12 @@ void RadioController::scan(uint16_t passes) {
   bool wasListening = listening_;
   radio_.stopListening();
 
+  // Announced before the sweep, not after: the sweep blocks for about a second
+  // with nothing on the wire, and a host that only hears about it afterwards
+  // cannot tell that from a command that was ignored.
+  Serial.print(F("SCAN passes="));
+  Serial.println(passes);
+
   for (uint16_t pass = 0; pass < passes; pass++) {
     for (uint8_t ch = 0; ch <= 125; ch++) {
       radio_.setChannel(ch);
@@ -272,8 +278,6 @@ void RadioController::scan(uint16_t passes) {
     }
   }
 
-  Serial.print(F("SCAN passes="));
-  Serial.println(passes);
   for (uint8_t ch = 0; ch <= 125; ch++) {
     if (counts[ch]) {
       Serial.print(F("SCAN ch="));
