@@ -162,6 +162,11 @@ const RADIO_COLUMNS = [
   { key: "delta", label: "Δ ms", cls: "c-delta" },
   { key: "pipe", label: "Pipe", cls: "c-pipe" },
   { key: "len", label: "Len", cls: "c-len" },
+  // How many times the sender repeated this event, and over what span. Reception
+  // metadata like the rest of this list - appended to the decoder's last column
+  // it read as though the protocol had said it.
+  { key: "repeats", label: "Repeats", cls: "c-rep",
+    title: "Frames folded into this row, and the span from the first to the last" },
 ];
 let decoderColumns = [];
 
@@ -169,10 +174,11 @@ function setColumns(columns) {
   decoderColumns = columns || [];
   const head = $("head");
   head.replaceChildren();
-  for (const { label, cls } of RADIO_COLUMNS) {
+  for (const { label, cls, title } of RADIO_COLUMNS) {
     const th = document.createElement("th");
     th.className = cls;
     th.textContent = label;
+    if (title) th.title = title;
     head.appendChild(th);
   }
   for (const column of decoderColumns) {
@@ -211,18 +217,15 @@ function spread(group) {
 function paintRow(group) {
   const [head] = group.frames;
   const count = group.frames.length;
-  const badge = count > 1 ? `  ×${count}` + (spread(group) !== null ? ` (${spread(group)} ms)` : "") : "";
+  const ms = spread(group);
   const cells = [
     [head.time, "c-time"],
     [group.gap === null ? "" : group.gap.toFixed(1), "c-delta"],
     [head.pipe, "c-pipe"],
     [head.len, "c-len"],
+    [count > 1 ? `×${count}` + (ms !== null ? `  ${ms} ms` : "") : "", "c-rep"],
   ];
-  decoderColumns.forEach((column, i) => {
-    const text = head.cells[column.key] ?? "";
-    // The repeat badge belongs on the last column, whatever the decoder made it.
-    cells.push([i === decoderColumns.length - 1 ? text + badge : text, ""]);
-  });
+  for (const column of decoderColumns) cells.push([head.cells[column.key] ?? "", ""]);
 
   const tds = group.tr.children;
   while (tds.length > cells.length) group.tr.removeChild(group.tr.lastChild);

@@ -299,13 +299,16 @@ tbody tr:nth-child(even) { background: var(--row-alt); }
 tbody tr:hover { background: var(--accent-bg); cursor: default; }
 tbody tr.sel { background: var(--accent-bg); box-shadow: inset 2px 0 0 var(--accent); }
 tbody tr.flagged td { color: var(--danger); }
-tbody tr.repeated td:last-child { color: var(--text); }
+/* The one piece of metadata worth reading at full contrast: it says this row
+   stands for more than one frame. */
+tbody tr.repeated td.c-rep { color: var(--text); }
 .c-time { width: 96px; }
 .c-delta { width: 74px; text-align: right; }
 .c-pipe { width: 52px; }
 .c-len  { width: 52px; }
+.c-rep  { width: 92px; }
 td.c-delta { text-align: right; color: var(--text-dim); }
-td.c-pipe, td.c-len { color: var(--text-dim); }
+td.c-pipe, td.c-len, td.c-rep { color: var(--text-dim); }
 
 .empty { padding: 24px; color: var(--text-faint); text-align: center; }
 
