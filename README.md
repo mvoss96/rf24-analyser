@@ -47,8 +47,8 @@ pio run -e nano -t upload
 ```
 
 If that ends in an avrdude sync timeout, use `-e nano_old`. Only dependency is
-`nrf24/RF24` (TMRh20), pulled automatically. Build size: **flash ~11.4 KB (37%)**,
-**RAM ~777 B (38%)**.
+`nrf24/RF24` (TMRh20), pulled automatically. Build size: **flash ~12.7 KB (41%)**,
+**RAM ~795 B (39%)**.
 
 ## Serial protocol
 
@@ -65,13 +65,14 @@ terminal works unconfigured. Every command is answered with `OK ...` or `ERR ...
 ### Greeting
 
 ```
-NRF24SNIFFER fw=2.1.0 api=2 state=unconfigured hw=eeprom ce=9 csn=10 irq=2 led_rx=8 led_tx=A1
+NRF24SNIFFER fw=2.2.0 api=2 state=unconfigured hw=eeprom cetest=ok ce=9 csn=10 irq=2 led_rx=8 led_tx=A1
 ```
 
 `fw` is the firmware version, `api` the command-protocol version — the host can
 check it and refuse to talk to an incompatible build. When a wiring is loaded the
-pins are spelled out, because a stored-but-wrong pin is otherwise invisible (see
-[Verifying the wiring](#verifying-the-wiring)). `hw` states where it came from:
+pins are spelled out, because a stored-but-wrong pin is otherwise invisible, and
+`cetest=` reports the [CE self-test](#the-ce-self-test). `hw` states where the
+wiring came from:
 
 | `hw=` | Meaning |
 |---|---|
@@ -162,9 +163,9 @@ the sender's address array — `pipe1=42:54:48:4D:45` is ASCII `"BTHME"`.
 ### Example session
 
 ```
-NRF24SNIFFER fw=2.0.0 api=2 state=nohw
+NRF24SNIFFER fw=2.2.0 api=2 state=nohw hw=none
 > hwset ce=9 csn=10 irq=2 led_rx=8 led_tx=A1
-OK hw chip=connected
+OK hw chip=connected cetest=ok saved
 > listen ch=100 rate=250 crc=16 aw=5 pa=low ack=0 dpl=1 pipe1=42:54:48:4D:45
 OK listening
 RX p1 len=16 4D565202D2FC44004501350C8B093A01
