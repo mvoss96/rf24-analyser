@@ -19,9 +19,10 @@
 #include <Arduino.h>
 #include "RadioController.h"
 #include "CommandParser.h"
+#include "HwStore.h"
 
 // Firmware version, and the command-protocol version the host can check.
-#define FW_VERSION "2.0.0"
+#define FW_VERSION "2.1.0"
 #define API_VERSION 2
 
 static RadioController g_radio;
@@ -32,10 +33,21 @@ void setup() {
   // fast enough that printing a burst of frames cannot overrun the RX FIFO.
   Serial.begin(500000);
 
+  // A stored wiring is restored, but never silently: the greeting states where
+  // the pins came from, and a chip that does not answer on them drops back to
+  // nohw rather than pretending to be ready.
+  const __FlashStringHelper *hwSource = F("none");
+  HwConfig stored;
+  if (HwStore::load(stored)) {
+    hwSource = g_radio.setHardware(stored) ? F("eeprom") : F("eeprom-failed");
+  }
+
   Serial.print(F("NRF24SNIFFER fw=" FW_VERSION " api="));
   Serial.print(API_VERSION);
   Serial.print(F(" state="));
-  Serial.println(g_radio.stateName());
+  Serial.print(g_radio.stateName());
+  Serial.print(F(" hw="));
+  Serial.println(hwSource);
 }
 
 void loop() {

@@ -1,4 +1,5 @@
 #include "CommandParser.h"
+#include "HwStore.h"
 
 // --- Small parsing helpers -------------------------------------------------
 
@@ -155,7 +156,10 @@ void CommandParser::handleHwset(char *args) {
     err(F("chip not responding - check ce/csn wiring and power"));
     return;
   }
-  Serial.println(F("OK hw chip=connected"));
+  // Persist what is actually in use (setHardware may have downgraded irq), so
+  // the dongle comes back on the same wiring after a reset.
+  HwStore::save(radio_.hw());
+  Serial.println(F("OK hw chip=connected saved"));
 }
 
 void CommandParser::handleListen(char *args) {
@@ -272,6 +276,9 @@ void CommandParser::dispatch(char *line) {
 
   if (strcmp(cmd, "hwset") == 0) {
     handleHwset(rest);
+  } else if (strcmp(cmd, "hwclear") == 0) {
+    HwStore::clear();
+    Serial.println(F("OK hw cleared (takes effect on reset)"));
   } else if (strcmp(cmd, "listen") == 0) {
     handleListen(rest);
   } else if (strcmp(cmd, "stop") == 0) {
@@ -294,7 +301,7 @@ void CommandParser::dispatch(char *line) {
   } else if (strcmp(cmd, "help") == 0) {
     Serial.println(F("hwset ce=<pin> csn=<pin> [irq=<pin|none>] [led_rx=<pin|none>] [led_tx=<pin|none>]"));
     Serial.println(F("listen ch= rate= crc= aw= pa= ack= dpl= [plsize=] pipeN=<addr>"));
-    Serial.println(F("listen | stop | info | scan [passes] | repeats <0|1>"));
+    Serial.println(F("hwclear | listen | stop | info | scan [passes] | repeats <0|1>"));
     Serial.println(F("tx <addr> <hex...> [ack|noack]"));
     ok();
   } else {

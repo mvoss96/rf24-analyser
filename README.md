@@ -19,6 +19,9 @@ anything happens:
 nohw ──hwset──► unconfigured ──listen k=v...──► listening ◄──stop──► idle
 ```
 
+(A dongle with a stored wiring boots straight into `unconfigured` — see
+[Greeting](#greeting). The radio parameters are never remembered.)
+
 Two reasons. First, a sniffer that quietly comes up on some compiled-in channel
 invites the worst kind of error: concluding *"nothing is being transmitted"* when
 in truth the wrong question was asked. Every radio parameter in a session log is
@@ -62,17 +65,25 @@ terminal works unconfigured. Every command is answered with `OK ...` or `ERR ...
 ### Greeting
 
 ```
-NRF24SNIFFER fw=2.0.0 api=2 state=nohw
+NRF24SNIFFER fw=2.1.0 api=2 state=unconfigured hw=eeprom
 ```
 
 `fw` is the firmware version, `api` the command-protocol version — the host can
-check it and refuse to talk to an incompatible build.
+check it and refuse to talk to an incompatible build. `hw` states where the
+wiring came from:
+
+| `hw=` | Meaning |
+|---|---|
+| `none` | nothing stored; `hwset` required |
+| `eeprom` | wiring restored from EEPROM, radio is up |
+| `eeprom-failed` | a wiring is stored but the chip did not answer on it |
 
 ### Commands
 
 | Command | Meaning |
 |---|---|
-| `hwset ce=<pin> csn=<pin> [irq=<pin\|none>] [led_rx=<pin\|none>] [led_tx=<pin\|none>]` | define the wiring and bring the radio up |
+| `hwset ce=<pin> csn=<pin> [irq=<pin\|none>] [led_rx=<pin\|none>] [led_tx=<pin\|none>]` | define the wiring, bring the radio up, store it |
+| `hwclear` | forget the stored wiring (effective on reset) |
 | `listen <k=v>...` | apply a complete radio config and start receiving |
 | `listen` | resume with the retained config |
 | `stop` | stop receiving, keep the config |
@@ -84,9 +95,18 @@ check it and refuse to talk to an incompatible build.
 
 **`hwset`** — `ce` and `csn` are mandatory, the rest default to `none`. Pins are
 plain numbers or `A0`–`A7`. Re-issuing it is allowed while not listening; it
-discards the radio configuration. On the ATmega328P only D2/D3 can raise
-interrupts — any other `irq` pin is accepted but degrades to polling with a
-warning:
+discards the radio configuration.
+
+Every successful `hwset` is **stored in EEPROM** and restored on the next boot,
+so a dongle keeps working without the host restating its wiring. This is the one
+piece of remembered state, and it is deliberate: pins are a physical property of
+the board, and unlike radio parameters a wrong pin fails loudly — the chip simply
+does not answer — so remembering them cannot cause a silently wrong result. The
+greeting always reports the provenance, so it never becomes hidden state. Use
+`hwclear` to return to a virgin dongle.
+
+On the ATmega328P only D2/D3 can raise interrupts — any other `irq` pin is
+accepted but degrades to polling with a warning:
 
 ```
 WARN irq pin 7 is not interrupt-capable, falling back to polling
@@ -226,9 +246,11 @@ nrf24-sniffer/
   platformio.ini              build environments (nano / nano_old)
   include/RadioController.h   radio wrapper, HwConfig + RadioConfig
   include/CommandParser.h     serial command parser
+  include/HwStore.h           EEPROM persistence for the wiring
   src/RadioController.cpp     hardware setup, RX drain, tx, scan, info
   src/CommandParser.cpp       line protocol dispatch
-  src/main.cpp                greeting, super-loop
+  src/HwStore.cpp             magic + checksum guarded EEPROM record
+  src/main.cpp                greeting, wiring restore, super-loop
   nrf24term.py                serial terminal + BTHome decoder
   requirements.txt            pyserial
 ```
