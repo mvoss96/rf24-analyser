@@ -1,0 +1,147 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>nrf24-sniffer</title>
+<link rel="stylesheet" href="/app.css">
+</head>
+<body>
+
+<header class="topbar">
+  <span class="brand">nrf24<span class="dim">-sniffer</span></span>
+
+  <select id="port" class="control" aria-label="Serial port"></select>
+  <button id="refresh" class="btn ghost" title="Rescan serial ports">Rescan</button>
+  <button id="connect" class="btn primary">Connect</button>
+
+  <span id="state" class="pill idle"><i class="dot"></i><span id="state-text">not connected</span></span>
+
+  <span class="spacer"></span>
+
+  <label class="inline-label" for="decoder">Decoder</label>
+  <select id="decoder" class="control"></select>
+</header>
+
+<section class="setup">
+  <div class="setup-head">
+    <button id="setup-toggle" class="btn ghost" aria-expanded="false">
+      <span id="setup-caret">▸</span> Setup
+    </button>
+    <code id="summary" class="summary"></code>
+    <span class="spacer"></span>
+    <button class="btn ghost" data-cmd="stop">Stop</button>
+    <button class="btn ghost" data-cmd="info">Info</button>
+    <button class="btn ghost" data-cmd="scan">Scan</button>
+    <button id="start" class="btn primary">Start</button>
+  </div>
+
+  <div id="setup-body" class="setup-body" hidden>
+    <fieldset>
+      <legend>Wiring</legend>
+      <div class="fields" id="wiring">
+        <label>ce<input id="ce" value="9" size="3"></label>
+        <label>csn<input id="csn" value="10" size="3"></label>
+        <label>irq<input id="irq" value="2" size="3"></label>
+        <label>led_rx<input id="led_rx" value="8" size="4"></label>
+        <label>led_tx<input id="led_tx" value="A1" size="4"></label>
+      </div>
+      <button class="btn ghost small" data-cmd="hwclear">Forget stored wiring</button>
+    </fieldset>
+
+    <fieldset>
+      <legend>Radio</legend>
+      <div class="fields">
+        <label>ch<input id="ch" value="100" size="3"></label>
+        <label>rate
+          <select id="rate"><option>250</option><option>1000</option><option>2000</option></select>
+        </label>
+        <label>crc
+          <select id="crc"><option>0</option><option>8</option><option selected>16</option></select>
+        </label>
+        <label>aw
+          <select id="aw"><option>3</option><option>4</option><option selected>5</option></select>
+        </label>
+        <label>pa
+          <select id="pa"><option>min</option><option selected>low</option><option>high</option><option>max</option></select>
+        </label>
+        <label>plsize<input id="plsize" value="32" size="3"></label>
+        <label class="check"><input type="checkbox" id="ack"> ack</label>
+        <label class="check"><input type="checkbox" id="dpl" checked> dpl</label>
+        <label class="check"><input type="checkbox" id="repeats" checked> show repeats</label>
+      </div>
+    </fieldset>
+
+    <fieldset>
+      <legend>Pipe addresses</legend>
+      <div class="fields column" id="pipes">
+        <label>1<input id="pipe1" value="42:54:48:4D:45" size="17"></label>
+      </div>
+      <div class="fields column" id="pipes-more" hidden>
+        <label>0<input id="pipe0" size="17"></label>
+        <label>2<input id="pipe2" size="17"></label>
+        <label>3<input id="pipe3" size="17"></label>
+        <label>4<input id="pipe4" size="17"></label>
+        <label>5<input id="pipe5" size="17"></label>
+      </div>
+      <button id="pipes-toggle" class="btn ghost small">more</button>
+    </fieldset>
+  </div>
+</section>
+
+<main>
+  <div class="table-wrap">
+    <table id="frames">
+      <thead>
+        <tr>
+          <th class="c-time">Time</th>
+          <th class="c-delta">Δ ms</th>
+          <th class="c-pipe">Pipe</th>
+          <th class="c-len">Len</th>
+          <th>Decoded</th>
+        </tr>
+      </thead>
+      <tbody id="rows"></tbody>
+    </table>
+    <p id="empty" class="empty">No frames yet — connect, then <b>Start</b>.</p>
+  </div>
+
+  <div class="bottom">
+    <div class="tabs">
+      <button class="tab active" data-tab="detail">Detail</button>
+      <button class="tab" data-tab="log">Log</button>
+    </div>
+
+    <div class="panel" id="panel-detail">
+      <div class="split">
+        <div class="pane">
+          <div class="pane-title">decoded</div>
+          <pre id="detail" class="mono"></pre>
+        </div>
+        <div class="pane">
+          <div class="pane-title">raw</div>
+          <pre id="raw" class="mono"></pre>
+        </div>
+      </div>
+    </div>
+
+    <div class="panel" id="panel-log" hidden>
+      <pre id="log" class="mono log"></pre>
+      <form id="cmdform" class="cmdrow">
+        <input id="cmd" class="control grow" placeholder="tx 4254484D45 4D565202 noack" autocomplete="off">
+        <button class="btn ghost" type="submit">Send</button>
+      </form>
+    </div>
+  </div>
+</main>
+
+<footer class="statusbar">
+  <button id="clear" class="btn ghost small">Clear frames</button>
+  <label class="check"><input type="checkbox" id="follow" checked> Follow</label>
+  <span class="spacer"></span>
+  <span id="count" class="dim">0 frames</span>
+</footer>
+
+<script src="/app.js"></script>
+</body>
+</html>

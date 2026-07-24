@@ -6,8 +6,8 @@ A debug / sniffer tool for raw nRF24L01 traffic, built to validate and debug the
 
 1. **PlatformIO firmware** (`platformio.ini`, `src/`, `include/`) for an
    ATmega328P + CH340 + nRF24L01 USB dongle.
-2. **[`nrf24gui.py`](#gui)** — a tkinter GUI: every setting, a frame table with a
-   detail pane, and a switchable decoder.
+2. **[`nrf24web.py`](#web-ui)** — a browser UI: every setting, a live frame table
+   with a detail pane, and a switchable decoder.
 3. **`nrf24term.py`** — a serial terminal / REPL for the same protocol.
 
 Both front ends share the serial client (`nrf24_dongle.py`) and the decoder
@@ -303,31 +303,39 @@ loss directly. Log a session (`:log run.txt`) and count distinct ids and gaps:
   interference is **bursty** and all repeats fall inside one outage. Spreading the
   sender's repeats further apart in time helps more than sending more of them.
 
-## GUI
+## Web UI
 
 ```bash
-python nrf24gui.py
+python nrf24web.py --port COM18
 ```
 
-A tkinter front end (stdlib only, no extra dependency) exposing every dongle
-setting: port selection, the wiring fields for `hwset`, all radio parameters and
-the six pipe addresses for `listen`, plus buttons for listen / stop / info / scan
-and a free-text command line.
+Opens a browser at `http://127.0.0.1:8724/`. Python owns the serial port and does
+the decoding; the browser is presentation only.
+
+That split is deliberate. `bthome-ble` is the reference parser and it is a Python
+library, so letting the browser talk to the dongle directly (WebSerial) would
+mean reimplementing the BTHome object layer in JavaScript — the exact kind of
+second implementation that once made this tool silently swallow dimmer events.
+It also keeps the UI working in any browser, not just Chrome.
+
+**Standard library only** — `http.server` for the pages and JSON endpoints,
+Server-Sent Events for the live stream. No web framework, no websocket package.
 
 The setup strip collapses to a one-line summary of the active configuration, so
 after `Start` (which sends `hwset` and `listen` in one go) the frame table gets
-the window — but you can still see what you are listening to at a glance.
+the window. Frames arrive with **millisecond timestamps and a Δ column** — the
+three repeats of one event sit ~4 ms apart, which per-second resolution hides.
+Selecting a row shows **decoded fields and the hex dump side by side**; frames the
+decoder objected to are drawn in red. The log and the free-text command line share
+their own tab. A tab opened later is brought up to date: the server replays the
+greeting, the current state and the retained frames.
 
-Received frames land in a table with **millisecond timestamps and a Δ column**,
-which is what makes retransmission bursts and sender pauses readable: the three
-repeats of one event show up ~4 ms apart. Selecting a row shows **decoded fields
-and the hex dump side by side**. Frames the decoder objected to are drawn in red.
-The log and the free-text command line share their own tab, so dongle replies and
-frame details no longer fight over one widget.
-
-**The decoder is switchable at runtime** via the dropdown, and switching
-re-renders frames already captured, so the same capture can be looked at through
-different eyes.
+| Endpoint | Purpose |
+|---|---|
+| `GET /api/events` | SSE stream of frames, log lines, greeting and status |
+| `GET /api/ports`, `/api/parsers` | what is available |
+| `POST /api/connect`, `/api/disconnect`, `/api/command` | control |
+| `POST /api/parser` | switch decoder, returns the history re-decoded |
 
 ### Adding a decoder
 
@@ -345,8 +353,8 @@ class MyParser(Parser):
     def detail(self, data): ...
 ```
 
-Neither the GUI nor the terminal needs to change — the dropdown is built from the
-registry. The legacy nRF24 protocols in
+Neither the web UI nor the terminal needs to change — the dropdown is built from
+the registry. The legacy nRF24 protocols in
 `libs/esphome-rf24-remote/PROTOCOL.md` are the obvious next candidates.
 
 ## Layout
@@ -362,7 +370,8 @@ nrf24-sniffer/
   src/HwStore.cpp             magic + checksum guarded EEPROM record
   src/main.cpp                greeting, wiring restore, super-loop
   nrf24term.py                serial terminal (REPL)
-  nrf24gui.py                 tkinter GUI: settings, frame table, decoder choice
+  nrf24web.py                 web UI backend (stdlib http.server + SSE)
+  web/                        index.html, app.css, app.js
   nrf24_dongle.py             serial protocol client, shared by both
   nrf24_parsers.py            decoder registry: raw, bthome, ...
   requirements.txt            pyserial, bthome-ble
