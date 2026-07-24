@@ -12,7 +12,6 @@
   <span class="brand">nrf24<span class="dim">-sniffer</span></span>
 
   <select id="port" class="control" aria-label="Serial port"></select>
-  <button id="refresh" class="btn ghost" title="Rescan serial ports">Rescan</button>
   <button id="connect" class="btn primary">Connect</button>
 
   <span id="state" class="pill idle"><i class="dot"></i><span id="state-text">not connected</span></span>
@@ -40,16 +39,9 @@
 
     <div class="table-wrap">
     <table id="frame-table">
-      <thead>
-        <tr>
-          <th class="c-time">Time</th>
-          <th class="c-delta">Δ ms</th>
-          <th class="c-pipe">Pipe</th>
-          <th class="c-len">Len</th>
-          <th class="c-id" title="The sender's own packet counter">ID</th>
-          <th>Decoded</th>
-        </tr>
-      </thead>
+      <!-- The head is built in app.js: the radio columns are fixed, the rest is
+           whatever the active decoder declares. -->
+      <thead><tr id="head"></tr></thead>
       <tbody id="rows"></tbody>
     </table>
     <p id="empty" class="empty">No frames yet — connect, then <b>Start</b>.</p>

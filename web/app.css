@@ -304,7 +304,6 @@ tbody tr.repeated td:last-child { color: var(--text); }
 .c-delta { width: 74px; text-align: right; }
 .c-pipe { width: 52px; }
 .c-len  { width: 52px; }
-.c-id   { width: 56px; }
 td.c-delta { text-align: right; color: var(--text-dim); }
 td.c-pipe, td.c-len { color: var(--text-dim); }
 

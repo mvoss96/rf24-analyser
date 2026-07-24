@@ -386,18 +386,25 @@ greeting, the current state and the retained frames.
 ### Adding a decoder
 
 Decoders live in [`nrf24_parsers.py`](nrf24_parsers.py). Subclass `Parser`,
-implement `summary()` (one table row) and `detail()` (the field list), and apply
-`@register`:
+declare the table columns it contributes, and apply `@register`:
 
 ```python
 @register
 class MyParser(Parser):
     name = "myproto"
     label = "My protocol"
+    columns = (("id", "Msg#", 56), ("who", "Sender", 116), ("data", "Payload", None))
 
-    def summary(self, data): ...
-    def detail(self, data): ...
+    def cells(self, data): ...      # {key: text} for those columns
+    def detail(self, data): ...     # the field list for the detail pane
+    def packet_id(self, data): ...  # optional: the sender's own counter
+    def identity(self, data): ...   # optional: which frames are one event
 ```
+
+Only Time, Δ, Pipe and Len are fixed — they describe the reception, not the
+protocol. What a frame *says* is the decoder's business, and a single "Decoded"
+column turned every protocol into prose, which cannot be scanned or compared
+down a column. Widths are pixels, `None` takes the rest of the row.
 
 Neither the web UI nor the terminal needs to change — the dropdown is built from
 the registry.

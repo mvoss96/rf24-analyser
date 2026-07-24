@@ -17,18 +17,33 @@ import logging
 
 
 class Parser:
-    """Decodes one frame. Subclasses override summary() and detail()."""
+    """Decodes one frame. Subclasses override columns/cells() and detail()."""
 
     name = ""       # identifier used in the UI and on the command line
     label = ""      # human-readable name
     description = ""
 
+    # The table columns this decoder contributes, as (key, label, width).
+    # width is a pixel number, or None for "take the remaining space".
+    #
+    # Only Time, delta, pipe and length are fixed, because those come from the
+    # radio and the host rather than from the protocol. What a frame *says* is
+    # the decoder's business, and squeezing that into one "Decoded" column made
+    # every protocol look like prose - you cannot sort, scan or compare a
+    # sentence. A decoder that knows it always carries a packet number, a sender
+    # and a payload should be able to say so.
+    columns = (("summary", "Decoded", None),)
+
     def available(self):
         """Returns None if usable, otherwise a reason string."""
         return None
 
+    def cells(self, data):
+        """{key: text} for this decoder's columns. Keys missing render empty."""
+        return {"summary": self.summary(data)}
+
     def summary(self, data):
-        """One short line describing the frame, for a table row."""
+        """One short line describing the frame. Only used by the default cells()."""
         raise NotImplementedError
 
     def detail(self, data):
@@ -96,6 +111,11 @@ class RawParser(Parser):
     name = "raw"
     label = "Raw hex"
     description = "No interpretation - hex dump only."
+
+    columns = (("bytes", "Bytes", None),)
+
+    def cells(self, data):
+        return {"bytes": self.summary(data)}
 
     def summary(self, data):
         head = " ".join(f"{b:02X}" for b in data[:12])
@@ -168,6 +188,9 @@ class NRF24SmartParser(Parser):
     label = "NRF24Smart (legacy)"
     description = "The pre-BTHome protocol: device, host and remote packets."
 
+    columns = (("id", "Msg#", 56), ("uuid", "UUID", 116),
+               ("kind", "Kind", 130), ("data", "Content", None))
+
     # -- identification --
 
     @staticmethod
@@ -206,30 +229,37 @@ class NRF24SmartParser(Parser):
 
     # -- Parser API --
 
-    def summary(self, data):
+    def cells(self, data):
         if len(data) < 8:
-            return "(too short for NRF24Smart)"
-        _id, uuid, kind = self._head(data)
-        if not _smart_checksum_ok(data):
-            return f"{uuid}  {kind}  !! checksum mismatch"
+            return {"data": f"!! {len(data)} bytes - too short for NRF24Smart"}
 
+        _id, uuid, kind = self._head(data)
+        number = self.packet_id(data)
+        row = {"uuid": uuid, "id": "" if number is None else number, "kind": kind}
+
+        if not _smart_checksum_ok(data):
+            return {**row, "data": "!! checksum mismatch"}
         shape, note = self._shape(data)
         if shape is None:
-            return f"{uuid}  {kind}  !! {note}"
+            return {**row, "data": f"!! {note}"}
 
         # "remote remote" reads as a stutter: for that shape the type says nothing
         # the shape has not already said.
-        parts = [uuid, shape if shape == kind else f"{shape} {kind}"]
+        row["kind"] = shape if shape == kind else f"{shape} {kind}"
         if shape == "remote":
             target = ":".join(f"{b:02X}" for b in data[6:10])
             layer = data[10]
             value = data[11] if layer == 0 else SMART_AXIS_DIRS.get(data[11], data[11])
-            parts.append(f"-> {target} {SMART_LAYERS.get(layer, f'layer{layer}')}={value}")
+            content = f"-> {target}  {SMART_LAYERS.get(layer, f'layer{layer}')}={value}"
         elif shape == "device":
-            parts.append(f"fw{data[6]} power={data[7]} msg#{data[9]}")
-        if note:
-            parts.append(f"({note})")
-        return "  ".join(parts)
+            payload = data[10:-2]
+            content = f"fw{data[6]} power={data[7]}"
+            if payload:
+                content += "  " + " ".join(f"{b:02X}" for b in payload)
+        else:
+            content = " ".join(f"{b:02X}" for b in data[6:-2]) or "(no data)"
+        row["data"] = content + (f"  ({note})" if note else "")
+        return row
 
     def detail(self, data):
         if len(data) < 8:
@@ -330,6 +360,8 @@ class BTHomeParser(Parser):
     label = "BTHome v2 (over nRF24)"
     description = "4-byte sender id + BTHome v2 service data, decoded by bthome-ble."
 
+    columns = (("id", "Pkt#", 56), ("sender", "Sender", 116), ("data", "Measurements", None))
+
     def available(self):
         try:
             import bthome_ble.parser  # noqa: F401
@@ -412,30 +444,33 @@ class BTHomeParser(Parser):
             return super().identity(data)
         return ":".join(f"{b:02X}" for b in sender) + f"#{packet_id}"
 
-    def summary(self, data):
+    def cells(self, data):
         split = self._split(data)
         if split is None:
-            return "(not a BTHome frame)"
-        sender, _info, payload = split
-        sender_hex = ":".join(f"{b:02X}" for b in sender)
+            head = " ".join(f"{b:02X}" for b in data[:8])
+            return {"data": f"!! not a BTHome frame ({head} ...)"}
 
+        sender, _info, payload = split
         sensors, events, _units, records = self._parse_objects(payload)
+        number = self._packet_id(sensors)
 
         parts = []
         for value in events.values():
             props = value.event_properties or {}
             extra = " " + ", ".join(f"{k}={v}" for k, v in props.items()) if props else ""
             parts.append(f"{value.name}: {value.event_type}{extra}")
-        if not parts:
-            # Sensor readings, minus the packet id - that has its own column.
-            for key, value in sensors.items():
-                if getattr(key, "key", None) != "packet_id":
-                    parts.append(f"{value.name} {value.native_value}")
-        if not parts:
-            return f"{sender_hex}  !! rejected by bthome-ble"
+        # Sensor readings, minus the packet id - that has its own column.
+        for key, value in sensors.items():
+            if getattr(key, "key", None) != "packet_id":
+                parts.append(f"{value.name} {value.native_value}")
 
         flagged = any(level >= logging.WARNING for level, _ in records)
-        return f"{sender_hex}  " + "; ".join(parts) + ("  !!" if flagged else "")
+        return {
+            "id": "" if number is None else number,
+            "sender": ":".join(f"{b:02X}" for b in sender),
+            "data": ("; ".join(parts) + ("  !!" if flagged else "")) if parts
+                    else "!! rejected by bthome-ble",
+        }
 
     def detail(self, data):
         if len(data) < 4:

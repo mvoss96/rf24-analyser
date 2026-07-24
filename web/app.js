@@ -155,6 +155,34 @@ async function sendSequence(lines, gap = 150) {
 
 // --- frame table -----------------------------------------------------------
 
+// Fixed because they describe the reception, not the protocol: when it arrived,
+// how long since the last event, which pipe matched, how many bytes.
+const RADIO_COLUMNS = [
+  { key: "time", label: "Time", cls: "c-time" },
+  { key: "delta", label: "Δ ms", cls: "c-delta" },
+  { key: "pipe", label: "Pipe", cls: "c-pipe" },
+  { key: "len", label: "Len", cls: "c-len" },
+];
+let decoderColumns = [];
+
+function setColumns(columns) {
+  decoderColumns = columns || [];
+  const head = $("head");
+  head.replaceChildren();
+  for (const { label, cls } of RADIO_COLUMNS) {
+    const th = document.createElement("th");
+    th.className = cls;
+    th.textContent = label;
+    head.appendChild(th);
+  }
+  for (const column of decoderColumns) {
+    const th = document.createElement("th");
+    th.textContent = column.label;
+    if (column.width) th.style.width = `${column.width}px`;
+    head.appendChild(th);
+  }
+}
+
 // A row is one event, not one frame. A sender repeating an event three times
 // produced three near-identical rows that pushed everything else off screen and
 // made the interesting number - how far apart the repeats were - something you
@@ -189,13 +217,18 @@ function paintRow(group) {
     [group.gap === null ? "" : group.gap.toFixed(1), "c-delta"],
     [head.pipe, "c-pipe"],
     [head.len, "c-len"],
-    [head.packetId === null || head.packetId === undefined ? "" : head.packetId, "c-id"],
-    [head.summary + badge, ""],
   ];
+  decoderColumns.forEach((column, i) => {
+    const text = head.cells[column.key] ?? "";
+    // The repeat badge belongs on the last column, whatever the decoder made it.
+    cells.push([i === decoderColumns.length - 1 ? text + badge : text, ""]);
+  });
+
   const tds = group.tr.children;
+  while (tds.length > cells.length) group.tr.removeChild(group.tr.lastChild);
   cells.forEach(([text, cls], i) => {
     const td = tds[i] || group.tr.appendChild(document.createElement("td"));
-    if (cls) td.className = cls;
+    td.className = cls;
     td.textContent = text;
   });
   group.tr.classList.toggle("flagged", head.flagged);
@@ -361,6 +394,7 @@ function handle(event) {
     // bouncing: the request below publishes the same event straight back.
     if ($("decoder").value !== event.name) {
       $("decoder").value = event.name;
+      setColumns(event.columns);
       post("/api/parser", { name: event.name }).then((d) => d.frames && rebuild(d.frames));
     }
   } else if (event.type === "line") {
@@ -404,7 +438,10 @@ async function loadParsers() {
     option.disabled = Boolean(p.unavailable);
     option.title = p.description || "";
     // Whatever the server is actually decoding with - not a guess of our own.
-    if (p.active) option.selected = true;
+    if (p.active) {
+      option.selected = true;
+      setColumns(p.columns);
+    }
     select.appendChild(option);
   }
 }
@@ -435,7 +472,11 @@ function init() {
     $(id).addEventListener("change", updateSummary);
   }
 
-  $("refresh").addEventListener("click", loadPorts);
+  // No rescan button: the list refreshes as it is opened, which covers the only
+  // case one was needed for - a dongle plugged in after the page was loaded.
+  $("port").addEventListener("pointerdown", loadPorts);
+  $("port").addEventListener("focus", loadPorts);
+
   $("connect").addEventListener("click", async () => {
     if (connected) return void post("/api/disconnect");
     const port = $("port").value;
@@ -473,6 +514,8 @@ function init() {
 
   $("decoder").addEventListener("change", async () => {
     const data = await post("/api/parser", { name: $("decoder").value });
+    // Header before rows: the rows are laid out against the columns.
+    if (data.columns) setColumns(data.columns);
     if (data.frames) rebuild(data.frames);
   });
 

@@ -40,6 +40,12 @@ GREETING_ASK = 2.0
 GREETING_TIMEOUT = 4.5
 
 
+def column_spec(parser):
+    """The decoder's table columns, as the browser wants them."""
+    return [{"key": key, "label": label, "width": width}
+            for key, label, width in parser.columns]
+
+
 class Hub:
     """Fan-out of events to every connected browser tab."""
 
@@ -157,7 +163,8 @@ class Session:
             raise RuntimeError(reason)
         self.parser = parser
         # One decoder is shared by every tab, so every tab has to hear about it.
-        self.hub.publish({"type": "parser", "name": parser.name})
+        self.hub.publish({"type": "parser", "name": parser.name,
+                          "columns": column_spec(parser)})
 
     def decoded_history(self):
         """Every retained frame, decoded with the current parser."""
@@ -165,14 +172,13 @@ class Session:
 
     def _decode(self, stamp, delta, device_ms, pipe, data):
         try:
-            summary = self.parser.summary(data)
+            cells = {key: str(value) for key, value in self.parser.cells(data).items()}
             detail = self.parser.detail(data)
             identity = self.parser.identity(data)
-            packet_id = self.parser.packet_id(data)
         except Exception as exc:
-            summary, detail = f"(decoder error: {exc})", [str(exc)]
-            identity, packet_id = bytes(data).hex(), None
-        flagged = "!!" in summary or "rejected" in summary.lower()
+            cells, detail = {"data": f"!! decoder error: {exc}"}, [str(exc)]
+            identity = bytes(data).hex()
+        flagged = any("!!" in value for value in cells.values())
         return {
             "type": "frame",
             "time": stamp,
@@ -180,8 +186,7 @@ class Session:
             "deviceMs": device_ms,
             "pipe": pipe,
             "len": len(data),
-            "packetId": packet_id,
-            "summary": summary,
+            "cells": cells,
             "detail": detail,
             "hex": parsers.hexdump(data),
             "flagged": flagged,
@@ -329,7 +334,10 @@ class Handler(BaseHTTPRequestHandler):
             self._json([{"name": p.name, "label": p.label,
                          "description": p.description,
                          "unavailable": p.available(),
-                         "active": p is active}
+                         "active": p is active,
+                         # The table header is the decoder's to define; only the
+                         # radio-level columns are fixed.
+                         "columns": column_spec(p)}
                         for p in parsers.all_parsers()])
         elif self.path == "/api/events":
             self._events()
@@ -347,7 +355,8 @@ class Handler(BaseHTTPRequestHandler):
                 self.session.send(payload["line"])
             elif self.path == "/api/parser":
                 self.session.set_parser(payload["name"])
-                self._json({"ok": True, "frames": self.session.decoded_history()})
+                self._json({"ok": True, "columns": column_spec(self.session.parser),
+                            "frames": self.session.decoded_history()})
                 return
             elif self.path == "/api/clear":
                 self.session.frames.clear()
