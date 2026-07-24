@@ -35,19 +35,21 @@
     <fieldset>
       <legend>Wiring</legend>
       <div class="fields" id="wiring">
-        <label>ce<input id="ce" value="9" size="3"></label>
-        <label>csn<input id="csn" value="10" size="3"></label>
-        <label>irq<input id="irq" value="2" size="3"></label>
-        <label>led_rx<input id="led_rx" value="8" size="4"></label>
-        <label>led_tx<input id="led_tx" value="A1" size="4"></label>
+        <label>ce<input id="ce" value="9"></label>
+        <label>csn<input id="csn" value="10"></label>
+        <label>irq<input id="irq" value="2"></label>
+        <label>led_rx<input id="led_rx" value="8"></label>
+        <label>led_tx<input id="led_tx" value="A1"></label>
       </div>
-      <button class="btn ghost small" data-cmd="hwclear">Forget stored wiring</button>
+      <div class="fieldset-foot">
+        <button class="btn ghost small" data-cmd="hwclear">Forget stored wiring</button>
+      </div>
     </fieldset>
 
     <fieldset>
       <legend>Radio</legend>
       <div class="fields">
-        <label>ch<input id="ch" value="100" size="3"></label>
+        <label>ch<input id="ch" value="100"></label>
         <label>rate
           <select id="rate"><option>250</option><option>1000</option><option>2000</option></select>
         </label>
@@ -60,7 +62,9 @@
         <label>pa
           <select id="pa"><option>min</option><option selected>low</option><option>high</option><option>max</option></select>
         </label>
-        <label>plsize<input id="plsize" value="32" size="3"></label>
+        <label>plsize<input id="plsize" value="32"></label>
+      </div>
+      <div class="checks">
         <label class="check"><input type="checkbox" id="ack"> ack</label>
         <label class="check"><input type="checkbox" id="dpl" checked> dpl</label>
         <label class="check"><input type="checkbox" id="repeats" checked> show repeats</label>
@@ -70,16 +74,18 @@
     <fieldset>
       <legend>Pipe addresses</legend>
       <div class="fields column" id="pipes">
-        <label>1<input id="pipe1" value="42:54:48:4D:45" size="17"></label>
+        <label>1<input id="pipe1" value="42:54:48:4D:45"></label>
       </div>
       <div class="fields column" id="pipes-more" hidden>
-        <label>0<input id="pipe0" size="17"></label>
-        <label>2<input id="pipe2" size="17"></label>
-        <label>3<input id="pipe3" size="17"></label>
-        <label>4<input id="pipe4" size="17"></label>
-        <label>5<input id="pipe5" size="17"></label>
+        <label>0<input id="pipe0"></label>
+        <label>2<input id="pipe2"></label>
+        <label>3<input id="pipe3"></label>
+        <label>4<input id="pipe4"></label>
+        <label>5<input id="pipe5"></label>
       </div>
-      <button id="pipes-toggle" class="btn ghost small">more</button>
+      <div class="fieldset-foot">
+        <button id="pipes-toggle" class="btn ghost small">more</button>
+      </div>
     </fieldset>
   </div>
 </section>
