@@ -141,6 +141,10 @@ void CommandParser::dispatch(char *line) {
     int v = rest ? atoi(rest) : -1;
     if (v != 0 && v != 1) { err(F("dpl 0|1")); return; }
     cfg.dpl = (v == 1); radio_.reconfigure(); ok();
+  } else if (strcmp(cmd, "repeats") == 0) {
+    int v = rest ? atoi(rest) : -1;
+    if (v != 0 && v != 1) { err(F("repeats 0|1")); return; }
+    cfg.showRepeats = (v == 1); ok();
   } else if (strcmp(cmd, "plsize") == 0) {
     int v = rest ? atoi(rest) : -1;
     if (v < 1 || v > 32) { err(F("plsize 1..32")); return; }
@@ -163,7 +167,7 @@ void CommandParser::dispatch(char *line) {
     uint16_t passes = (v <= 0) ? 64 : (uint16_t)v;
     radio_.scan(passes);
   } else if (strcmp(cmd, "help") == 0) {
-    Serial.println(F("cmds: ch rate crc aw pipe ack dpl plsize pa listen stop info tx scan help"));
+    Serial.println(F("cmds: ch rate crc aw pipe ack dpl plsize pa repeats listen stop info tx scan help"));
     ok();
   } else {
     err(F("unknown cmd (try help)"));

@@ -18,6 +18,7 @@ struct RadioConfig {
   bool     dpl       = true; // dynamic payloads
   uint8_t  plSize    = 32;   // static payload size when dpl == false
   uint8_t  paLevel   = 1;    // 0=min 1=low 2=high 3=max
+  bool     showRepeats = true; // false: suppress identical back-to-back frames
   bool     pipeEn[6] = {false, true, false, false, false, false};
   uint8_t  pipeAddr[6][MAX_ADDR_WIDTH] = {
     {0},
@@ -60,8 +61,20 @@ public:
   void printInfo();
 
 private:
+  // A frame repeated within this window counts as a retransmit of the previous
+  // one (the sender repeats each event a few ms apart).
+  static constexpr uint16_t REPEAT_WINDOW_MS = 500;
+
   RF24 radio_;
   RadioConfig cfg_;
   bool listening_ = false;
+
+  // Last frame seen, for the repeat filter.
+  uint8_t lastFrame_[32] = {0};
+  uint8_t lastLen_ = 0;
+  uint32_t lastMs_ = 0;
+
   void drainRx();
+  // Records the frame and reports whether it repeats the previous one.
+  bool isRepeat(const uint8_t *buf, uint8_t len);
 };

@@ -149,8 +149,13 @@ def try_pretty(line):
             length = tok[4:]
         else:
             hex_tokens.append(tok)
+    # The firmware emits compact hex ("4D565202..."); older logs used
+    # space-separated bytes. Joining handles both.
+    blob = "".join(hex_tokens)
+    if not blob or len(blob) % 2:
+        return None
     try:
-        data = [int(t, 16) for t in hex_tokens]
+        data = [int(blob[i:i + 2], 16) for i in range(0, len(blob), 2)]
     except ValueError:
         return None
     header = f"-- RX pipe {pipe}  ({length} bytes)"
@@ -231,15 +236,15 @@ Local commands (handled by nrf24term, not sent to the dongle):
 Everything else is sent verbatim to the dongle. Dongle commands:
   ch <0-125>            rate <250|1000|2000>   crc <0|8|16>    aw <3|4|5>
   pipe <0-5> <addr|off> ack <0|1>              dpl <0|1>       plsize <1-32>
-  pa <min|low|high|max> listen   stop   info   scan [passes]
-  tx <addr> <hex...> [ack|noack]
+  pa <min|low|high|max> repeats <0|1>          listen   stop   info
+  scan [passes]         tx <addr> <hex...> [ack|noack]
 """
 
 
 def main():
     ap = argparse.ArgumentParser(description="Serial terminal for the nrf24-sniffer dongle.")
     ap.add_argument("port", help="serial port, e.g. COM18 or /dev/ttyUSB0")
-    ap.add_argument("--baud", type=int, default=115200, help="baud rate (default 115200)")
+    ap.add_argument("--baud", type=int, default=500000, help="baud rate (default 500000)")
     ap.add_argument("--pretty", action="store_true", help="decode RX frames as BTHome v2")
     args = ap.parse_args()
 

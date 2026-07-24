@@ -90,7 +90,22 @@ void RadioController::stopListening() {
   listening_ = false;
 }
 
+bool RadioController::isRepeat(const uint8_t *buf, uint8_t len) {
+  uint32_t now = millis();
+  bool same = (len == lastLen_) && (memcmp(buf, lastFrame_, len) == 0);
+  bool recent = (uint32_t)(now - lastMs_) < REPEAT_WINDOW_MS;
+  memcpy(lastFrame_, buf, len);
+  lastLen_ = len;
+  lastMs_ = now;
+  return same && recent;
+}
+
 void RadioController::drainRx() {
+  // A full RX FIFO means the host could not keep up; further frames arriving
+  // now are dropped by the chip. Surfacing this separates "lost on air" from
+  // "lost because we were busy printing".
+  if (radio_.rxFifoFull()) Serial.println(F("WARN fifo-full"));
+
   uint8_t pipe = 0;
   while (radio_.available(&pipe)) {
     uint8_t len = cfg_.dpl ? radio_.getDynamicPayloadSize() : cfg_.plSize;
@@ -101,13 +116,18 @@ void RadioController::drainRx() {
     uint8_t buf[32];
     radio_.read(buf, len);
 
+    bool repeat = isRepeat(buf, len);
+    if (repeat && !cfg_.showRepeats) continue;
+
     digitalWrite(Pins::LED_RX, Pins::LED_ON);
+    // Compact hex (no separators) keeps the line short - the serial link is
+    // the bottleneck during fast bursts.
     Serial.print(F("RX p"));
     Serial.print(pipe);
     Serial.print(F(" len="));
     Serial.print(len);
+    Serial.print(' ');
     for (uint8_t i = 0; i < len; i++) {
-      Serial.print(' ');
       if (buf[i] < 0x10) Serial.print('0');
       Serial.print(buf[i], HEX);
     }
@@ -189,6 +209,7 @@ void RadioController::printInfo() {
   Serial.print(F("  autoack="));   Serial.println(cfg_.autoAck ? 1 : 0);
   Serial.print(F("  dpl="));       Serial.println(cfg_.dpl ? 1 : 0);
   Serial.print(F("  plsize="));    Serial.println(cfg_.plSize);
+  Serial.print(F("  repeats="));   Serial.println(cfg_.showRepeats ? 1 : 0);
   for (uint8_t p = 0; p < 6; p++) {
     Serial.print(F("  pipe"));
     Serial.print(p);

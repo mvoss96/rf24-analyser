@@ -59,8 +59,15 @@ global (23%)**.
 
 ## Serial protocol
 
-115200 baud, one command per line (`\n` terminated, `\r` ignored). Every command
-is answered with `OK ...` or `ERR ...`.
+**500000 baud**, one command per line (`\n` terminated, `\r` ignored). Every
+command is answered with `OK ...` or `ERR ...`.
+
+> Why 500000: the serial link, not the radio, is the bottleneck when a sender
+> repeats each event a few ms apart. At 115200 one 17-byte frame line takes
+> 5.6 ms, so a 3-repeat burst needed ~17 ms to print while arriving in ~10 ms —
+> the 3-deep RX FIFO overflowed and frames were silently dropped. 500000 baud is
+> an exact divisor at 16 MHz (0% error, cleaner than 115200), the compact hex
+> output below and a 256-byte TX buffer bring one line down to ~1 ms.
 
 | Command                       | Meaning                                                   |
 |-------------------------------|-----------------------------------------------------------|
@@ -74,6 +81,7 @@ is answered with `OK ...` or `ERR ...`.
 | `dpl <0\|1>`                  | dynamic payloads off / on                                 |
 | `plsize <1-32>`               | static payload size (used when `dpl 0`)                   |
 | `pa <min\|low\|high\|max>`    | PA level                                                  |
+| `repeats <0\|1>`              | `0` suppresses identical back-to-back frames (default `1`) |
 | `listen`                      | enter RX mode                                             |
 | `stop`                        | leave RX mode                                             |
 | `info`                        | print current config + `radio.isChipConnected()`         |
@@ -87,13 +95,28 @@ the sender's address array), so `pipe 1 42:54:48:4D:45` is ASCII `"BTHME"`.
 
 ### RX output
 
-While listening, each frame is printed as one parseable line:
+While listening, each frame is printed as one parseable line with the payload as
+compact hex (no separators, to keep the line short):
 
 ```
-RX p1 len=15 4D 56 52 02 D2 FC 44 00 05 01 57 0C 90 0B ...
+RX p1 len=16 4D565202D2FC44004501350C8B093A01
 ```
 
-`p<pipe>` is the pipe number, `len=<n>` the payload length, then `n` hex bytes.
+`p<pipe>` is the pipe number, `len=<n>` the payload length, then `2*n` hex chars.
+
+A sender that repeats each event emits several identical frames. `repeats 0`
+prints only the first of a run (identical payload within 500 ms) — useful when
+you care about events rather than the on-air repetition.
+
+If the RX FIFO was already full when the firmware got to it, frames were dropped
+by the chip and a warning line is emitted:
+
+```
+WARN fifo-full
+```
+
+That line is the discriminator when packets go missing: **with** it the host
+could not keep up, **without** it the loss happened on the air.
 
 ### Scan output
 
@@ -146,7 +169,9 @@ verbatim. Local commands (handled by the terminal) start with `:`:
 | `:quit` / `:exit`| close the terminal                                        |
 
 Opening the port resets the ATmega (DTR), so the tool waits ~2 s and then sends
-`info`.
+`info`. The default baud rate is 500000, matching the firmware; override with
+`--baud` if you reflash it differently. The BTHome decoder accepts both the
+compact hex format and the older space-separated one, so old logs stay readable.
 
 ### Pretty-print format
 
@@ -183,6 +208,20 @@ and stops.
    sender id + BTHome objects with the matching battery/voltage and event.
 4. Emulate a sender toward a receiver or a second dongle, e.g.
    `tx 42:54:48:4D:45 4D 56 52 02 D2 FC 44 00 01 01 57 noack`.
+
+### Measuring packet loss
+
+The BTHome packet id is a free-running per-event counter, so gaps in it measure
+loss directly. Log a session (`:log run.txt`), then count distinct packet ids and
+their gaps. Interpretation:
+
+- `WARN fifo-full` present → the host is the bottleneck; raise the baud rate
+  further or use `repeats 0`.
+- No warnings, but whole events (all repeats) missing → loss on the air. If
+  complete events vanish far more often than independent per-packet loss would
+  predict, the interference is **bursty**: all repeats fall inside one short
+  outage. Spreading the sender's repeats further apart in time helps more than
+  simply sending more of them.
 
 ## Layout
 
