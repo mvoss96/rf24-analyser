@@ -105,6 +105,38 @@ void RadioController::reconfigure() {
   }
 }
 
+void RadioController::invalidateHw() {
+  hwReady_ = false;
+  configured_ = false;
+  listening_ = false;
+}
+
+bool RadioController::selfTestCe() {
+  if (!hwReady_) return false;
+
+  // Transient settings, deliberately NOT a default configuration: the radio is
+  // left unconfigured afterwards, so nothing can be operated on these values.
+  // One byte at minimum power on one channel is the smallest emission that
+  // still proves CE keys the transmitter.
+  static const uint8_t testAddr[5] = {'T', 'E', 'S', 'T', 0x00};
+  const uint8_t payload = 0x00;
+
+  radio_.stopListening();
+  radio_.setAddressWidth(5);
+  radio_.setChannel(CE_TEST_CHANNEL);
+  radio_.setPALevel(RF24_PA_MIN);
+  radio_.setAutoAck(false);
+  radio_.enableDynamicAck();
+  radio_.openWritingPipe(testAddr);
+
+  radio_.startFastWrite(&payload, 1, true); // NO_ACK
+  bool ok = radio_.txStandBy(TX_TIMEOUT_MS);
+  if (!ok) radio_.flush_tx();
+
+  configured_ = false; // the test settings are not a usable configuration
+  return ok;
+}
+
 const __FlashStringHelper *RadioController::stateName() const {
   if (!hwReady_) return F("nohw");
   if (!configured_) return F("unconfigured");
@@ -237,13 +269,12 @@ static void printAddr(const uint8_t *a, uint8_t width) {
 // Prints analog pins as A0..A7 so the output can be pasted back into `hwset`.
 static void printPin(uint8_t pin) {
   if (pin == NO_PIN) { Serial.print(F("none")); return; }
-#ifdef A0
-  if (pin >= A0 && pin <= A0 + 7) {
+  // A0 is a const in the Arduino core, not a macro - #ifdef would never match.
+  if (pin >= A0 && pin < A0 + NUM_ANALOG_INPUTS) {
     Serial.print('A');
     Serial.print((int)(pin - A0));
     return;
   }
-#endif
   Serial.print(pin);
 }
 

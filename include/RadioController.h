@@ -71,6 +71,15 @@ public:
   // Prints the wiring as "ce=9 csn=10 irq=2 led_rx=8 led_tx=A1" (no newline).
   void printWiring() const;
 
+  // Transmits one minimal packet to prove the CE pin actually keys the radio.
+  // isChipConnected() cannot show this: it exercises SPI only and never touches
+  // CE, so a wrong CE pin otherwise passes setHardware() and then receives
+  // nothing. Uses a transient configuration and leaves the radio unconfigured.
+  bool selfTestCe();
+
+  // Drops back to the nohw state (used when a self-test fails).
+  void invalidateHw();
+
   // Output filter: when false, identical back-to-back frames are printed once.
   void setShowRepeats(bool on) { showRepeats_ = on; }
   bool showRepeats() const { return showRepeats_; }
@@ -98,6 +107,10 @@ private:
 
   // Upper bound for one transmit attempt; see transmit().
   static constexpr uint32_t TX_TIMEOUT_MS = 50;
+
+  // Channel used by selfTestCe(). Kept well inside the 2.4 GHz ISM band -
+  // the nRF24 tunes up to channel 125 (2525 MHz), which is outside it.
+  static constexpr uint8_t CE_TEST_CHANNEL = 2; // 2402 MHz
 
   RF24 radio_; // pinless constructor: pins are supplied at begin() time
   RadioConfig cfg_;

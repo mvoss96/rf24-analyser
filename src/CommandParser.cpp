@@ -173,10 +173,16 @@ void CommandParser::handleHwset(char *args) {
     err(F("chip not responding - check ce/csn wiring and power"));
     return;
   }
+  // SPI works, but that says nothing about CE - prove it before accepting.
+  if (!radio_.selfTestCe()) {
+    radio_.invalidateHw();
+    err(F("ce pin does not key the radio (spi ok) - check the ce wiring"));
+    return;
+  }
   // Persist what is actually in use (setHardware may have downgraded irq), so
   // the dongle comes back on the same wiring after a reset.
   HwStore::save(radio_.hw());
-  Serial.println(F("OK hw chip=connected saved"));
+  Serial.println(F("OK hw chip=connected cetest=ok saved"));
 }
 
 void CommandParser::handleListen(char *args) {

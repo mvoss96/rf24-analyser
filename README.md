@@ -77,7 +77,7 @@ pins are spelled out, because a stored-but-wrong pin is otherwise invisible (see
 |---|---|
 | `none` | nothing stored; `hwset` required |
 | `eeprom` | wiring restored from EEPROM, radio is up |
-| `eeprom-failed` | a wiring is stored but the chip did not answer on it |
+| `eeprom-failed` | a wiring is stored but failed to come up (see `cetest=`) |
 
 ### Commands
 
@@ -108,23 +108,35 @@ piece of remembered state. The greeting reports both the provenance and the pins
 themselves, so it never becomes hidden state; `hwclear` returns the dongle to a
 virgin state.
 
-### Verifying the wiring
+### The CE self-test
 
 `chip=connected` comes from `isChipConnected()`, which exercises **SPI only** —
 CSN, MOSI, MISO, SCK. **CE is never involved**: it only switches the radio
-between standby and active TX/RX. A wrong CE pin therefore passes `hwset` without
-complaint and then silently receives nothing.
+between standby and active TX/RX. A wrong CE pin would therefore pass unnoticed
+and then silently receive nothing.
 
-The one practical check is a transmit. With CE not actually wired the
-transmission never starts, so:
+The firmware guards against that automatically. Both at boot (when a wiring is
+restored from EEPROM) and on every `hwset`, it transmits one packet and checks
+that the radio actually keyed up:
 
 ```
-> tx 4254484D45 AABBCC noack
-OK tx sent=0 ack=no      <- CE is wrong (sent=1 means the pin is good)
+NRF24SNIFFER fw=2.2.0 api=2 state=unconfigured hw=eeprom cetest=ok ce=9 csn=10 ...
+> hwset ce=7 csn=10 irq=2 led_rx=8 led_tx=A1
+ERR ce pin does not key the radio (spi ok) - check the ce wiring
 ```
 
-Transmits are bounded by a timeout for this reason; `RF24::write()` would spin
-forever waiting for a `TX_DS`/`MAX_RT` that never arrives.
+A failed test is fatal: the wiring is **not** stored and the state drops back to
+`nohw`, so a dongle can never sit in a configured-looking but dead state.
+
+The test emits **one byte at minimum power (−18 dBm) on channel 2** (2402 MHz,
+well inside the ISM band — the nRF24 tunes up to channel 125 / 2525 MHz, which is
+outside it). These are transient settings, not defaults: the radio is left
+`unconfigured` and cannot be operated on them.
+
+Transmits are bounded by a 50 ms timeout for the same reason — `RF24::write()`
+spins forever waiting for a `TX_DS`/`MAX_RT` that never arrives when CE is dead,
+which used to hang the firmware until reset. `tx ... sent=0` remains a manual
+check of the same property.
 
 On the ATmega328P only D2/D3 can raise interrupts — any other `irq` pin is
 accepted but degrades to polling with a warning:
