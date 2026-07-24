@@ -299,6 +299,48 @@ loss directly. Log a session (`:log run.txt`) and count distinct ids and gaps:
   interference is **bursty** and all repeats fall inside one outage. Spreading the
   sender's repeats further apart in time helps more than sending more of them.
 
+## GUI
+
+```bash
+python nrf24gui.py
+```
+
+A tkinter front end (stdlib only, no extra dependency) exposing every dongle
+setting: port selection, the wiring fields for `hwset`, all radio parameters and
+the six pipe addresses for `listen`, plus buttons for listen / stop / info / scan
+and a free-text command line.
+
+Received frames land in a table — time, pipe, length, and the decoder's one-line
+summary — and clicking a row shows the decoded fields plus a hex dump. Frames the
+decoder objected to are drawn in red, so a non-conformant sender stands out
+without reading every row. The wiring fields are prefilled from the dongle's
+greeting, and the greeting itself is shown in the title bar area (red on an api
+mismatch or a failed wiring).
+
+**The decoder is switchable at runtime** via the dropdown, and switching
+re-renders frames already captured, so the same capture can be looked at through
+different eyes.
+
+### Adding a decoder
+
+Decoders live in [`nrf24_parsers.py`](nrf24_parsers.py). Subclass `Parser`,
+implement `summary()` (one table row) and `detail()` (the field list), and apply
+`@register`:
+
+```python
+@register
+class MyParser(Parser):
+    name = "myproto"
+    label = "My protocol"
+
+    def summary(self, data): ...
+    def detail(self, data): ...
+```
+
+Neither the GUI nor the terminal needs to change — the dropdown is built from the
+registry. The legacy nRF24 protocols in
+`libs/esphome-rf24-remote/PROTOCOL.md` are the obvious next candidates.
+
 ## Layout
 
 ```
@@ -311,6 +353,9 @@ nrf24-sniffer/
   src/CommandParser.cpp       line protocol dispatch
   src/HwStore.cpp             magic + checksum guarded EEPROM record
   src/main.cpp                greeting, wiring restore, super-loop
-  nrf24term.py                serial terminal + BTHome decoder
-  requirements.txt            pyserial
+  nrf24term.py                serial terminal (REPL)
+  nrf24gui.py                 tkinter GUI: settings, frame table, decoder choice
+  nrf24_dongle.py             serial protocol client, shared by both
+  nrf24_parsers.py            decoder registry: raw, bthome, ...
+  requirements.txt            pyserial, bthome-ble
 ```

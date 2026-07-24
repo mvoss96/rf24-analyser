@@ -1,0 +1,255 @@
+"""Pluggable frame decoders for the nrf24-sniffer.
+
+A parser turns the raw bytes of one received frame into a short summary (one
+table row) and a detailed field list. Adding a protocol means adding a Parser
+subclass and calling register() - neither the GUI nor the terminal needs to
+change.
+
+Currently registered:
+  raw     - hex dump only, no interpretation
+  bthome  - [4-byte sender id][BTHome v2 service data], decoded by bthome-ble
+
+The legacy nRF24 protocols documented in libs/esphome-rf24-remote/PROTOCOL.md
+would be the obvious next additions.
+"""
+
+import logging
+
+# --- Parser interface -------------------------------------------------------
+
+
+class Parser:
+    """Decodes one frame. Subclasses override summary() and detail()."""
+
+    name = ""       # identifier used in the UI and on the command line
+    label = ""      # human-readable name
+    description = ""
+
+    def available(self):
+        """Returns None if usable, otherwise a reason string."""
+        return None
+
+    def summary(self, data):
+        """One short line describing the frame, for a table row."""
+        raise NotImplementedError
+
+    def detail(self, data):
+        """List of text lines describing the frame in full."""
+        raise NotImplementedError
+
+
+_REGISTRY = {}
+
+
+def register(cls):
+    """Class decorator: registers one instance of the parser under its name."""
+    _REGISTRY[cls.name] = cls()
+    return cls
+
+
+def get(name):
+    return _REGISTRY.get(name)
+
+
+def names():
+    return list(_REGISTRY)
+
+
+def all_parsers():
+    return list(_REGISTRY.values())
+
+
+def hexdump(data, per_line=16):
+    """Classic offset / hex / ASCII dump."""
+    lines = []
+    for off in range(0, len(data), per_line):
+        chunk = data[off:off + per_line]
+        hexpart = " ".join(f"{b:02X}" for b in chunk)
+        text = "".join(chr(b) if 0x20 <= b <= 0x7E else "." for b in chunk)
+        lines.append(f"  {off:04X}  {hexpart:<{per_line * 3 - 1}}  {text}")
+    return lines
+
+
+# --- raw --------------------------------------------------------------------
+
+
+@register
+class RawParser(Parser):
+    name = "raw"
+    label = "Raw hex"
+    description = "No interpretation - hex dump only."
+
+    def summary(self, data):
+        head = " ".join(f"{b:02X}" for b in data[:12])
+        return head + (" ..." if len(data) > 12 else "")
+
+    def detail(self, data):
+        return [f"  {len(data)} bytes"] + hexdump(data)
+
+
+# --- BTHome v2 --------------------------------------------------------------
+
+
+BTHOME_UUID = (0xD2, 0xFC)  # service UUID 0xFCD2, little-endian on the wire
+
+
+class _LogCollector(logging.Handler):
+    """Captures what bthome-ble logs while parsing one frame.
+
+    The library explains why it rejected a payload (objects out of order, bad
+    length) only through logging - and that reasoning is exactly what a protocol
+    debugger needs to see.
+    """
+
+    def __init__(self):
+        super().__init__(level=logging.DEBUG)
+        self.records = []
+
+    def emit(self, record):
+        self.records.append((record.levelno, record.getMessage()))
+
+
+@register
+class BTHomeParser(Parser):
+    """[4-byte sender id][D2 FC][device info][BTHome objects].
+
+    Object parsing is delegated entirely to bthome-ble, the reference parser
+    Home Assistant uses. Nothing about BTHome measurements is reimplemented: a
+    hand-maintained table drifts from the spec (this tool already shipped one
+    that mis-decoded dimmer events), and leaning on the reference turns the
+    sniffer into a conformance check - a frame bthome-ble cannot read is a frame
+    no standard receiver can read either.
+    """
+
+    name = "bthome"
+    label = "BTHome v2 (over nRF24)"
+    description = "4-byte sender id + BTHome v2 service data, decoded by bthome-ble."
+
+    def available(self):
+        try:
+            import bthome_ble.parser  # noqa: F401
+        except ImportError:
+            return "bthome-ble is not installed (pip install -r requirements.txt)"
+        return None
+
+    # -- internals --
+
+    @staticmethod
+    def _split(data):
+        """Returns (sender, device_info, objects) or None if not a BTHome frame."""
+        if len(data) < 7:
+            return None
+        if (data[4], data[5]) != BTHOME_UUID:
+            return None
+        return data[0:4], data[6], data[7:]
+
+    @staticmethod
+    def _parse_objects(payload):
+        """Run the reference parser over the BTHome object bytes.
+
+        A fresh parser per frame is deliberate: the library deduplicates by
+        packet id, which would hide exactly the retransmissions a sniffer exists
+        to show, and it keeps one sender's state out of the next sender's frame.
+        """
+        from bthome_ble.parser import BTHomeBluetoothDeviceData, BTHomeVersion
+
+        parser = BTHomeBluetoothDeviceData()
+        parser.bthome_version = BTHomeVersion.V2
+
+        collector = _LogCollector()
+        logger = logging.getLogger("bthome_ble")
+        previous_level = logger.level
+        logger.addHandler(collector)
+        logger.setLevel(logging.DEBUG)
+        try:
+            parser._parse_payload(bytes(payload), 0.0)
+        except Exception as exc:  # private API; guard against upstream changes
+            collector.records.append((logging.ERROR, f"{type(exc).__name__}: {exc}"))
+        finally:
+            logger.removeHandler(collector)
+            logger.setLevel(previous_level)
+
+        return (
+            getattr(parser, "_sensor_values_updates", {}) or {},
+            getattr(parser, "_events_updates", {}) or {},
+            getattr(parser, "_sensor_descriptions_updates", {}) or {},
+            collector.records,
+        )
+
+    # -- Parser API --
+
+    def summary(self, data):
+        split = self._split(data)
+        if split is None:
+            return "(not a BTHome frame)"
+        sender, _info, payload = split
+        sender_hex = ":".join(f"{b:02X}" for b in sender)
+
+        sensors, events, _units, records = self._parse_objects(payload)
+        parts = []
+        for value in events.values():
+            props = value.event_properties or {}
+            extra = " " + ", ".join(f"{k}={v}" for k, v in props.items()) if props else ""
+            parts.append(f"{value.name}: {value.event_type}{extra}")
+        if not parts:
+            for value in sensors.values():
+                parts.append(f"{value.name} {value.native_value}")
+        if not parts:
+            return f"{sender_hex}  !! rejected by bthome-ble"
+
+        flagged = any(level >= logging.WARNING for level, _ in records)
+        return f"{sender_hex}  " + "; ".join(parts) + ("  !!" if flagged else "")
+
+    def detail(self, data):
+        if len(data) < 4:
+            return ["  (frame too short for a 4-byte sender id)"]
+
+        sender = data[0:4]
+        sender_hex = ":".join(f"{b:02X}" for b in sender)
+        sender_ascii = "".join(chr(b) if 0x20 <= b <= 0x7E else "." for b in sender)
+        lines = [f'  sender    : {sender_hex}  "{sender_ascii}"']
+
+        split = self._split(data)
+        if split is None:
+            lines.append("  (no BTHome service data: expected D2 FC UUID)")
+            lines += hexdump(data[4:])
+            return lines
+
+        _sender, info, payload = split
+        flags = []
+        if info & 0x01:
+            flags.append("encrypted")
+        if info & 0x04:
+            flags.append("trigger-based")
+        version = (info >> 5) & 0x07
+        lines.append(f"  bthome    : v{version}" + (" " + ", ".join(flags) if flags else ""))
+
+        sensors, events, units, records = self._parse_objects(payload)
+
+        for key, value in sensors.items():
+            desc = units.get(key)
+            unit = ""
+            if desc is not None and desc.native_unit_of_measurement:
+                unit = f" {desc.native_unit_of_measurement}"
+            lines.append(f"  {value.name:<10}: {value.native_value}{unit}")
+
+        for value in events.values():
+            props = value.event_properties or {}
+            extra = ""
+            if props:
+                extra = " (" + ", ".join(f"{k}={v}" for k, v in props.items()) + ")"
+            lines.append(f"  {value.name:<10}: {value.event_type}{extra}")
+
+        if not sensors and not events:
+            # Nothing came out of the reference parser, so this frame would be
+            # dropped by any spec-conformant receiver.
+            lines.append("  !! REJECTED by the reference parser (bthome-ble)")
+            lines.append("  objects   : " + " ".join(f"{b:02X}" for b in payload))
+            shown = records
+        else:
+            # Anything the library warned about is worth surfacing even on success.
+            shown = [r for r in records if r[0] >= logging.WARNING]
+        for _level, message in shown:
+            lines.append(f"  reason    : {message}")
+
+        return lines

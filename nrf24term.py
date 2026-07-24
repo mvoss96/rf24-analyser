@@ -24,7 +24,6 @@ Dependencies: pyserial, bthome-ble (see requirements.txt).
 """
 
 import argparse
-import logging
 import sys
 import threading
 import time
@@ -36,136 +35,24 @@ except ImportError:
     sys.exit(1)
 
 
-# --- BTHome v2 decoding -----------------------------------------------------
+# --- Decoding ---------------------------------------------------------------
 #
-# Object parsing is delegated entirely to bthome-ble, the reference parser that
-# Home Assistant uses. Nothing about BTHome measurements is reimplemented here:
-# a hand-maintained length table drifts from the spec (this tool already shipped
-# one that mis-decoded dimmer events), and leaning on the reference turns the
-# sniffer into a conformance check - a frame bthome-ble cannot read is a frame
-# no standard BTHome receiver can read either.
-#
-# Only the nRF24 envelope is ours: [4-byte sender id][D2 FC][device info],
-# followed by the BTHome object bytes that are handed to the library.
+# Frame decoding and the serial protocol live in shared modules so the terminal
+# and the GUI (nrf24gui.py) can never drift apart.
 
-try:
-    from bthome_ble.parser import BTHomeBluetoothDeviceData, BTHomeVersion
-except ImportError:
-    sys.stderr.write(
-        "bthome-ble is required for decoding: pip install -r requirements.txt\n"
-    )
-    sys.exit(1)
+import nrf24_dongle as dongle
+import nrf24_parsers as parsers
 
-BTHOME_UUID = (0xD2, 0xFC)  # service UUID 0xFCD2, little-endian on the wire
+EXPECTED_API = dongle.EXPECTED_API
 
 
-def _ascii(b):
-    return chr(b) if 0x20 <= b <= 0x7E else "."
-
-
-class _LogCollector(logging.Handler):
-    """Captures what bthome-ble logs while parsing one frame.
-
-    The library explains why it rejected a payload (objects out of order, bad
-    length) only through logging - and that reasoning is exactly what a protocol
-    debugger needs to see.
-    """
-
-    def __init__(self):
-        super().__init__(level=logging.DEBUG)
-        self.records = []
-
-    def emit(self, record):
-        self.records.append((record.levelno, record.getMessage()))
-
-
-def _parse_objects(payload):
-    """Run the reference parser over the BTHome object bytes.
-
-    A fresh parser per frame is deliberate: the library deduplicates by packet
-    id, which would hide the retransmissions a sniffer exists to show, and it
-    keeps one sender's state out of the next sender's frame.
-    """
-    parser = BTHomeBluetoothDeviceData()
-    parser.bthome_version = BTHomeVersion.V2
-
-    collector = _LogCollector()
-    logger = logging.getLogger("bthome_ble")
-    previous_level = logger.level
-    logger.addHandler(collector)
-    logger.setLevel(logging.DEBUG)
-    try:
-        parser._parse_payload(bytes(payload), 0.0)
-    except Exception as exc:  # private API; guard against upstream changes
-        collector.records.append((logging.ERROR, f"{type(exc).__name__}: {exc}"))
-    finally:
-        logger.removeHandler(collector)
-        logger.setLevel(previous_level)
-
-    return (
-        getattr(parser, "_sensor_values_updates", {}) or {},
-        getattr(parser, "_events_updates", {}) or {},
-        getattr(parser, "_sensor_descriptions_updates", {}) or {},
-        collector.records,
-    )
-
-
-def decode_frame(data):
+def decode_frame(data, parser_name="bthome"):
     """Decode a raw frame (list of ints) into a list of text lines."""
-    if len(data) < 4:
-        return ["  (frame too short for a 4-byte sender id)"]
-
-    sender = data[0:4]
-    sender_hex = ":".join(f"{b:02X}" for b in sender)
-    sender_ascii = "".join(_ascii(b) for b in sender)
-    lines = [f'  sender    : {sender_hex}  "{sender_ascii}"']
-
-    sd = data[4:]
-    if len(sd) < 3 or (sd[0], sd[1]) != BTHOME_UUID:
-        lines.append("  (no BTHome service data: expected D2 FC UUID)")
-        if sd:
-            lines.append("  raw       : " + " ".join(f"{b:02X}" for b in sd))
-        return lines
-
-    info = sd[2]
-    flags = []
-    if info & 0x01:
-        flags.append("encrypted")
-    if info & 0x04:
-        flags.append("trigger-based")
-    version = (info >> 5) & 0x07
-    lines.append(f"  bthome    : v{version}" + (" " + ", ".join(flags) if flags else ""))
-
-    payload = sd[3:]
-    sensors, events, units, records = _parse_objects(payload)
-
-    for key, value in sensors.items():
-        desc = units.get(key)
-        unit = ""
-        if desc is not None and desc.native_unit_of_measurement:
-            unit = f" {desc.native_unit_of_measurement}"
-        lines.append(f"  {value.name:<10}: {value.native_value}{unit}")
-
-    for value in events.values():
-        props = value.event_properties or {}
-        detail = ""
-        if props:
-            detail = " (" + ", ".join(f"{k}={v}" for k, v in props.items()) + ")"
-        lines.append(f"  {value.name:<10}: {value.event_type}{detail}")
-
-    if not sensors and not events:
-        # Nothing came out of the reference parser, so this frame would be
-        # dropped by any spec-conformant receiver.
-        lines.append("  !! REJECTED by the reference parser (bthome-ble)")
-        lines.append("  objects   : " + " ".join(f"{b:02X}" for b in payload))
-        shown = records
-    else:
-        # Anything the library warned about is worth surfacing even on success.
-        shown = [r for r in records if r[0] >= logging.WARNING]
-    for _level, message in shown:
-        lines.append(f"  reason    : {message}")
-
-    return lines
+    parser = parsers.get(parser_name) or parsers.get("raw")
+    reason = parser.available()
+    if reason:
+        return [f"  (decoder {parser.label} unavailable: {reason})"]
+    return parser.detail(data)
 
 
 def try_pretty(line):
@@ -260,10 +147,6 @@ def reader_loop(ser, state):
             _emit(state, line)
         sys.stdout.flush()
 
-
-# Command-protocol version this tool speaks; compared against the firmware's
-# greeting so a mismatch is reported instead of producing cryptic errors.
-EXPECTED_API = 2
 
 # The firmware has no built-in pin map and no default radio settings - the host
 # owns both. This is the wiring of the ATmega328P + CH340 + nRF24L01 dongle...
