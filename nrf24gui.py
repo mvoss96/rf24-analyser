@@ -33,7 +33,7 @@ class App:
         self.logfile = None
         self.frame_count = 0
         self.last_stamp = None  # for the delta column
-        self.setup_open = True
+        self.setup_open = False
 
         root.title("nrf24-sniffer")
         root.geometry("1120x780")
@@ -99,8 +99,10 @@ class App:
             ttk.Button(header, text=text, width=7, command=command).pack(side="right", padx=3)
 
         self.setup_body = ttk.Frame(self.setup_bar)
-        self.setup_body.pack(fill="x", pady=(6, 6))
         self._build_setup_fields(self.setup_body)
+        # Starts collapsed: the summary line already says what we listen to, and
+        # the defaults are prefilled - opening it is the exception, not the rule.
+        self.toggle_btn.configure(text="▸ Setup")
 
     def _build_setup_fields(self, parent):
         wiring = ttk.LabelFrame(parent, text="Wiring", padding=6)
@@ -218,7 +220,7 @@ class App:
                 ("time", "Time", 105, "center"), ("delta", "Δ ms", 65, "e"),
                 ("pipe", "Pipe", 45, "center"), ("len", "Len", 45, "center"),
                 ("summary", "Decoded", 780, "w")]:
-            self.tree.heading(column, text=text)
+            self.tree.heading(column, text=text, anchor=anchor)
             self.tree.column(column, width=width, anchor=anchor)
         scroll = ttk.Scrollbar(frame, orient="vertical", command=self.tree.yview)
         self.tree.configure(yscrollcommand=scroll.set)
@@ -227,6 +229,7 @@ class App:
         self.tree.bind("<<TreeviewSelect>>", self._on_select)
         # Frames the decoder objected to stand out without reading every row.
         self.tree.tag_configure("flagged", foreground="#b00000")
+        self.tree.tag_configure("odd", background="#f4f4f4")
 
     # --- bottom notebook ----------------------------------------------------
 
@@ -241,13 +244,13 @@ class App:
 
         left = ttk.Frame(split)
         ttk.Label(left, text="decoded", foreground="#777").pack(anchor="w")
-        self.detail = tk.Text(left, height=11, wrap="none", font=MONO)
+        self.detail = tk.Text(left, height=7, wrap="none", font=MONO)
         self.detail.pack(fill="both", expand=True)
         split.add(left, weight=3)
 
         right = ttk.Frame(split)
         ttk.Label(right, text="raw", foreground="#777").pack(anchor="w")
-        self.rawview = tk.Text(right, height=11, wrap="none", font=MONO, width=54)
+        self.rawview = tk.Text(right, height=7, wrap="none", font=MONO, width=52)
         self.rawview.pack(fill="both", expand=True)
         split.add(right, weight=2)
         notebook.add(detail_tab, text="Detail")
@@ -255,7 +258,7 @@ class App:
         # Log: everything the dongle says, plus the free-text command line -
         # they belong together because the reply lands here.
         log_tab = ttk.Frame(notebook)
-        self.log = tk.Text(log_tab, height=11, wrap="none", font=MONO)
+        self.log = tk.Text(log_tab, height=7, wrap="none", font=MONO)
         log_scroll = ttk.Scrollbar(log_tab, orient="vertical", command=self.log.yview)
         self.log.configure(yscrollcommand=log_scroll.set)
         self.log.pack(side="top", fill="both", expand=True)
@@ -369,7 +372,10 @@ class App:
             summary, flagged = self._summarise(parser, data)
             values = list(self.tree.item(item, "values"))
             values[4] = summary
-            self.tree.item(item, values=values, tags=("flagged",) if flagged else ())
+            tags = [t for t in self.tree.item(item, "tags") if t == "odd"]
+            if flagged:
+                tags.append("flagged")
+            self.tree.item(item, values=values, tags=tuple(tags))
         self._on_select()
 
     @staticmethod
@@ -387,8 +393,13 @@ class App:
         self.last_stamp = now
 
         summary, flagged = self._summarise(self._parser(), data)
+        tags = []
+        if flagged:
+            tags.append("flagged")
+        if self.frame_count % 2:
+            tags.append("odd")
         item = self.tree.insert("", "end", values=(stamp, delta, pipe, len(data), summary),
-                                tags=("flagged",) if flagged else ())
+                                tags=tuple(tags))
         self.frames[item] = (pipe, data)
         self.frame_count += 1
         self.status.configure(text=f"{self.frame_count} frames")
