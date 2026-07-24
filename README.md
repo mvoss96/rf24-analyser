@@ -170,8 +170,24 @@ WARN irq pin 7 is not interrupt-capable, falling back to polling
 which channels are busy is what you want to know *before* choosing one. The
 sweep retunes the radio across the band, so receiving is impossible while it
 runs; `scan live` resumes it afterwards if it was running. One sweep is about
-25 ms and the firmware does one per loop, so commands - `scan off` above all -
+25 ms and the firmware does one per loop, so commands — `scan off` above all —
 are still answered in between.
+
+The sweep runs at **2 Mbps regardless of the configured data rate**, and puts
+the configured rate back afterwards. The RPD fires on carriers above about
+−64 dBm *within the receiver bandwidth*, and that bandwidth follows the data
+rate. Measured on one band on one evening:
+
+| Configured rate | Channels with hits per sweep |
+|---|---|
+| 250 kbps | 0, 0, 0, 0, 0 |
+| 1 Mbps | 12, 22, 9, 16, 19 |
+| 2 Mbps | 29, 20, 26, 14, 24 |
+
+A scan inheriting a 250 kbps configuration reports an empty band whatever is on
+the air — which is how this was found: the live scan looked broken. So the scan
+measures **the band**; it does not claim to measure what a 250 kbps receiver
+will actually suffer from, which would be a narrower and more forgiving picture.
 
 **`listen`** — mandatory keys are `ch`, `rate`, `crc`, `aw`, `pa`, `ack`, `dpl`
 and at least one `pipeN`; `plsize` is required only when `dpl=0`. Missing keys are

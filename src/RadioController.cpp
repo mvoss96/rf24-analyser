@@ -269,6 +269,26 @@ bool RadioController::transmit(const uint8_t *addr, const uint8_t *data,
   return sent;
 }
 
+// The sweep runs at 2 Mbps whatever the radio is configured for. The RPD fires
+// on carriers above about -64 dBm *inside the receiver bandwidth*, and that
+// bandwidth follows the data rate: measured here, a band busy enough to light up
+// 14-29 channels at 2 Mbps and 9-22 at 1 Mbps lit up exactly zero at 250 kbps.
+// A scan configured for 250 kbps therefore reports an empty band no matter what
+// is on the air, which is worse than useless. This measures the band; it does
+// not claim to measure what a 250 kbps receiver will suffer from.
+void RadioController::scanBegin() {
+  radio_.stopListening();
+  listening_ = false;
+  radio_.setDataRate(RF24_2MBPS);
+}
+
+void RadioController::scanEnd() {
+  if (configured_) {
+    radio_.setDataRate(rateEnum(cfg_.rateKbps));
+    radio_.setChannel(cfg_.channel);
+  }
+}
+
 void RadioController::scanSweep() {
   for (uint8_t ch = 0; ch < CHANNELS; ch++) {
     radio_.setChannel(ch);
@@ -296,8 +316,7 @@ void RadioController::scanReport() {
 
 void RadioController::scan(uint16_t passes) {
   bool wasListening = listening_;
-  radio_.stopListening();
-  listening_ = false;
+  scanBegin();
 
   // Announced before the sweeps, not after: a sweep is a stretch of time with
   // nothing on the wire, and a host that hears about it only afterwards cannot
@@ -307,7 +326,7 @@ void RadioController::scan(uint16_t passes) {
   for (uint16_t pass = 0; pass < passes; pass++) scanSweep();
   scanReport();
 
-  if (configured_) radio_.setChannel(cfg_.channel);
+  scanEnd();
   if (wasListening) {
     radio_.startListening();
     listening_ = true;
@@ -317,8 +336,7 @@ void RadioController::scan(uint16_t passes) {
 
 void RadioController::startScan(uint16_t passesPerReport) {
   scanResume_ = listening_;
-  radio_.stopListening();
-  listening_ = false;
+  scanBegin();
   for (uint8_t ch = 0; ch < CHANNELS; ch++) scanCounts_[ch] = 0;
   scanDone_ = 0;
   scanTarget_ = passesPerReport;
@@ -328,7 +346,7 @@ void RadioController::startScan(uint16_t passesPerReport) {
 void RadioController::stopScan() {
   if (!scanning_) return;
   scanning_ = false;
-  if (configured_) radio_.setChannel(cfg_.channel);
+  scanEnd();
   if (scanResume_) {
     radio_.startListening();
     listening_ = true;

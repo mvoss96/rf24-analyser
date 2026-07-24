@@ -152,6 +152,8 @@ private:
   uint16_t scanDone_ = 0;        // sweeps since the last report
   uint8_t scanCounts_[CHANNELS] = {0};
 
+  void scanBegin();              // stop receiving and widen the receiver
+  void scanEnd();                // put the configured rate and channel back
   void scanSweep();              // one pass over every channel
   void scanReport();             // print and clear the accumulated counts
 

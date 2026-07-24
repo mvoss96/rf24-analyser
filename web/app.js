@@ -428,8 +428,8 @@ function renderScan(event) {
     // carriers above roughly -64 dBm, and one report covers a fraction of a
     // second, so an occasional sender is very unlikely to be caught in it.
     : `No channel exceeded the detector threshold in ${event.passes} passes`
-      + `${live}. The detector only sees carriers above about −64 dBm, and a`
-      + " sender that transmits once a minute will almost never be caught.";
+      + `${live}. It only sees carriers above about −64 dBm, and a sender that`
+      + " transmits once a minute will almost never be caught by a sweep.";
 }
 
 // --- event stream ----------------------------------------------------------
