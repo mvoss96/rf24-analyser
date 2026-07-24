@@ -35,9 +35,10 @@ bool RadioController::setHardware(const HwConfig &hw) {
   led(hw_.ledTx, false);
 
   bool chip = radio_.begin(hw_.ce, hw_.csn);
-  if (!chip) return false;
+  if (!chip) { hwState_ = HW_FAILED; return false; }
 
   hwReady_ = true;
+  hwState_ = HW_CONNECTED;
   if (hw_.irq != NO_PIN) {
     attachInterrupt(digitalPinToInterrupt(hw_.irq), onRadioIrq, FALLING);
   }
@@ -109,6 +110,15 @@ void RadioController::invalidateHw() {
   hwReady_ = false;
   configured_ = false;
   listening_ = false;
+  hwState_ = HW_FAILED;
+}
+
+const __FlashStringHelper *RadioController::hwStateName() const {
+  switch (hwState_) {
+    case HW_CONNECTED: return F("connected");
+    case HW_FAILED:    return F("failed");
+    default:           return F("none");
+  }
 }
 
 bool RadioController::selfTestCe() {
@@ -144,6 +154,10 @@ const __FlashStringHelper *RadioController::stateName() const {
 }
 
 void RadioController::startListening() {
+  // The counters describe one capture, so they start over with it - otherwise
+  // "12 overflows" says nothing about the run you are looking at.
+  rxCount_ = 0;
+  fifoFull_ = 0;
   radio_.startListening();
   listening_ = true;
 }
@@ -166,25 +180,44 @@ bool RadioController::isRepeat(const uint8_t *buf, uint8_t len) {
 void RadioController::drainRx() {
   // A full RX FIFO means the host could not keep up; further frames arriving
   // now are dropped by the chip. Surfacing this separates "lost on air" from
-  // "lost because we were busy printing".
-  if (radio_.rxFifoFull()) Serial.println(F("WARN fifo-full"));
+  // "lost because we were busy printing". The count goes with the warning so a
+  // host that missed earlier lines can still see how often it has happened.
+  if (radio_.rxFifoFull()) {
+    if (fifoFull_ < 0xFFFF) fifoFull_++;
+    Serial.print(F("WARN fifo-full n="));
+    Serial.println(fifoFull_);
+  }
 
   uint8_t pipe = 0;
   while (radio_.available(&pipe)) {
     uint8_t len = cfg_.dpl ? radio_.getDynamicPayloadSize() : cfg_.plSize;
     if (len == 0 || len > 32) {
+      // Say so. This used to discard silently, which in a tool whose whole
+      // purpose is to show what arrives is the worst possible failure mode.
+      Serial.print(F("WARN bad payload length "));
+      Serial.print(len);
+      Serial.print(F(" on p"));
+      Serial.println(pipe);
       radio_.flush_rx(); // corrupt dynamic length: discard to unstick the FIFO
       break;
     }
     uint8_t buf[32];
     radio_.read(buf, len);
+    // Stamped where the frame leaves the FIFO, which is the earliest moment the
+    // firmware knows of it. Host arrival times cannot resolve the few
+    // milliseconds between a sender's repeats: they carry the serial transfer
+    // and the host's scheduling on top.
+    uint32_t stamp = millis();
 
     if (isRepeat(buf, len) && !showRepeats_) continue;
 
+    if (rxCount_ < 0xFFFFFFFF) rxCount_++;
     led(hw_.ledRx, true);
     // Compact hex (no separators) keeps the line short - the serial link is
     // the bottleneck during fast bursts.
-    Serial.print(F("RX p"));
+    Serial.print(F("RX t="));
+    Serial.print(stamp);
+    Serial.print(F(" p"));
     Serial.print(pipe);
     Serial.print(F(" len="));
     Serial.print(len);
@@ -325,8 +358,19 @@ void RadioController::printInfo() {
     Serial.print(F("  pipe"));
     Serial.print(p);
     Serial.print('=');
-    printAddr(cfg_.pipeAddr[p], cfg_.addrWidth);
+    // Pipes 2-5 are configured with one byte but listen on a full address, the
+    // rest of it borrowed from pipe 1. Print what they actually listen on.
+    if (p >= 2) {
+      uint8_t effective[MAX_ADDR_WIDTH];
+      memcpy(effective, cfg_.pipeAddr[1], cfg_.addrWidth);
+      effective[0] = cfg_.pipeAddr[p][0];
+      printAddr(effective, cfg_.addrWidth);
+    } else {
+      printAddr(cfg_.pipeAddr[p], cfg_.addrWidth);
+    }
     Serial.println();
   }
+  Serial.print(F("  rx="));       Serial.println(rxCount_);
+  Serial.print(F("  fifofull=")); Serial.println(fifoFull_);
   Serial.println(F("OK"));
 }

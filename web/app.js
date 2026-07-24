@@ -57,8 +57,10 @@ const PIPES = [0, 1, 2, 3, 4, 5];
 const pipeBytes = (n) => (n >= 2 ? 1 : Number($("aw").value));
 const byteCount = (address) => (address.match(/[0-9a-f]/gi) || []).length / 2;
 
-// What each enabled pipe actually listens on. The remaining bytes of pipes 2-5
-// come from pipe 1, and the firmware wants every address spelled out in full.
+// Each enabled pipe as [number, configured value, address it listens on]. The
+// two differ for pipes 2-5: the firmware takes their one byte, the radio joins
+// it to the rest of pipe 1's address. Showing the joined form keeps that from
+// being a surprise; sending the short form keeps the two ends honest.
 function pipeAddresses() {
   const value = (n) => $("pipe" + n).value.trim();
   const shared = value(1).slice(2);           // "42:54:48:4D:45" -> ":54:48:4D:45"
@@ -77,7 +79,7 @@ function pipeAddresses() {
       errors.push(`pipe ${n} needs pipe 1 - the rest of its address comes from there`);
       bad.add(n);
     } else {
-      list.push([n, n >= 2 ? own + shared : own]);
+      list.push([n, own, n >= 2 ? own + shared : own]);
     }
   }
   return { list, errors, bad };
@@ -86,7 +88,7 @@ function pipeAddresses() {
 function updateSummary() {
   const { list, bad } = pipeAddresses();
   for (const n of PIPES) $("pipe" + n).classList.toggle("invalid", bad.has(n));
-  const pipes = list.map(([n, a]) => `p${n}=${a}`).join(" ");
+  const pipes = list.map(([n, , listensOn]) => `p${n}=${listensOn}`).join(" ");
   $("summary").textContent =
     `ce=${$("ce").value} csn=${$("csn").value}  |  ch${$("ch").value} ` +
     `${$("rate").value}k crc${$("crc").value} aw${$("aw").value} pa=${$("pa").value}` +
@@ -106,7 +108,7 @@ function buildListen() {
     `ack=${$("ack").checked ? 1 : 0}`, `dpl=${$("dpl").checked ? 1 : 0}`,
   ];
   if (!$("dpl").checked) parts.push(`plsize=${$("plsize").value}`);
-  for (const [n, address] of pipeAddresses().list) parts.push(`pipe${n}=${address}`);
+  for (const [n, configured] of pipeAddresses().list) parts.push(`pipe${n}=${configured}`);
   return parts.join(" ");
 }
 

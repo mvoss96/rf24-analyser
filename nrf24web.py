@@ -33,9 +33,11 @@ HERE = Path(__file__).resolve().parent
 WEB_DIR = HERE / "web"
 MAX_FRAMES = 5000
 # Opening the port pulls DTR and resets the dongle, so the greeting takes about
-# two seconds. Past that the silence means something, and saying so beats a pill
-# that reads "connected" next to a port that never answers.
-GREETING_TIMEOUT = 4.0
+# two seconds. After that we ask instead of waiting - not every adapter resets
+# the board, and a dongle that was already running never greets at all. Only if
+# the question goes unanswered too is the silence worth reporting.
+GREETING_ASK = 2.0
+GREETING_TIMEOUT = 4.5
 
 
 class Hub:
@@ -72,6 +74,7 @@ class Session:
         self.parser = parsers.get("bthome")
         self.frames = deque(maxlen=MAX_FRAMES)  # raw (stamp, pipe, data)
         self.last_stamp = None
+        self.last_ms = None
         # Remembered so a tab opened later still learns the current state -
         # the greeting only arrives once, at reset.
         self.greeting = None
@@ -92,17 +95,32 @@ class Session:
         # a sniffer on the other end. The greeting is what does that.
         self.state_text = "connecting…"
         self.hub.publish(self.status_event(port))
-        watchdog = threading.Timer(GREETING_TIMEOUT, self._greeting_overdue, [self.dongle])
-        watchdog.daemon = True
-        watchdog.start()
+        self._unless_greeted(GREETING_ASK, self._ask_status)
+        self._unless_greeted(GREETING_TIMEOUT, self._greeting_overdue)
 
-    def _greeting_overdue(self, expected):
-        if self.dongle is not expected or self.greeting is not None:
-            return  # answered, or this connection is already history
+    def _unless_greeted(self, delay, action):
+        """Runs `action` later, unless the greeting arrived or the port changed."""
+        expected = self.dongle
+
+        def run():
+            if self.dongle is expected and self.greeting is None:
+                action()
+
+        timer = threading.Timer(delay, run)
+        timer.daemon = True
+        timer.start()
+
+    def _ask_status(self):
+        try:
+            self.send("status")
+        except Exception:
+            pass  # disconnected in the meantime; the overdue timer will notice
+
+    def _greeting_overdue(self):
         self.state_text = "no greeting"
         self.hub.publish({
             "type": "line", "kind": "warn",
-            "text": f"WARN no greeting after {GREETING_TIMEOUT:.0f}s - "
+            "text": f"WARN no answer to status after {GREETING_TIMEOUT:.1f}s - "
                     f"wrong port, or the dongle is not running this firmware?"})
         self.hub.publish(self.status_event())
 
@@ -112,6 +130,7 @@ class Session:
             self.dongle.close()
             self.dongle = None
         self.last_stamp = None
+        self.last_ms = None
         self.greeting = None
         self.state_text = "not connected"
         self.hub.publish(self.status_event())
@@ -176,12 +195,20 @@ class Session:
     def _handle(self, line):
         received = dongle.parse_rx(line)
         if received is not None:
+            device_ms, pipe, data = received
             now = time.time()
             stamp = (time.strftime("%H:%M:%S", time.localtime(now))
                      + f".{int(now % 1 * 1000):03d}")
-            delta = None if self.last_stamp is None else round((now - self.last_stamp) * 1000, 1)
+            # Wall clock for "when", the dongle's own clock for "how far apart".
+            # The gap between a sender's repeats is a few milliseconds, which is
+            # the same order as the serial transfer and this thread's scheduling
+            # - measuring it here would mostly measure the host.
+            if device_ms is not None:
+                delta = None if self.last_ms is None else round(device_ms - self.last_ms, 1)
+                self.last_ms = device_ms
+            else:
+                delta = None if self.last_stamp is None else round((now - self.last_stamp) * 1000, 1)
             self.last_stamp = now
-            pipe, data = received
             self.frames.append((stamp, delta, pipe, data))
             self.hub.publish(self._decode(stamp, delta, pipe, data))
             return
@@ -294,6 +321,7 @@ class Handler(BaseHTTPRequestHandler):
             elif self.path == "/api/clear":
                 self.session.frames.clear()
                 self.session.last_stamp = None
+                self.session.last_ms = None
             else:
                 self.send_error(404)
                 return

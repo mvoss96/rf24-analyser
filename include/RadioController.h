@@ -65,6 +65,18 @@ public:
   bool listening() const { return listening_; }
   bool chipConnected() { return radio_.isChipConnected(); }
 
+  // "none" until a wiring is adopted, then "connected" or "failed". Kept here
+  // so `status` can report the same thing the greeting did, at any time.
+  const __FlashStringHelper *hwStateName() const;
+  void markHwFailed() { hwState_ = HW_FAILED; }
+
+  // Frames printed since the last startListening(), and the number of times the
+  // RX FIFO was found full. The chip has no lost-frame counter, so a full FIFO
+  // is the only evidence available - it means at least one frame was at risk,
+  // not that exactly one was lost.
+  uint32_t rxCount() const { return rxCount_; }
+  uint16_t fifoFullCount() const { return fifoFull_; }
+
   // "nohw" | "unconfigured" | "idle" | "listening"
   const __FlashStringHelper *stateName() const;
 
@@ -112,6 +124,8 @@ private:
   // the nRF24 tunes up to channel 125 (2525 MHz), which is outside it.
   static constexpr uint8_t CE_TEST_CHANNEL = 2; // 2402 MHz
 
+  enum HwState : uint8_t { HW_NONE, HW_CONNECTED, HW_FAILED };
+
   RF24 radio_; // pinless constructor: pins are supplied at begin() time
   RadioConfig cfg_;
   HwConfig hw_;
@@ -119,6 +133,9 @@ private:
   bool configured_ = false;
   bool listening_ = false;
   bool showRepeats_ = true;
+  HwState hwState_ = HW_NONE;
+  uint32_t rxCount_ = 0;
+  uint16_t fifoFull_ = 0;
 
   void led(uint8_t pin, bool on);
 

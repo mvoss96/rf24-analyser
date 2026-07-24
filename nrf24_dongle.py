@@ -20,7 +20,7 @@ except ImportError:  # pragma: no cover - reported by the entry points
 
 # Command-protocol version this client speaks; compared against the firmware's
 # greeting so a mismatch is reported instead of producing cryptic errors.
-EXPECTED_API = 2
+EXPECTED_API = 3
 
 DEFAULT_BAUD = 500000
 
@@ -48,17 +48,28 @@ def parse_greeting(line):
 
 
 def parse_rx(line):
-    """Parses 'RX p<pipe> len=<n> <hex>' into (pipe, data) or None.
+    """Parses 'RX t=<ms> p<pipe> len=<n> <hex>' into (stamp_ms, pipe, data).
+
+    Returns None for any other line. `stamp_ms` is the firmware's own millis()
+    at the moment the frame left the RX FIFO - the only clock in the system that
+    has not had the serial link and the host scheduler added to it. It is None
+    for the pre-api-3 form, which carried no timestamp.
 
     Accepts both the compact hex the firmware emits ("4D565202...") and the
     space-separated form older logs used.
     """
     if not line.startswith("RX "):
         return None
+    stamp = None
     pipe = None
     tokens = []
     for token in line.split()[1:]:
-        if token.startswith("p") and pipe is None:
+        if token.startswith("t=") and stamp is None:
+            try:
+                stamp = int(token[2:])
+            except ValueError:
+                return None
+        elif token.startswith("p") and pipe is None:
             try:
                 pipe = int(token[1:])
             except ValueError:
@@ -74,7 +85,7 @@ def parse_rx(line):
         data = [int(blob[i:i + 2], 16) for i in range(0, len(blob), 2)]
     except ValueError:
         return None
-    return pipe, data
+    return stamp, pipe, data
 
 
 def parse_scan(line):
@@ -94,7 +105,11 @@ def build_hwset(ce, csn, irq="none", led_rx="none", led_tx="none"):
 
 
 def build_listen(ch, rate, crc, aw, pa, ack, dpl, pipes, plsize=None):
-    """Builds a full `listen` line. `pipes` maps pipe number -> address string."""
+    """Builds a full `listen` line. `pipes` maps pipe number -> address string.
+
+    Pipes 0 and 1 take `aw` bytes; pipes 2-5 take exactly one, since the radio
+    shares the rest of their address with pipe 1.
+    """
     parts = [f"listen ch={ch}", f"rate={rate}", f"crc={crc}", f"aw={aw}",
              f"pa={pa}", f"ack={int(ack)}", f"dpl={int(dpl)}"]
     if not dpl and plsize:

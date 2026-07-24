@@ -56,30 +56,19 @@ def decode_frame(data, parser_name="bthome"):
 
 
 def try_pretty(line):
-    """If line is an 'RX ...' frame, return decoded text; else None."""
-    if not line.startswith("RX "):
+    """If line is an 'RX ...' frame, return decoded text; else None.
+
+    Parsing goes through the shared client rather than a second copy here - the
+    copy that used to live in this file silently stopped decoding anything the
+    day the firmware added a timestamp to the RX line.
+    """
+    received = dongle.parse_rx(line)
+    if received is None:
         return None
-    parts = line.split()
-    hex_tokens = []
-    pipe = "?"
-    length = "?"
-    for tok in parts[1:]:
-        if tok.startswith("p"):
-            pipe = tok[1:]
-        elif tok.startswith("len="):
-            length = tok[4:]
-        else:
-            hex_tokens.append(tok)
-    # The firmware emits compact hex ("4D565202..."); older logs used
-    # space-separated bytes. Joining handles both.
-    blob = "".join(hex_tokens)
-    if not blob or len(blob) % 2:
-        return None
-    try:
-        data = [int(blob[i:i + 2], 16) for i in range(0, len(blob), 2)]
-    except ValueError:
-        return None
-    header = f"-- RX pipe {pipe}  ({length} bytes)"
+    stamp, pipe, data = received
+    header = f"-- RX pipe {pipe}  ({len(data)} bytes)"
+    if stamp is not None:
+        header += f"  t={stamp}ms"
     return "\n".join([header] + decode_frame(data))
 
 

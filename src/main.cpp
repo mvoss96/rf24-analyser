@@ -12,18 +12,17 @@
  *
  *   nohw --hwset--> unconfigured --listen k=v...--> listening <--stop--> idle
  *
- * Received frames are printed as:  RX p<pipe> len=<n> <hex payload>
- * Every command is answered with "OK ..." or "ERR ...".
+ * Received frames are printed as:  RX t=<ms> p<pipe> len=<n> <hex payload>
+ * The timestamp is the firmware's own millis() taken as the frame leaves the
+ * RX FIFO; host arrival times cannot resolve the milliseconds between a
+ * sender's repeats. Every command is answered with "OK ..." or "ERR ...".
  */
 
 #include <Arduino.h>
 #include "RadioController.h"
 #include "CommandParser.h"
 #include "HwStore.h"
-
-// Firmware version, and the command-protocol version the host can check.
-#define FW_VERSION "2.3.0"
-#define API_VERSION 2
+#include "Protocol.h"
 
 static RadioController g_radio;
 static CommandParser g_parser(g_radio);
@@ -40,36 +39,19 @@ void setup() {
   // no information - what matters is whether it works. "connected" therefore
   // means both checks passed: the chip answers over SPI and CE actually keys
   // it. Why a wiring failed goes into a WARN line rather than the greeting.
-  const __FlashStringHelper *hwState = F("none");
   HwConfig stored;
-  const bool haveStored = HwStore::load(stored);
-  if (haveStored) {
+  if (HwStore::load(stored)) {
     if (!g_radio.setHardware(stored)) {
       Serial.println(F("WARN stored wiring: chip does not answer over spi"));
-      hwState = F("failed");
     } else if (!g_radio.selfTestCe()) {
       Serial.println(F("WARN stored wiring: ce pin does not key the radio"));
       g_radio.invalidateHw();
-      hwState = F("failed");
-    } else {
-      hwState = F("connected");
     }
   }
 
-  Serial.print(F("NRF24SNIFFER fw=" FW_VERSION " api="));
-  Serial.print(API_VERSION);
-  Serial.print(F(" state="));
-  Serial.print(g_radio.stateName());
-  Serial.print(F(" hw="));
-  Serial.print(hwState);
-  // Spell the wiring out rather than just its provenance: a stored-but-wrong
-  // pin is otherwise invisible, and a wrong CE cannot be detected electrically
-  // (isChipConnected() exercises SPI only). Seeing the pins is the check.
-  if (haveStored) {
-    Serial.print(' ');
-    g_radio.printWiring();
-  }
-  Serial.println();
+  // The greeting is exactly what `status` prints, so a host that missed the
+  // greeting learns the same things by asking.
+  g_parser.printStatus();
 }
 
 void loop() {

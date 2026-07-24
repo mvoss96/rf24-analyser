@@ -66,15 +66,22 @@ terminal works unconfigured. Every command is answered with `OK ...` or `ERR ...
 > 16 MHz (0% error), and with compact hex output plus a 256-byte TX buffer one
 > line costs ~1 ms.
 
-### Greeting
+### Greeting and `status`
 
 ```
-NRF24SNIFFER fw=2.3.0 api=2 state=unconfigured hw=connected ce=9 csn=10 irq=2 led_rx=8 led_tx=A1
+NRF24SNIFFER fw=3.0.0 api=3 state=unconfigured hw=connected ce=9 csn=10 irq=2 led_rx=8 led_tx=A1 t=133 rx=0 fifofull=0
 ```
+
+Printed once at boot, and identically by **`status`** at any time. The greeting
+alone was not enough: it arrives only on reset, so a host attaching to a dongle
+that is already running — or through an adapter that does not pull DTR — had no
+way to learn what it was talking to except to wait and give up.
 
 `fw` is the firmware version, `api` the command-protocol version — the host can
 check it and refuse to talk to an incompatible build. When a wiring is loaded the
 pins are spelled out, because a stored-but-wrong pin is otherwise invisible.
+`t` is the firmware's uptime in ms, `rx` and `fifofull` the counters described
+under [RX output](#rx-output).
 
 | `hw=` | Meaning |
 |---|---|
@@ -89,7 +96,7 @@ than reporting them separately. When a wiring fails, the reason is stated in a
 
 ```
 WARN stored wiring: ce pin does not key the radio
-NRF24SNIFFER fw=2.3.0 api=2 state=nohw hw=failed ce=8 csn=10 irq=2 led_rx=8 led_tx=A1
+NRF24SNIFFER fw=3.0.0 api=3 state=nohw hw=failed ce=8 csn=10 irq=2 led_rx=8 led_tx=A1
 ```
 
 ### Commands
@@ -101,6 +108,7 @@ NRF24SNIFFER fw=2.3.0 api=2 state=nohw hw=failed ce=8 csn=10 irq=2 led_rx=8 led_
 | `listen <k=v>...` | apply a complete radio config and start receiving |
 | `listen` | resume with the retained config |
 | `stop` | stop receiving, keep the config |
+| `status` | the greeting line again, at any time |
 | `info` | state, wiring and configuration |
 | `scan [passes]` | energy scan across all channels (default 64) |
 | `repeats <0\|1>` | `0` suppresses identical back-to-back frames |
@@ -170,38 +178,64 @@ Addresses and payloads accept both the compact form the RX output uses
 be pasted straight into a `tx`. The **leftmost** byte is address byte 0, matching
 the sender's address array — `pipe1=42:54:48:4D:45` is ASCII `"BTHME"`.
 
+**Pipes 0 and 1** take a full address of `aw` bytes. **Pipes 2–5 take exactly one
+byte**, because that is all the hardware gives them: they share address bytes
+1–4 with pipe 1 and differ only in byte 0. Demanding a full address there would
+have the host inventing four bytes the chip then ignores.
+
+```
+> listen ... pipe1=42:54:48:4D:45 pipe2=4D:54:48:4D:45
+ERR pipe 2 takes 1 byte - pipes 2-5 share the rest with pipe 1
+> listen ... pipe1=42:54:48:4D:45 pipe2=4D
+OK listening
+```
+
+`info` prints what those pipes actually listen on, joined with pipe 1's bytes:
+`pipe2=4D:54:48:4D:45`.
+
 ### Example session
 
 ```
-NRF24SNIFFER fw=2.3.0 api=2 state=nohw hw=none
+NRF24SNIFFER fw=3.0.0 api=3 state=nohw hw=none t=91 rx=0 fifofull=0
 > hwset ce=9 csn=10 irq=2 led_rx=8 led_tx=A1
 OK hw connected saved
 > listen ch=100 rate=250 crc=16 aw=5 pa=low ack=0 dpl=1 pipe1=42:54:48:4D:45
 OK listening
-RX p1 len=16 4D565202D2FC44004501350C8B093A01
+RX t=43230 p1 len=16 4D565202D2FC44004501350C8B093A01
 ```
 
 ### RX output
 
 ```
-RX p1 len=16 4D565202D2FC44004501350C8B093A01
+RX t=43230 p1 len=16 4D565202D2FC44004501350C8B093A01
 ```
 
-`p<pipe>` is the pipe number, `len=<n>` the payload length, then `2*n` hex chars.
-A sender that repeats each event emits several identical frames; `repeats 0`
-prints only the first of a run (identical payload within 500 ms).
+`t=<ms>` is the firmware's own `millis()`, taken as the frame leaves the RX
+FIFO; `p<pipe>` is the pipe number, `len=<n>` the payload length, then `2*n` hex
+chars. A sender that repeats each event emits several identical frames;
+`repeats 0` prints only the first of a run (identical payload within 500 ms).
+
+> Why the firmware timestamps: host arrival times cannot resolve the gap between
+> a sender's repeats. Measured on the host the same three repeats came out 0.5
+> and 0.3 ms apart; on the dongle's clock they are **5 and 6 ms**. The host was
+> timing how fast it drained three lines the OS had already buffered, not the
+> air. Anything that reasons about repeat spacing or burst timing has to use
+> `t=`.
 
 If the RX FIFO was already full, frames were dropped by the chip:
 
 ```
-WARN fifo-full
+WARN fifo-full n=3
 ```
 
 That line is the discriminator when packets go missing: **with** it the host could
-not keep up, **without** it the loss happened on the air.
+not keep up, **without** it the loss happened on the air. `n` is the running count
+for the current capture, so a host that missed earlier lines still sees the total;
+`status` reports it as `fifofull=` alongside `rx=`, the number of frames printed.
+Both reset on every `listen`, because they describe one capture.
 
-> nRF24 hardware note: reading pipes 2–5 share address bytes 1–4 with pipe 1 and
-> differ only in byte 0.
+The chip has no lost-frame counter, so `fifofull` is evidence, not a tally: a
+full FIFO means at least one frame was at risk, not that exactly one was lost.
 
 ## Operating it from a plain terminal
 
@@ -249,7 +283,7 @@ field against the version it speaks and warns on a mismatch.
 ### Pretty-print format
 
 ```
--- RX pipe 1  (15 bytes)
+-- RX pipe 1  (15 bytes)  t=43230ms
   sender    : 4D:56:52:02  "MVR."
   bthome    : v2 trigger-based
   packet id : 5
@@ -297,11 +331,17 @@ The BTHome packet id is a free-running per-event counter, so gaps in it measure
 loss directly. Log a session (`:log run.txt`) and count distinct ids and gaps:
 
 - `WARN fifo-full` present → the host is the bottleneck; raise the baud rate or
-  use `repeats 0`.
+  use `repeats 0`. `status` gives the running total as `fifofull=` without having
+  to find the warnings in the log.
 - No warnings, but whole events missing → loss on the air. If complete events
   vanish far more often than independent per-packet loss would predict, the
   interference is **bursty** and all repeats fall inside one outage. Spreading the
   sender's repeats further apart in time helps more than sending more of them.
+
+Timing arguments must use the `t=` stamps, not host arrival times — the two
+disagree by an order of magnitude on exactly the interval that matters here (see
+[RX output](#rx-output)). "The repeats arrive together, so one outage swallows
+all three" is a claim about the air, and only the dongle's clock measures it.
 
 ## Web UI
 
@@ -360,8 +400,33 @@ class MyParser(Parser):
 ```
 
 Neither the web UI nor the terminal needs to change — the dropdown is built from
-the registry. The legacy nRF24 protocols in
-`libs/esphome-rf24-remote/PROTOCOL.md` are the obvious next candidates.
+the registry.
+
+`nrf24smart` is the proof of that: the legacy protocol this tool replaces, added
+as a second decoder that shares nothing with BTHome, with no edit anywhere else.
+It was reconstructed from `archive/smart-home-nrf` (`RFcomm/*.h` and
+`nrf24Smart/message.py`) and is checked against those classes.
+
+### NRF24Smart, and what the frame does not say
+
+Three packet shapes share one `id, uuid[4], msg_type` header:
+
+```
+device  id uuid[4] type fw power interval msgnum  data[n] sum[2]   (12+n)
+host    id uuid[4] type                           data[n] sum[2]    (8+n)
+remote  id uuid[4] type target[4] layer value     sum[2]            (14)
+```
+
+The checksum cannot tell them apart. It covers "everything but the last two
+bytes" in all three, so a frame that validates as one validates as all of them.
+The original receiver does not need to care: it keys on `msg_type == 6` for
+remote packets and reads everything else as a device packet, because it only
+ever receives from devices — host packets are the ones it sends.
+
+A sniffer sees both directions and has no such context, so the decoder infers
+one: `set` and `reset` only travel host→device, `boot`/`status`/`ok`/`error`
+only device→host. `init` travels both ways and is reported as undetermined
+rather than guessed.
 
 ## Layout
 
@@ -379,6 +444,6 @@ nrf24-sniffer/
   nrf24web.py                 web UI backend (stdlib http.server + SSE)
   web/                        index.html, app.css, app.js
   nrf24_dongle.py             serial protocol client, shared by both
-  nrf24_parsers.py            decoder registry: raw, bthome, ...
+  nrf24_parsers.py            decoder registry: raw, bthome, nrf24smart
   requirements.txt            pyserial, bthome-ble
 ```

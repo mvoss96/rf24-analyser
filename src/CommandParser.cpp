@@ -1,5 +1,6 @@
 #include "CommandParser.h"
 #include "HwStore.h"
+#include "Protocol.h"
 
 // --- Small parsing helpers -------------------------------------------------
 
@@ -109,6 +110,29 @@ void CommandParser::feed(char c) {
 }
 
 // --- Command handlers ------------------------------------------------------
+
+void CommandParser::printStatus() {
+  Serial.print(F("NRF24SNIFFER fw=" FW_VERSION " api="));
+  Serial.print(API_VERSION);
+  Serial.print(F(" state="));
+  Serial.print(radio_.stateName());
+  Serial.print(F(" hw="));
+  Serial.print(radio_.hwStateName());
+  // Spell the wiring out rather than just its provenance: a stored-but-wrong
+  // pin is otherwise invisible, and a wrong CE cannot be detected electrically
+  // (isChipConnected() exercises SPI only). Seeing the pins is the check.
+  if (radio_.hw().ce != NO_PIN || radio_.hw().csn != NO_PIN) {
+    Serial.print(' ');
+    radio_.printWiring();
+  }
+  Serial.print(F(" t="));
+  Serial.print(millis());
+  Serial.print(F(" rx="));
+  Serial.print(radio_.rxCount());
+  Serial.print(F(" fifofull="));
+  Serial.print(radio_.fifoFullCount());
+  Serial.println();
+}
 
 void CommandParser::handleHwset(char *args) {
   if (radio_.listening()) { err(F("stop first")); return; }
@@ -248,8 +272,27 @@ void CommandParser::handleListen(char *args) {
 
   if (have != K_ALL) { reportMissing(have); return; }
   if (!c.dpl && !havePlsize) { err(F("missing: plsize (required when dpl=0)")); return; }
+  // Pipes 2-5 have exactly one byte of their own; the radio takes the rest of
+  // their address from pipe 1. Demanding a full address there would have the
+  // host inventing bytes that the chip then ignores.
   for (uint8_t p = 0; p < 6; p++) {
-    if (c.pipeEn[p] && pipeLen[p] != c.addrWidth) { err(F("pipe address length must match aw")); return; }
+    if (!c.pipeEn[p]) continue;
+    uint8_t need = (p >= 2) ? 1 : c.addrWidth;
+    if (pipeLen[p] != need) {
+      Serial.print(F("ERR pipe "));
+      Serial.print(p);
+      Serial.print(F(" takes "));
+      Serial.print(need);
+      if (p >= 2) Serial.println(F(" byte - pipes 2-5 share the rest with pipe 1"));
+      else        Serial.println(F(" bytes, one per aw"));
+      return;
+    }
+    if (p >= 2 && !c.pipeEn[1]) {
+      Serial.print(F("ERR pipe "));
+      Serial.print(p);
+      Serial.println(F(" needs pipe1 - the rest of its address comes from there"));
+      return;
+    }
   }
 
   radio_.applyConfig(c);
@@ -308,6 +351,8 @@ void CommandParser::dispatch(char *line) {
     if (!radio_.hwReady()) { err(F("no hardware - run hwset first")); return; }
     radio_.stopListening();
     Serial.println(F("OK stopped"));
+  } else if (strcmp(cmd, "status") == 0) {
+    printStatus();
   } else if (strcmp(cmd, "info") == 0) {
     radio_.printInfo();
   } else if (strcmp(cmd, "scan") == 0) {
