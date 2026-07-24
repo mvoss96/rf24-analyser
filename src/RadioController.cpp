@@ -149,6 +149,7 @@ bool RadioController::selfTestCe() {
 
 const __FlashStringHelper *RadioController::stateName() const {
   if (!hwReady_) return F("nohw");
+  if (scanning_) return F("scanning");
   if (!configured_) return F("unconfigured");
   return listening_ ? F("listening") : F("idle");
 }
@@ -233,6 +234,17 @@ void RadioController::drainRx() {
 }
 
 void RadioController::poll() {
+  if (scanning_) {
+    // One sweep per poll, so commands - `scan off` above all - are still read
+    // between them. A sweep is about 25 ms of blocked radio.
+    if (scanDone_ == 0) {
+      Serial.print(F("SCAN passes="));
+      Serial.println(scanTarget_);
+    }
+    scanSweep();
+    if (scanDone_ >= scanTarget_) scanReport();
+    return;
+  }
   if (listening_ && (s_rxFlag || radio_.available())) {
     drainRx();
   }
@@ -257,42 +269,71 @@ bool RadioController::transmit(const uint8_t *addr, const uint8_t *data,
   return sent;
 }
 
-void RadioController::scan(uint16_t passes) {
-  uint8_t counts[126] = {0};
-  bool wasListening = listening_;
-  radio_.stopListening();
-
-  // Announced before the sweep, not after: the sweep blocks for about a second
-  // with nothing on the wire, and a host that only hears about it afterwards
-  // cannot tell that from a command that was ignored.
-  Serial.print(F("SCAN passes="));
-  Serial.println(passes);
-
-  for (uint16_t pass = 0; pass < passes; pass++) {
-    for (uint8_t ch = 0; ch <= 125; ch++) {
-      radio_.setChannel(ch);
-      radio_.startListening();
-      delayMicroseconds(130);
-      radio_.stopListening();
-      if (radio_.testRPD() && counts[ch] < 255) counts[ch]++;
-    }
+void RadioController::scanSweep() {
+  for (uint8_t ch = 0; ch < CHANNELS; ch++) {
+    radio_.setChannel(ch);
+    radio_.startListening();
+    delayMicroseconds(130);
+    radio_.stopListening();
+    if (radio_.testRPD() && scanCounts_[ch] < 255) scanCounts_[ch]++;
   }
+  scanDone_++;
+}
 
-  for (uint8_t ch = 0; ch <= 125; ch++) {
-    if (counts[ch]) {
+void RadioController::scanReport() {
+  for (uint8_t ch = 0; ch < CHANNELS; ch++) {
+    if (scanCounts_[ch]) {
       Serial.print(F("SCAN ch="));
       Serial.print(ch);
       Serial.print(F(" hits="));
-      Serial.println(counts[ch]);
+      Serial.println(scanCounts_[ch]);
     }
+    scanCounts_[ch] = 0;
   }
+  Serial.println(F("SCAN end"));
+  scanDone_ = 0;
+}
 
-  radio_.setChannel(cfg_.channel);
+void RadioController::scan(uint16_t passes) {
+  bool wasListening = listening_;
+  radio_.stopListening();
+  listening_ = false;
+
+  // Announced before the sweeps, not after: a sweep is a stretch of time with
+  // nothing on the wire, and a host that hears about it only afterwards cannot
+  // tell that from a command that was ignored.
+  Serial.print(F("SCAN passes="));
+  Serial.println(passes);
+  for (uint16_t pass = 0; pass < passes; pass++) scanSweep();
+  scanReport();
+
+  if (configured_) radio_.setChannel(cfg_.channel);
   if (wasListening) {
     radio_.startListening();
     listening_ = true;
   }
   Serial.println(F("OK scan done"));
+}
+
+void RadioController::startScan(uint16_t passesPerReport) {
+  scanResume_ = listening_;
+  radio_.stopListening();
+  listening_ = false;
+  for (uint8_t ch = 0; ch < CHANNELS; ch++) scanCounts_[ch] = 0;
+  scanDone_ = 0;
+  scanTarget_ = passesPerReport;
+  scanning_ = true;
+}
+
+void RadioController::stopScan() {
+  if (!scanning_) return;
+  scanning_ = false;
+  if (configured_) radio_.setChannel(cfg_.channel);
+  if (scanResume_) {
+    radio_.startListening();
+    listening_ = true;
+  }
+  scanResume_ = false;
 }
 
 static void printAddr(const uint8_t *a, uint8_t width) {

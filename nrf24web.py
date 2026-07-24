@@ -86,6 +86,7 @@ class Session:
         # the greeting only arrives once, at reset.
         self.greeting = None
         self.state_text = "not connected"
+        self.was_listening = False
         self.scan = None
         self._pump = None
         self._stop = threading.Event()
@@ -140,12 +141,25 @@ class Session:
         self.last_stamp = None
         self.last_ms = None
         self.greeting = None
+        self.was_listening = False
         self.state_text = "not connected"
         self.hub.publish(self.status_event())
 
     def status_event(self, port=None):
         return {"type": "status", "connected": self.dongle is not None,
                 "port": port, "state": self.state_text, "greeting": self.greeting}
+
+    def set_state(self, text):
+        """Records the state and tells every tab.
+
+        The browser used to infer this from the text of log lines, which meant
+        every new state had to be taught to two places - and the one that was
+        forgotten was the browser, silently.
+        """
+        if text == self.state_text:
+            return
+        self.state_text = text
+        self.hub.publish(self.status_event())
 
     def send(self, line):
         if self.dongle is None:
@@ -241,6 +255,7 @@ class Session:
                      "expectedApi": dongle.EXPECTED_API}
             self.greeting = event
             self.state_text = greeting.get("state", "connected")
+            self.was_listening = self.state_text == "listening"
             self.hub.publish(event)
             return
 
@@ -256,14 +271,25 @@ class Session:
             if hit is not None and self.scan is not None:
                 self.scan["hits"][hit[0]] = hit[1]
             return
-        if line.startswith("OK scan done") and self.scan is not None:
-            self.hub.publish({"type": "scan", "state": "done", **self.scan})
+        if line.startswith("SCAN end"):
+            if self.scan is not None:
+                self.hub.publish({"type": "scan", "state": "done", **self.scan})
+                self.scan = None
+            return
+        if line.startswith("OK scan live"):
+            self.set_state("scanning")
+        elif line.startswith("OK scan stopped"):
+            # Stopping cuts the report window short, so the block already
+            # announced will never be completed. Counting it would show a
+            # fraction of a sweep against a full sweep's denominator.
             self.scan = None
-
-        if line.startswith("OK listening"):
-            self.state_text = "listening"
+            self.set_state("listening" if self.was_listening else "idle")
+        elif line.startswith("OK listening"):
+            self.was_listening = True
+            self.set_state("listening")
         elif line.startswith("OK stopped"):
-            self.state_text = "idle"
+            self.was_listening = False
+            self.set_state("idle")
 
         kind = "info"
         if line.startswith("ERR"):

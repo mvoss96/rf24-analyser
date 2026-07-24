@@ -211,6 +211,9 @@ void CommandParser::handleHwset(char *args) {
 
 void CommandParser::handleListen(char *args) {
   if (!radio_.hwReady()) { err(F("no hardware - run hwset first")); return; }
+  // Scanning retunes the radio across the band, so the two cannot coexist.
+  // Asking to listen is unambiguous about which one is wanted.
+  radio_.stopScan();
 
   if (args == nullptr) {
     if (!radio_.configured()) { reportMissing(0); return; }
@@ -349,6 +352,7 @@ void CommandParser::dispatch(char *line) {
     handleListen(rest);
   } else if (strcmp(cmd, "stop") == 0) {
     if (!radio_.hwReady()) { err(F("no hardware - run hwset first")); return; }
+    radio_.stopScan();     // "stop" means stop, whichever mode is running
     radio_.stopListening();
     Serial.println(F("OK stopped"));
   } else if (strcmp(cmd, "status") == 0) {
@@ -356,9 +360,21 @@ void CommandParser::dispatch(char *line) {
   } else if (strcmp(cmd, "info") == 0) {
     radio_.printInfo();
   } else if (strcmp(cmd, "scan") == 0) {
-    if (!radio_.configured()) { err(F("unconfigured - run listen first")); return; }
-    int v = rest ? atoi(rest) : 0;
-    radio_.scan((v <= 0) ? 64 : (uint16_t)v);
+    // Deliberately does not require a radio configuration: which channels are
+    // busy is exactly what you want to know *before* choosing one.
+    if (!radio_.hwReady()) { err(F("no hardware - run hwset first")); return; }
+    if (rest != nullptr && strcmp(rest, "off") == 0) {
+      radio_.stopScan();
+      Serial.println(F("OK scan stopped"));
+    } else if (rest != nullptr && strncmp(rest, "live", 4) == 0) {
+      int v = atoi(rest + 4);   // "live" or "live <passes per report>"
+      radio_.startScan((v <= 0) ? 8 : (uint16_t)v);
+      Serial.println(F("OK scan live"));
+    } else {
+      if (radio_.scanning()) { err(F("scan live is running - scan off first")); return; }
+      int v = rest ? atoi(rest) : 0;
+      radio_.scan((v <= 0) ? 64 : (uint16_t)v);
+    }
   } else if (strcmp(cmd, "tx") == 0) {
     handleTx(rest);
   } else if (strcmp(cmd, "repeats") == 0) {

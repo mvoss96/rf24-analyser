@@ -104,8 +104,14 @@ def all_parsers():
     return list(_REGISTRY.values())
 
 
-def hexdump(data, per_line=16):
-    """Classic offset / hex / ASCII dump."""
+def hexdump(data, per_line=8):
+    """Classic offset / hex / ASCII dump.
+
+    Eight bytes a line, not the usual sixteen: this is read in a pane beside the
+    decoded fields, and at sixteen the line is 60 characters wide and needs a
+    horizontal scrollbar to see the end of. A frame is at most 32 bytes, so four
+    short lines cost nothing and can be taken in at a glance.
+    """
     lines = []
     for off in range(0, len(data), per_line):
         chunk = data[off:off + per_line]

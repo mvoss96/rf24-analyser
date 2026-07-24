@@ -70,8 +70,10 @@
 
     <div class="panel" id="panel-scan" hidden>
       <div class="scan-head">
-        <button class="btn ghost small needs-link" data-cmd="scan">Scan</button>
-        <span id="scan-note" class="dim">All 126 channels, ~1 s. Reception pauses meanwhile.</span>
+        <button id="scan-run" class="btn small needs-link">Scan</button>
+        <label class="check" title="Keep sweeping and update the chart as it goes">
+          <input type="checkbox" id="scan-live" checked> live</label>
+        <span id="scan-note" class="dim">All 126 channels. Reception pauses while it runs.</span>
       </div>
       <div class="scan-chart" id="scan-chart"></div>
     </div>

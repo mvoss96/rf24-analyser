@@ -43,22 +43,26 @@ function setLinkControls(enabled) {
 }
 
 const listening = () => state === "listening";
+const scanning = () => state === "scanning";
 
 function setState(text, cls) {
   state = text;
   $("state-text").textContent = text;
   $("state").className = "pill " + cls;
   // One button for one thing: whether the radio is receiving. Two buttons meant
-  // one of them was always the wrong one to press.
+  // one of them was always the wrong one to press. The scan button works the
+  // same way, and the radio can only do one of the two at a time.
   $("run").textContent = listening() ? "Stop" : "Start";
   $("run").classList.toggle("primary", !listening());
+  $("scan-run").textContent = scanning() ? "Stop scan" : "Scan";
+  $("scan-run").classList.toggle("primary", scanning());
 }
 
 // Everything that is neither idle nor live is amber, except the states that
 // mean the dongle is not going to answer - those have to read as a problem.
 function stateClass(text, isConnected) {
   if (!isConnected) return "idle";
-  if (text === "listening") return "live";
+  if (text === "listening" || text === "scanning") return "live";
   if (/no greeting|failed|mismatch|error/.test(text)) return "bad";
   return "warn";
 }
@@ -383,37 +387,49 @@ const CHANNELS = 126;   // 0..125 = 2400..2525 MHz
 function renderScan(event) {
   const note = $("scan-note");
   if (event.state === "running") {
-    note.textContent = "Scanning all 126 channels…  (reception is paused meanwhile)";
-    $("scan-chart").replaceChildren();
+    // Live reports arrive every few hundred ms; clearing the chart each time
+    // would make it flicker rather than update.
+    if (!$("scan-chart").children.length) {
+      note.textContent = "Scanning all 126 channels…  (reception is paused meanwhile)";
+    }
     showTab("scan");
     return;
   }
 
   const hits = event.hits || {};
-  const busiest = Math.max(1, ...Object.values(hits).map(Number));
-  const listening = Number($("ch").value);
+  const busiest = Math.max(0, ...Object.values(hits).map(Number));
+  const tuned = Number($("ch").value);
 
+  // Scaled against the passes in this report, not against the busiest channel
+  // in it: a relative scale would make every live report redraw to full height
+  // and the bars would say nothing about how busy anything actually is.
   const chart = $("scan-chart");
-  chart.replaceChildren();
+  if (chart.children.length !== CHANNELS) {
+    chart.replaceChildren();
+    for (let ch = 0; ch < CHANNELS; ch++) {
+      chart.appendChild(document.createElement("div"));
+    }
+  }
   for (let ch = 0; ch < CHANNELS; ch++) {
     const count = Number(hits[ch] || 0);
-    const bar = document.createElement("div");
-    bar.className = "scan-bar" + (ch === listening ? " here" : "");
-    bar.style.setProperty("--h", `${Math.round((count / busiest) * 100)}%`);
+    const bar = chart.children[ch];
+    bar.className = "scan-bar" + (ch === tuned ? " here" : "");
+    bar.style.setProperty("--h", `${Math.round((count / event.passes) * 100)}%`);
     bar.title = `ch ${ch} — ${2400 + ch} MHz — ${count}/${event.passes} passes`
-                + (ch === listening ? " (listening here)" : "");
-    chart.appendChild(bar);
+                + (ch === tuned ? " (tuned here)" : "");
   }
 
   const found = Object.keys(hits).length;
+  const live = scanning() ? " · live" : "";
   note.textContent = found
     ? `${found} of 126 channels showed activity in ${event.passes} passes`
-      + `  ·  busiest ${busiest}/${event.passes}`
+      + `  ·  busiest ${busiest}/${event.passes}${live}`
     // Not the same as "nothing is transmitting": the detector only reports
-    // carriers above roughly -64 dBm, and a scan is over in about a second.
-    : `No channel exceeded the detector threshold in ${event.passes} passes.`
-      + " The scan takes about a second — a sender that transmits every"
-      + " minute is very unlikely to be caught by it.";
+    // carriers above roughly -64 dBm, and one report covers a fraction of a
+    // second, so an occasional sender is very unlikely to be caught in it.
+    : `No channel exceeded the detector threshold in ${event.passes} passes`
+      + `${live}. The detector only sees carriers above about −64 dBm, and a`
+      + " sender that transmits once a minute will almost never be caught.";
 }
 
 // --- event stream ----------------------------------------------------------
@@ -453,11 +469,10 @@ function handle(event) {
       post("/api/parser", { name: event.name }).then((d) => d.frames && rebuild(d.frames));
     }
   } else if (event.type === "line") {
+    // Log only. The state comes from status events - reading it out of log text
+    // meant teaching every new state to two places, and forgetting one silently.
     const kind = { error: "err", warn: "warn", ok: "ok", sent: "sent" }[event.kind] || "";
     log(event.text, kind);
-    if (event.text.startsWith("OK listening")) setState("listening", "live");
-    else if (event.text.startsWith("OK stopped")) setState("idle", "warn");
-    else if (event.text.startsWith("ERR")) setState("error", "bad");
   }
 }
 
@@ -565,6 +580,12 @@ function init() {
   for (const btn of document.querySelectorAll("[data-cmd]")) {
     btn.addEventListener("click", () => send(btn.dataset.cmd));
   }
+
+  $("scan-run").addEventListener("click", () => {
+    if (scanning()) return void send("scan off");
+    $("scan-chart").replaceChildren();     // a new scan, not an update of the old
+    send($("scan-live").checked ? "scan live" : "scan");
+  });
   $("repeats").addEventListener("change", () => send(`repeats ${$("repeats").checked ? 1 : 0}`));
 
   $("decoder").addEventListener("change", async () => {

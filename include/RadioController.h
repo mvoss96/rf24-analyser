@@ -109,6 +109,14 @@ public:
   // Energy scan across all 126 channels, `passes` sweeps. Prints hits.
   void scan(uint16_t passes);
 
+  // Continuous scanning: one report per `passesPerReport` sweeps, emitted from
+  // poll() so commands keep being answered in between. Receiving is impossible
+  // while it runs - the radio is being retuned across the band - and resumes on
+  // stopScan() if it was running before.
+  void startScan(uint16_t passesPerReport);
+  void stopScan();
+  bool scanning() const { return scanning_; }
+
   // Prints the current state and configuration.
   void printInfo();
 
@@ -136,6 +144,16 @@ private:
   HwState hwState_ = HW_NONE;
   uint32_t rxCount_ = 0;
   uint16_t fifoFull_ = 0;
+
+  static constexpr uint8_t CHANNELS = 126;
+  bool scanning_ = false;
+  bool scanResume_ = false;      // was the radio listening when the scan began
+  uint16_t scanTarget_ = 0;      // sweeps per report
+  uint16_t scanDone_ = 0;        // sweeps since the last report
+  uint8_t scanCounts_[CHANNELS] = {0};
+
+  void scanSweep();              // one pass over every channel
+  void scanReport();             // print and clear the accumulated counts
 
   void led(uint8_t pin, bool on);
 

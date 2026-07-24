@@ -110,7 +110,9 @@ NRF24SNIFFER fw=3.0.0 api=3 state=nohw hw=failed ce=8 csn=10 irq=2 led_rx=8 led_
 | `stop` | stop receiving, keep the config |
 | `status` | the greeting line again, at any time |
 | `info` | state, wiring and configuration |
-| `scan [passes]` | energy scan across all channels (default 64) |
+| `scan [passes]` | one energy scan across all channels (default 64) |
+| `scan live [passes]` | keep scanning, one report per N sweeps (default 8) |
+| `scan off` | stop a live scan and resume whatever was running |
 | `repeats <0\|1>` | `0` suppresses identical back-to-back frames |
 | `tx <addr> <hex...> [ack\|noack]` | transmit a payload (default `noack`) |
 | `help` | usage summary |
@@ -163,6 +165,13 @@ accepted but degrades to polling with a warning:
 ```
 WARN irq pin 7 is not interrupt-capable, falling back to polling
 ```
+
+**`scan`** — needs a wiring but deliberately **not** a radio configuration:
+which channels are busy is what you want to know *before* choosing one. The
+sweep retunes the radio across the band, so receiving is impossible while it
+runs; `scan live` resumes it afterwards if it was running. One sweep is about
+25 ms and the firmware does one per loop, so commands - `scan off` above all -
+are still answered in between.
 
 **`listen`** — mandatory keys are `ch`, `rate`, `crc`, `aw`, `pa`, `ack`, `dpl`
 and at least one `pipeN`; `plsize` is required only when `dpl=0`. Missing keys are
