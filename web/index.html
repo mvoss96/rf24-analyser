@@ -22,9 +22,7 @@
   <button id="setup-open" class="btn ghost">Setup…</button>
   <code id="summary" class="summary"></code>
   <span class="spacer"></span>
-  <button class="btn ghost needs-link" data-cmd="stop">Stop</button>
-  <button class="btn ghost needs-link" data-cmd="scan">Scan</button>
-  <button id="start" class="btn primary needs-link">Start</button>
+  <button id="run" class="btn primary needs-link">Start</button>
 </section>
 
 <main>
@@ -78,7 +76,10 @@
     </div>
 
     <div class="panel" id="panel-scan" hidden>
-      <div class="scan-head"><span id="scan-note" class="dim">No scan yet — press <b>Scan</b>.</span></div>
+      <div class="scan-head">
+        <button class="btn ghost small needs-link" data-cmd="scan">Scan</button>
+        <span id="scan-note" class="dim">All 126 channels, ~1 s. Reception pauses meanwhile.</span>
+      </div>
       <div class="scan-chart" id="scan-chart"></div>
     </div>
 

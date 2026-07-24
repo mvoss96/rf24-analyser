@@ -42,10 +42,16 @@ function setLinkControls(enabled) {
   }
 }
 
+const listening = () => state === "listening";
+
 function setState(text, cls) {
   state = text;
   $("state-text").textContent = text;
   $("state").className = "pill " + cls;
+  // One button for one thing: whether the radio is receiving. Two buttons meant
+  // one of them was always the wrong one to press.
+  $("run").textContent = listening() ? "Stop" : "Start";
+  $("run").classList.toggle("primary", !listening());
 }
 
 // Everything that is neither idle nor live is amber, except the states that
@@ -447,19 +453,17 @@ function init() {
     if (e.target === $("setup")) $("setup").close();
   });
 
-  // Start is the one primary action: the wiring and the radio config always go
-  // together, and always in that order. The firmware refuses hwset while it is
-  // listening, so restarting a capture has to stop first - without that the
-  // wiring silently kept whatever it was set to before.
-  $("start").addEventListener("click", () => {
+  // Starting means wiring and radio config, always together and in that order.
+  // The firmware refuses hwset while it is listening, so restarting a capture
+  // has to stop first - without that the wiring silently kept what it had.
+  $("run").addEventListener("click", () => {
+    if (listening()) return void send("stop");
     const { errors } = pipeAddresses();
     if (errors.length) {
       for (const message of errors) log(`[${message}]`, "err");
       return;
     }
-    const lines = [buildHwset(), buildListen()];
-    if (state === "listening") lines.unshift("stop");
-    sendSequence(lines);
+    sendSequence([buildHwset(), buildListen()]);
   });
   for (const btn of document.querySelectorAll("[data-cmd]")) {
     btn.addEventListener("click", () => send(btn.dataset.cmd));

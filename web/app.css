@@ -364,7 +364,15 @@ pre.log { padding-bottom: 4px; }
 
 /* --- scan --- */
 
-.scan-head { padding: 8px 14px 4px; font-size: 12px; }
+.scan-head {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 10px;
+  padding: 8px 14px 4px;
+  font-size: 12px;
+}
+.scan-head .dim { flex: 1 1 200px; }
 .scan-chart {
   flex: 1;
   min-height: 0;
