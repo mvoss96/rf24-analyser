@@ -52,28 +52,41 @@ const WIRING = ["ce", "csn", "irq", "led_rx", "led_tx"];
 const RADIO = ["ch", "rate", "crc", "aw", "pa", "plsize"];
 const PIPES = [0, 1, 2, 3, 4, 5];
 
-// What each enabled pipe actually listens on. Pipes 2-5 have a one-byte field
-// because the radio only gives them one byte of their own; the remaining bytes
+// Pipes 0 and 1 carry a full address, which the radio requires to be exactly as
+// long as the configured address width. Pipes 2-5 own a single byte.
+const pipeBytes = (n) => (n >= 2 ? 1 : Number($("aw").value));
+const byteCount = (address) => (address.match(/[0-9a-f]/gi) || []).length / 2;
+
+// What each enabled pipe actually listens on. The remaining bytes of pipes 2-5
 // come from pipe 1, and the firmware wants every address spelled out in full.
 function pipeAddresses() {
   const value = (n) => $("pipe" + n).value.trim();
   const shared = value(1).slice(2);           // "42:54:48:4D:45" -> ":54:48:4D:45"
   const list = [];
   const errors = [];
+  const bad = new Set();
   for (const n of PIPES) {
     const own = value(n);
     if (!own) continue;
-    if (n >= 2 && !shared) {
+    const need = pipeBytes(n);
+    if (byteCount(own) !== need) {
+      errors.push(`pipe ${n} needs ${need} byte${need === 1 ? "" : "s"}, not ${byteCount(own)}` +
+                  (n < 2 ? ` - that is what aw=${$("aw").value} means` : ""));
+      bad.add(n);
+    } else if (n >= 2 && !shared) {
       errors.push(`pipe ${n} needs pipe 1 - the rest of its address comes from there`);
-      continue;
+      bad.add(n);
+    } else {
+      list.push([n, n >= 2 ? own + shared : own]);
     }
-    list.push([n, n >= 2 ? own + shared : own]);
   }
-  return { list, errors };
+  return { list, errors, bad };
 }
 
 function updateSummary() {
-  const pipes = pipeAddresses().list.map(([n, a]) => `p${n}=${a}`).join(" ");
+  const { list, bad } = pipeAddresses();
+  for (const n of PIPES) $("pipe" + n).classList.toggle("invalid", bad.has(n));
+  const pipes = list.map(([n, a]) => `p${n}=${a}`).join(" ");
   $("summary").textContent =
     `ce=${$("ce").value} csn=${$("csn").value}  |  ch${$("ch").value} ` +
     `${$("rate").value}k crc${$("crc").value} aw${$("aw").value} pa=${$("pa").value}` +
@@ -265,9 +278,18 @@ function init() {
   // Formatting first, so the summary below reads the grouped value and not the
   // one keystroke it was a moment ago.
   for (const n of PIPES) {
-    const maxBytes = n >= 2 ? 1 : 5;
-    $("pipe" + n).addEventListener("input", (e) => formatAddress(e.target, maxBytes));
+    $("pipe" + n).addEventListener("input", (e) => formatAddress(e.target, pipeBytes(n)));
   }
+  // Narrowing aw has to shorten what is already typed, or the fields would keep
+  // claiming an address the radio can no longer use.
+  $("aw").addEventListener("change", () => {
+    for (const n of [0, 1]) {
+      const el = $("pipe" + n);
+      el.maxLength = pipeBytes(n) * 3 - 1;
+      formatAddress(el, pipeBytes(n));
+    }
+    updateSummary();
+  });
   for (const id of [...WIRING, ...RADIO, ...PIPES.map((n) => "pipe" + n)]) {
     $(id).addEventListener("input", updateSummary);
     $(id).addEventListener("change", updateSummary);
