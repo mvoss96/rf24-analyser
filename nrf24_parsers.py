@@ -35,6 +35,15 @@ class Parser:
         """List of text lines describing the frame in full."""
         raise NotImplementedError
 
+    def packet_id(self, data):
+        """The sender's own counter for this frame, or None if it has none.
+
+        Its own column, because it is not a measurement: it is how you tell a
+        retransmission from a new event, and reading it off the middle of a
+        sentence of sensor values makes that harder than it needs to be.
+        """
+        return None
+
     def identity(self, data):
         """A string identifying the *event* this frame carries.
 
@@ -183,12 +192,17 @@ class NRF24SmartParser(Parser):
         kind = SMART_MSG_TYPES.get(data[5], f"type{data[5]}")
         return data[0], uuid, kind
 
-    def identity(self, data):
-        """Device packets carry MSG_NUM; nothing else here counts its messages."""
+    def packet_id(self, data):
+        """Only device packets count their messages; host and remote do not."""
         if len(data) >= 12 and self._shape(data)[0] == "device":
-            uuid = ":".join(f"{b:02X}" for b in data[1:5])
-            return f"{uuid}#{data[9]}"
-        return super().identity(data)
+            return data[9]
+        return None
+
+    def identity(self, data):
+        number = self.packet_id(data)
+        if number is None:
+            return super().identity(data)
+        return ":".join(f"{b:02X}" for b in data[1:5]) + f"#{number}"
 
     # -- Parser API --
 
@@ -376,6 +390,12 @@ class BTHomeParser(Parser):
                 return value.native_value
         return None
 
+    def packet_id(self, data):
+        split = self._split(data)
+        if split is None:
+            return None
+        return self._packet_id(self._parse_objects(split[2])[0])
+
     def identity(self, data):
         """sender + packet id: what the sender itself calls one event.
 
@@ -400,7 +420,6 @@ class BTHomeParser(Parser):
         sender_hex = ":".join(f"{b:02X}" for b in sender)
 
         sensors, events, _units, records = self._parse_objects(payload)
-        packet_id = self._packet_id(sensors)
 
         parts = []
         for value in events.values():
@@ -408,17 +427,15 @@ class BTHomeParser(Parser):
             extra = " " + ", ".join(f"{k}={v}" for k, v in props.items()) if props else ""
             parts.append(f"{value.name}: {value.event_type}{extra}")
         if not parts:
-            # Sensor readings, minus the packet id - it is shown as #n instead of
-            # sitting in the middle of the measurements it is not one of.
+            # Sensor readings, minus the packet id - that has its own column.
             for key, value in sensors.items():
                 if getattr(key, "key", None) != "packet_id":
                     parts.append(f"{value.name} {value.native_value}")
         if not parts:
             return f"{sender_hex}  !! rejected by bthome-ble"
 
-        head = sender_hex + (f"  #{packet_id}" if packet_id is not None else "")
         flagged = any(level >= logging.WARNING for level, _ in records)
-        return f"{head}  " + "; ".join(parts) + ("  !!" if flagged else "")
+        return f"{sender_hex}  " + "; ".join(parts) + ("  !!" if flagged else "")
 
     def detail(self, data):
         if len(data) < 4:

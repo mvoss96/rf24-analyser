@@ -189,6 +189,7 @@ function paintRow(group) {
     [group.gap === null ? "" : group.gap.toFixed(1), "c-delta"],
     [head.pipe, "c-pipe"],
     [head.len, "c-len"],
+    [head.packetId === null || head.packetId === undefined ? "" : head.packetId, "c-id"],
     [head.summary + badge, ""],
   ];
   const tds = group.tr.children;

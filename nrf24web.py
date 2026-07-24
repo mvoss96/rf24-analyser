@@ -168,9 +168,10 @@ class Session:
             summary = self.parser.summary(data)
             detail = self.parser.detail(data)
             identity = self.parser.identity(data)
+            packet_id = self.parser.packet_id(data)
         except Exception as exc:
             summary, detail = f"(decoder error: {exc})", [str(exc)]
-            identity = bytes(data).hex()
+            identity, packet_id = bytes(data).hex(), None
         flagged = "!!" in summary or "rejected" in summary.lower()
         return {
             "type": "frame",
@@ -179,6 +180,7 @@ class Session:
             "deviceMs": device_ms,
             "pipe": pipe,
             "len": len(data),
+            "packetId": packet_id,
             "summary": summary,
             "detail": detail,
             "hex": parsers.hexdump(data),
