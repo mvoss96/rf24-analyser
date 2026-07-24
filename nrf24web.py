@@ -155,6 +155,8 @@ class Session:
         if reason:
             raise RuntimeError(reason)
         self.parser = parser
+        # One decoder is shared by every tab, so every tab has to hear about it.
+        self.hub.publish({"type": "parser", "name": parser.name})
 
     def decoded_history(self):
         """Every retained frame, decoded with the current parser."""
@@ -296,9 +298,14 @@ class Handler(BaseHTTPRequestHandler):
             self._json([{"device": d, "description": desc}
                         for d, desc in dongle.available_ports()])
         elif self.path == "/api/parsers":
+            # `active` matters: the decoder is server state, shared by every tab.
+            # A page that picked its own default instead of reading this showed a
+            # decoder name that had nothing to do with the rows underneath it.
+            active = self.session.parser
             self._json([{"name": p.name, "label": p.label,
                          "description": p.description,
-                         "unavailable": p.available()}
+                         "unavailable": p.available(),
+                         "active": p is active}
                         for p in parsers.all_parsers()])
         elif self.path == "/api/events":
             self._events()

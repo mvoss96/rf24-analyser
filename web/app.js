@@ -227,6 +227,13 @@ function handle(event) {
     $("connect").textContent = connected ? "Disconnect" : "Connect";
     const text = event.state || (connected ? "connected" : "not connected");
     setState(text, stateClass(text, connected));
+  } else if (event.type === "parser") {
+    // Another tab switched decoder. Matching selects first stops this from
+    // bouncing: the request below publishes the same event straight back.
+    if ($("decoder").value !== event.name) {
+      $("decoder").value = event.name;
+      post("/api/parser", { name: event.name }).then((d) => d.frames && rebuild(d.frames));
+    }
   } else if (event.type === "line") {
     const kind = { error: "err", warn: "warn", ok: "ok", sent: "sent" }[event.kind] || "";
     log(event.text, kind);
@@ -267,7 +274,8 @@ async function loadParsers() {
     option.textContent = p.unavailable ? `${p.label} (unavailable)` : p.label;
     option.disabled = Boolean(p.unavailable);
     option.title = p.description || "";
-    if (p.name === "bthome") option.selected = true;
+    // Whatever the server is actually decoding with - not a guess of our own.
+    if (p.active) option.selected = true;
     select.appendChild(option);
   }
 }
