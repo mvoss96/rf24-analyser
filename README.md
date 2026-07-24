@@ -217,8 +217,17 @@ In PuTTY choose *Serial*, speed `500000`, and set *Terminal → Local echo* to
 
 ```bash
 pip install -r requirements.txt
+```
+
+```bash
 python nrf24term.py COM18 --pretty
 ```
+
+Dependencies are `pyserial` and `bthome-ble`. The latter is not lightweight — it
+pulls in bleak, cryptography and platform Bluetooth bindings, around 28 packages —
+because it is the parser Home Assistant itself uses. That is the price of decoding
+frames exactly as a real receiver would rather than approximating it; a virtualenv
+is recommended.
 
 Local commands start with `:`:
 
@@ -247,25 +256,36 @@ field against the version it speaks and warns on a mismatch.
 ```
 
 Frames are `[4-byte sender id][BTHome v2 service data]`; the service data starts
-with the UUID `D2 FC` and a device-info byte. Decoded objects: packet id (`0x00`),
-battery (`0x01`), voltage (`0x0C`), button (`0x3A`), dimmer (`0x3C`), command
-(`0x3B`), text/raw (`0x53`/`0x54`). Unknown ids can't be length-decoded, so the
-parser dumps the rest as hex and stops.
+with the UUID `D2 FC` and a device-info byte. Only that envelope is decoded here.
 
-**Not every object is fixed length:**
+**Object parsing is delegated entirely to [`bthome-ble`](https://pypi.org/project/bthome-ble/)**,
+the reference parser Home Assistant uses. Nothing about BTHome measurements is
+reimplemented, for two reasons: a hand-maintained length table drifts from the
+spec (this tool already shipped one that mis-decoded dimmer events), and using
+the reference implementation makes the sniffer a **conformance check** — a frame
+`bthome-ble` cannot read is a frame no standard receiver can read either.
 
-| Object | Layout |
-|--------|--------|
-| `0x3C` dimmer | `3C <dir> <steps>`; see the caveat below |
-| `0x3B` command | `3B <argument count> <opcode> <arguments...>` |
-| `0x53` / `0x54` | `<id> <length> <bytes...>` |
+A fresh parser instance is used per frame. The library deduplicates by packet id,
+which would otherwise hide exactly the retransmissions a sniffer exists to show.
+
+When the library rejects a payload outright, that is reported instead of a
+prettified guess, along with the library's own explanation:
+
+```
+  !! REJECTED by the reference parser (bthome-ble)
+  objects   : 00 7B 01 34 3C 00 3C 02 01
+  reason    : BTHome device is not sending object ids in numerical order ...
+```
+
+Warnings are surfaced even when parsing partly succeeds — which is what the
+current `bthome-cpp` dimmer deviation looks like:
 
 > **Known deviation.** The BTHome spec encodes a dimmer `None` as `3C 00 00`
-> (steps byte present), and the reference parser `bthome-ble` assumes a fixed
-> 2-byte value. `bthome-cpp` currently omits the steps byte, emitting `3C 00`.
-> This decoder accepts both — a sniffer must show what is actually on the air —
-> but standard BTHome receivers drop the **entire** packet in that case. Tracked
-> for a fix in `bthome-cpp`.
+> (steps byte present), and `bthome-ble` assumes a fixed 2-byte value.
+> `bthome-cpp` omits the steps byte, emitting `3C 00`. The sensors preceding the
+> dimmer still decode, but **the dimmer event itself is silently lost** and the
+> parser warns about object ids being out of order. Tracked for a fix in
+> `bthome-cpp`.
 
 ## Measuring packet loss
 

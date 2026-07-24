@@ -1,1 +1,2 @@
 pyserial>=3.5
+bthome-ble>=3.24.0

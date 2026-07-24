@@ -12,7 +12,11 @@ Comfort features:
   * :scan [passes]              convenience wrapper for the dongle scan command
   * scan results render as a small activity bar
 
-Only dependency: pyserial.
+BTHome decoding is done by bthome-ble, the reference parser Home Assistant uses,
+so what this tool shows is what a real BTHome receiver would see - including
+nothing, when a frame does not follow the spec.
+
+Dependencies: pyserial, bthome-ble (see requirements.txt).
 
     python nrf24term.py COM18
     python nrf24term.py COM18 --pretty
@@ -20,6 +24,7 @@ Only dependency: pyserial.
 """
 
 import argparse
+import logging
 import sys
 import threading
 import time
@@ -32,82 +37,88 @@ except ImportError:
 
 
 # --- BTHome v2 decoding -----------------------------------------------------
+#
+# Object parsing is delegated entirely to bthome-ble, the reference parser that
+# Home Assistant uses. Nothing about BTHome measurements is reimplemented here:
+# a hand-maintained length table drifts from the spec (this tool already shipped
+# one that mis-decoded dimmer events), and leaning on the reference turns the
+# sniffer into a conformance check - a frame bthome-ble cannot read is a frame
+# no standard BTHome receiver can read either.
+#
+# Only the nRF24 envelope is ours: [4-byte sender id][D2 FC][device info],
+# followed by the BTHome object bytes that are handed to the library.
+
+try:
+    from bthome_ble.parser import BTHomeBluetoothDeviceData, BTHomeVersion
+except ImportError:
+    sys.stderr.write(
+        "bthome-ble is required for decoding: pip install -r requirements.txt\n"
+    )
+    sys.exit(1)
 
 BTHOME_UUID = (0xD2, 0xFC)  # service UUID 0xFCD2, little-endian on the wire
-
-BUTTON_EVENTS = {
-    0x00: "none",
-    0x01: "press",
-    0x02: "double press",
-    0x03: "triple press",
-    0x04: "long press",
-    0x05: "long double press",
-    0x06: "long triple press",
-    0x80: "hold press",
-}
-
-DIMMER_EVENTS = {
-    0x00: "none",
-    0x01: "rotate left",
-    0x02: "rotate right",
-}
-
-COMMAND_EVENTS = {
-    0x00: "off",
-    0x01: "on",
-    0x02: "toggle",
-    0x03: "step up",
-    0x04: "step down",
-}
-
-# Fixed-length BTHome objects -> number of value bytes (excluding the id byte).
-FIXED_LEN = {
-    0x00: 1,  # packet id
-    0x01: 1,  # battery %
-    0x0C: 2,  # voltage, uint16 LE, factor 0.001 V
-    0x3A: 1,  # button event
-}
-
-
-def object_value_len(oid, rest):
-    """Number of value bytes for object `oid`; `rest` are the bytes after the id.
-
-    Several BTHome objects are variable length, so the count depends on the
-    payload itself:
-      0x3C dimmer  - None (0x00) carries no step byte, rotate events do
-      0x3B command - [argument count][opcode][arguments...]
-      0x53 / 0x54  - text / raw, prefixed with an explicit length byte
-    Returns None when the length cannot be inferred (unknown object).
-    """
-    if oid == 0x3C:
-        if not rest:
-            return None
-        return 1 if rest[0] == 0x00 else 2
-    if oid == 0x3B:
-        if not rest:
-            return None
-        return 2 + rest[0]
-    if oid in (0x53, 0x54):
-        if not rest:
-            return None
-        return 1 + rest[0]
-    return FIXED_LEN.get(oid)
 
 
 def _ascii(b):
     return chr(b) if 0x20 <= b <= 0x7E else "."
 
 
+class _LogCollector(logging.Handler):
+    """Captures what bthome-ble logs while parsing one frame.
+
+    The library explains why it rejected a payload (objects out of order, bad
+    length) only through logging - and that reasoning is exactly what a protocol
+    debugger needs to see.
+    """
+
+    def __init__(self):
+        super().__init__(level=logging.DEBUG)
+        self.records = []
+
+    def emit(self, record):
+        self.records.append((record.levelno, record.getMessage()))
+
+
+def _parse_objects(payload):
+    """Run the reference parser over the BTHome object bytes.
+
+    A fresh parser per frame is deliberate: the library deduplicates by packet
+    id, which would hide the retransmissions a sniffer exists to show, and it
+    keeps one sender's state out of the next sender's frame.
+    """
+    parser = BTHomeBluetoothDeviceData()
+    parser.bthome_version = BTHomeVersion.V2
+
+    collector = _LogCollector()
+    logger = logging.getLogger("bthome_ble")
+    previous_level = logger.level
+    logger.addHandler(collector)
+    logger.setLevel(logging.DEBUG)
+    try:
+        parser._parse_payload(bytes(payload), 0.0)
+    except Exception as exc:  # private API; guard against upstream changes
+        collector.records.append((logging.ERROR, f"{type(exc).__name__}: {exc}"))
+    finally:
+        logger.removeHandler(collector)
+        logger.setLevel(previous_level)
+
+    return (
+        getattr(parser, "_sensor_values_updates", {}) or {},
+        getattr(parser, "_events_updates", {}) or {},
+        getattr(parser, "_sensor_descriptions_updates", {}) or {},
+        collector.records,
+    )
+
+
 def decode_frame(data):
     """Decode a raw frame (list of ints) into a list of text lines."""
-    lines = []
     if len(data) < 4:
         return ["  (frame too short for a 4-byte sender id)"]
 
     sender = data[0:4]
     sender_hex = ":".join(f"{b:02X}" for b in sender)
     sender_ascii = "".join(_ascii(b) for b in sender)
-    lines.append(f"  sender    : {sender_hex}  \"{sender_ascii}\"")
+    lines = [f'  sender    : {sender_hex}  "{sender_ascii}"']
 
     sd = data[4:]
     if len(sd) < 3 or (sd[0], sd[1]) != BTHOME_UUID:
@@ -117,62 +128,42 @@ def decode_frame(data):
         return lines
 
     info = sd[2]
-    version = (info >> 5) & 0x07
     flags = []
     if info & 0x01:
         flags.append("encrypted")
     if info & 0x04:
         flags.append("trigger-based")
+    version = (info >> 5) & 0x07
     lines.append(f"  bthome    : v{version}" + (" " + ", ".join(flags) if flags else ""))
 
-    obj = sd[3:]
-    i = 0
-    button_n = 0
-    dimmer_n = 0
-    while i < len(obj):
-        oid = obj[i]
-        vlen = object_value_len(oid, obj[i + 1:])
-        if vlen is None:
-            lines.append(
-                f"  0x{oid:02X}      : unknown object, raw = "
-                + " ".join(f"{b:02X}" for b in obj[i:])
-            )
-            break
-        val = obj[i + 1 : i + 1 + vlen]
-        if len(val) < vlen:
-            lines.append(f"  0x{oid:02X}      : truncated value")
-            break
+    payload = sd[3:]
+    sensors, events, units, records = _parse_objects(payload)
 
-        if oid == 0x00:
-            lines.append(f"  packet id : {val[0]}")
-        elif oid == 0x01:
-            lines.append(f"  battery   : {val[0]} %")
-        elif oid == 0x0C:
-            mv = val[0] | (val[1] << 8)
-            lines.append(f"  voltage   : {mv / 1000:.3f} V")
-        elif oid == 0x3A:
-            button_n += 1
-            name = BUTTON_EVENTS.get(val[0], f"0x{val[0]:02X}")
-            lines.append(f"  button {button_n}  : {name}")
-        elif oid == 0x3C:
-            dimmer_n += 1
-            name = DIMMER_EVENTS.get(val[0], f"0x{val[0]:02X}")
-            # None is a placeholder addressing a later dimmer and has no steps.
-            steps = f" ({val[1]} steps)" if len(val) > 1 else ""
-            lines.append(f"  dimmer {dimmer_n}  : {name}{steps}")
-        elif oid == 0x3B:
-            opcode = COMMAND_EVENTS.get(val[1], f"0x{val[1]:02X}")
-            args = " ".join(f"{b:02X}" for b in val[2:])
-            lines.append(f"  command   : {opcode}" + (f" [{args}]" if args else ""))
-        elif oid in (0x53, 0x54):
-            payload = bytes(val[1:])
-            if oid == 0x53:
-                shown = payload.decode("utf-8", errors="replace")
-                lines.append(f"  text      : \"{shown}\"")
-            else:
-                lines.append("  raw       : " + " ".join(f"{b:02X}" for b in payload))
+    for key, value in sensors.items():
+        desc = units.get(key)
+        unit = ""
+        if desc is not None and desc.native_unit_of_measurement:
+            unit = f" {desc.native_unit_of_measurement}"
+        lines.append(f"  {value.name:<10}: {value.native_value}{unit}")
 
-        i += 1 + vlen
+    for value in events.values():
+        props = value.event_properties or {}
+        detail = ""
+        if props:
+            detail = " (" + ", ".join(f"{k}={v}" for k, v in props.items()) + ")"
+        lines.append(f"  {value.name:<10}: {value.event_type}{detail}")
+
+    if not sensors and not events:
+        # Nothing came out of the reference parser, so this frame would be
+        # dropped by any spec-conformant receiver.
+        lines.append("  !! REJECTED by the reference parser (bthome-ble)")
+        lines.append("  objects   : " + " ".join(f"{b:02X}" for b in payload))
+        shown = records
+    else:
+        # Anything the library warned about is worth surfacing even on success.
+        shown = [r for r in records if r[0] >= logging.WARNING]
+    for _level, message in shown:
+        lines.append(f"  reason    : {message}")
 
     return lines
 
