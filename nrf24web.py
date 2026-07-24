@@ -219,6 +219,14 @@ class Handler(BaseHTTPRequestHandler):
     def log_message(self, *_args):
         pass  # the console belongs to the user, not to request logging
 
+    def handle(self):
+        # Closing a tab aborts its event stream mid-read, which is normal here
+        # and not worth a traceback in the user's console every time.
+        try:
+            super().handle()
+        except (ConnectionAbortedError, ConnectionResetError, BrokenPipeError):
+            pass
+
     # -- helpers --
 
     def _json(self, payload, status=200):

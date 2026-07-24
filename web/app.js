@@ -52,12 +52,28 @@ const WIRING = ["ce", "csn", "irq", "led_rx", "led_tx"];
 const RADIO = ["ch", "rate", "crc", "aw", "pa", "plsize"];
 const PIPES = [0, 1, 2, 3, 4, 5];
 
+// What each enabled pipe actually listens on. Pipes 2-5 have a one-byte field
+// because the radio only gives them one byte of their own; the remaining bytes
+// come from pipe 1, and the firmware wants every address spelled out in full.
+function pipeAddresses() {
+  const value = (n) => $("pipe" + n).value.trim();
+  const shared = value(1).slice(2);           // "42:54:48:4D:45" -> ":54:48:4D:45"
+  const list = [];
+  const errors = [];
+  for (const n of PIPES) {
+    const own = value(n);
+    if (!own) continue;
+    if (n >= 2 && !shared) {
+      errors.push(`pipe ${n} needs pipe 1 - the rest of its address comes from there`);
+      continue;
+    }
+    list.push([n, n >= 2 ? own + shared : own]);
+  }
+  return { list, errors };
+}
+
 function updateSummary() {
-  const pipes = PIPES
-    .map((n) => [n, $("pipe" + n).value.trim()])
-    .filter(([, a]) => a)
-    .map(([n, a]) => `p${n}=${a}`)
-    .join(" ");
+  const pipes = pipeAddresses().list.map(([n, a]) => `p${n}=${a}`).join(" ");
   $("summary").textContent =
     `ce=${$("ce").value} csn=${$("csn").value}  |  ch${$("ch").value} ` +
     `${$("rate").value}k crc${$("crc").value} aw${$("aw").value} pa=${$("pa").value}` +
@@ -77,21 +93,18 @@ function buildListen() {
     `ack=${$("ack").checked ? 1 : 0}`, `dpl=${$("dpl").checked ? 1 : 0}`,
   ];
   if (!$("dpl").checked) parts.push(`plsize=${$("plsize").value}`);
-  for (const n of PIPES) {
-    const address = $("pipe" + n).value.trim();
-    if (address) parts.push(`pipe${n}=${address}`);
-  }
+  for (const [n, address] of pipeAddresses().list) parts.push(`pipe${n}=${address}`);
   return parts.join(" ");
 }
 
 // Addresses are typed as bare hex and grouped as you go: 4254 becomes 42:54.
 // Anything that is not a hex digit is dropped, including separators the user
 // types themselves, so a pasted 42-54-48-4D-45 lands in the same shape.
-function formatAddress(el) {
+function formatAddress(el, maxBytes) {
   const typedBefore = el.value.slice(0, el.selectionStart ?? el.value.length);
   const digitsBefore = (typedBefore.match(/[0-9a-f]/gi) || []).length;
 
-  const digits = (el.value.match(/[0-9a-f]/gi) || []).join("").toUpperCase().slice(0, 10);
+  const digits = (el.value.match(/[0-9a-f]/gi) || []).join("").toUpperCase().slice(0, maxBytes * 2);
   el.value = (digits.match(/.{1,2}/g) || []).join(":");
 
   // Every completed pair ahead of the caret pushed it one colon to the right.
@@ -252,7 +265,8 @@ function init() {
   // Formatting first, so the summary below reads the grouped value and not the
   // one keystroke it was a moment ago.
   for (const n of PIPES) {
-    $("pipe" + n).addEventListener("input", (e) => formatAddress(e.target));
+    const maxBytes = n >= 2 ? 1 : 5;
+    $("pipe" + n).addEventListener("input", (e) => formatAddress(e.target, maxBytes));
   }
   for (const id of [...WIRING, ...RADIO, ...PIPES.map((n) => "pipe" + n)]) {
     $(id).addEventListener("input", updateSummary);
@@ -283,6 +297,11 @@ function init() {
   // listening, so restarting a capture has to stop first - without that the
   // wiring silently kept whatever it was set to before.
   $("start").addEventListener("click", () => {
+    const { errors } = pipeAddresses();
+    if (errors.length) {
+      for (const message of errors) log(`[${message}]`, "err");
+      return;
+    }
     const lines = [buildHwset(), buildListen()];
     if (state === "listening") lines.unshift("stop");
     sendSequence(lines);

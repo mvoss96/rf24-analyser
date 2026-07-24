@@ -131,13 +131,13 @@
       <div class="pairs wide" id="pipes">
         <label><span>0</span><input id="pipe0" maxlength="14" placeholder="empty"></label>
         <label><span>1</span><input id="pipe1" maxlength="14" value="42:54:48:4D:45"></label>
-        <label><span>2</span><input id="pipe2" maxlength="14" placeholder="empty"></label>
-        <label><span>3</span><input id="pipe3" maxlength="14" placeholder="empty"></label>
-        <label><span>4</span><input id="pipe4" maxlength="14" placeholder="empty"></label>
-        <label><span>5</span><input id="pipe5" maxlength="14" placeholder="empty"></label>
+        <label><span>2</span><input id="pipe2" class="byte" maxlength="2" placeholder="byte"></label>
+        <label><span>3</span><input id="pipe3" class="byte" maxlength="2" placeholder="byte"></label>
+        <label><span>4</span><input id="pipe4" class="byte" maxlength="2" placeholder="byte"></label>
+        <label><span>5</span><input id="pipe5" class="byte" maxlength="2" placeholder="byte"></label>
       </div>
-      <p class="note">Pipes 2–5 differ from pipe 1 in their first byte only —
-      the radio takes the remaining bytes from pipe 1 whatever you type here.</p>
+      <p class="note">Pipes 2–5 own their first byte only; the radio takes the
+      rest of the address from pipe 1, and so does this dialog.</p>
     </div>
 
     <footer class="dialog-foot">

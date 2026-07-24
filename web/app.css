@@ -214,6 +214,7 @@ dialog.setup::backdrop { background: rgba(0, 0, 0, .45); }
   color: var(--text-dim);
 }
 .pairs input, .pairs select { width: 100%; min-width: 0; }
+.pairs input.byte { width: 5rem; }   /* one byte, so do not pretend there is room for five */
 
 .note {
   margin: 9px 0 0 68px;
