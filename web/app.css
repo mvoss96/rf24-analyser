@@ -39,6 +39,11 @@
 
 * { box-sizing: border-box; }
 
+/* The UA rule for [hidden] is display:none with no specificity to spare, so any
+   class here that sets display wins and the element stays visible. That silently
+   broke every toggle in this page (setup, tabs, extra pipes). */
+[hidden] { display: none !important; }
+
 html, body {
   height: 100%;
   margin: 0;
@@ -105,12 +110,15 @@ input[type="text"], input:not([type]) {
 .topbar {
   display: flex;
   align-items: center;
+  flex-wrap: wrap;
   gap: 8px;
   padding: 10px 14px;
   background: var(--surface);
   border-bottom: 1px solid var(--border);
 }
-.brand { font-weight: 500; letter-spacing: .2px; margin-right: 6px; }
+.brand { font-weight: 500; letter-spacing: .2px; margin-right: 6px; white-space: nowrap; }
+/* The port descriptions are long enough to push everything else off-screen. */
+#port { flex: 0 1 auto; min-width: 90px; max-width: 300px; }
 
 .pill {
   display: inline-flex;
@@ -130,15 +138,21 @@ input[type="text"], input:not([type]) {
 /* --- setup --- */
 
 .setup {
+  display: flex;
+  flex-direction: column;
+  flex: 0 1 auto;
+  min-height: 0;
   background: var(--surface);
   border-bottom: 1px solid var(--border);
 }
 .setup-head {
   display: flex;
   align-items: center;
+  flex-wrap: wrap;
   gap: 8px;
   padding: 8px 14px;
 }
+.setup-head .summary { flex: 1 1 200px; }
 .summary {
   font-family: var(--mono);
   font-size: 12px;
@@ -152,12 +166,19 @@ input[type="text"], input:not([type]) {
   flex-wrap: wrap;
   gap: 12px;
   padding: 0 14px 12px;
+  /* Expanded setup gives way to the frame list rather than the other way round:
+     it shrinks and scrolls, main keeps its min-height. */
+  flex: 1 1 auto;
+  min-height: 0;
+  max-height: 45vh;
+  overflow: auto;
 }
 fieldset {
   border: 1px solid var(--border);
   border-radius: 8px;
   padding: 8px 12px 10px;
   margin: 0;
+  min-width: 0;
 }
 legend { color: var(--text-dim); font-size: 12px; padding: 0 4px; }
 .fields { display: flex; flex-wrap: wrap; gap: 10px; align-items: flex-end; }
@@ -181,21 +202,40 @@ legend { color: var(--text-dim); font-size: 12px; padding: 0 4px; }
 /* --- main --- */
 
 main {
-  flex: 1;
+  flex: 1 1 auto;
   display: flex;
   flex-direction: column;
-  min-height: 0;
-  padding: 10px 14px 0;
+  /* A floor, not a fixed size - it is what makes the setup panel yield first,
+     and the vh term keeps it from clipping on genuinely short windows. */
+  min-height: min(280px, 55vh);
+  padding: 10px 14px;
   gap: 10px;
 }
+
+.frames {
+  flex: 1;
+  min-height: 110px;
+  display: flex;
+  flex-direction: column;
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  overflow: hidden;
+}
+.frames-head {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 8px;
+  padding: 6px 10px;
+  border-bottom: 1px solid var(--border);
+}
+#decoder { max-width: 220px; }
 
 .table-wrap {
   flex: 1;
   min-height: 0;
   overflow: auto;
-  background: var(--surface);
-  border: 1px solid var(--border);
-  border-radius: 8px;
 }
 
 table { width: 100%; border-collapse: collapse; }
@@ -234,7 +274,11 @@ td.c-pipe, td.c-len { color: var(--text-dim); }
 /* --- bottom --- */
 
 .bottom {
-  height: 232px;
+  /* Shrinkable, so an expanded setup on a short window costs the detail pane
+     some height instead of pushing it off the bottom edge. */
+  flex: 0 1 auto;
+  height: min(232px, 40vh);
+  min-height: 104px;
   display: flex;
   flex-direction: column;
   background: var(--surface);
@@ -280,14 +324,22 @@ pre.log { padding-bottom: 4px; }
 
 .cmdrow { display: flex; gap: 8px; padding: 8px 12px; border-top: 1px solid var(--border); }
 
-/* --- status bar --- */
+.check { display: inline-flex; align-items: center; gap: 5px; font-size: 12px; color: var(--text-dim); }
 
-.statusbar {
-  display: flex;
-  align-items: center;
-  gap: 12px;
-  padding: 8px 14px;
-  font-size: 12px;
-  color: var(--text-dim);
+/* --- narrow windows --- */
+
+@media (max-width: 760px) {
+  main { padding: 8px; gap: 8px; }
+  .topbar, .setup-head { padding-left: 10px; padding-right: 10px; }
+  .setup-body { padding: 0 10px 10px; }
+  /* decoded next to raw stops being readable long before this width */
+  .split { flex-direction: column; }
+  .pane + .pane {
+    border-left: 0;
+    border-top: 1px solid var(--border);
+    flex: 1 1 0;
+  }
 }
-.check { display: inline-flex; align-items: center; gap: 5px; }
+@media (max-width: 560px) {
+  .brand { display: none; }
+}

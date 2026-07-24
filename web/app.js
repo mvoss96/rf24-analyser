@@ -34,6 +34,15 @@ function setState(text, cls) {
   $("state").className = "pill " + cls;
 }
 
+// Everything that is neither idle nor live is amber, except the states that
+// mean the dongle is not going to answer - those have to read as a problem.
+function stateClass(text, isConnected) {
+  if (!isConnected) return "idle";
+  if (text === "listening") return "live";
+  if (/no greeting|failed|mismatch|error/.test(text)) return "bad";
+  return "warn";
+}
+
 // --- setup strip -----------------------------------------------------------
 
 const WIRING = ["ce", "csn", "irq", "led_rx", "led_tx"];
@@ -157,13 +166,14 @@ function handle(event) {
     } else if (event.fields.hw === "failed") {
       setState("wiring failed", "bad");
     } else {
-      setState(event.fields.state || "connected", "warn");
+      const text = event.fields.state || "connected";
+      setState(text, stateClass(text, true));
     }
   } else if (event.type === "status") {
     connected = event.connected;
     $("connect").textContent = connected ? "Disconnect" : "Connect";
     const text = event.state || (connected ? "connected" : "not connected");
-    setState(text, !connected ? "idle" : text === "listening" ? "live" : "warn");
+    setState(text, stateClass(text, connected));
   } else if (event.type === "line") {
     const kind = { error: "err", warn: "warn", ok: "ok", sent: "sent" }[event.kind] || "";
     log(event.text, kind);
@@ -223,8 +233,12 @@ function init() {
   $("connect").addEventListener("click", async () => {
     if (connected) return void post("/api/disconnect");
     const port = $("port").value;
+    // Opening the port blocks for a moment and the greeting takes ~2s more, so
+    // say what is happening instead of letting the pill sit on "not connected".
+    setState("connecting…", "warn");
     const data = await post("/api/connect", { port });
-    if (data.ok !== false) localStorage.setItem(LAST_PORT, port);
+    if (data.ok === false) setState("not connected", "idle");
+    else localStorage.setItem(LAST_PORT, port);
   });
 
   $("setup-toggle").addEventListener("click", () => {

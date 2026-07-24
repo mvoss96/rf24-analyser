@@ -32,6 +32,10 @@ import nrf24_parsers as parsers
 HERE = Path(__file__).resolve().parent
 WEB_DIR = HERE / "web"
 MAX_FRAMES = 5000
+# Opening the port pulls DTR and resets the dongle, so the greeting takes about
+# two seconds. Past that the silence means something, and saying so beats a pill
+# that reads "connected" next to a port that never answers.
+GREETING_TIMEOUT = 4.0
 
 
 class Hub:
@@ -71,7 +75,7 @@ class Session:
         # Remembered so a tab opened later still learns the current state -
         # the greeting only arrives once, at reset.
         self.greeting = None
-        self.state_text = "connected"
+        self.state_text = "not connected"
         self._pump = None
         self._stop = threading.Event()
 
@@ -84,8 +88,23 @@ class Session:
         self._stop.clear()
         self._pump = threading.Thread(target=self._pump_loop, daemon=True)
         self._pump.start()
-        self.state_text = "connected"
+        # Not "connected" yet: the port is open, but nothing has proved there is
+        # a sniffer on the other end. The greeting is what does that.
+        self.state_text = "connecting…"
         self.hub.publish(self.status_event(port))
+        watchdog = threading.Timer(GREETING_TIMEOUT, self._greeting_overdue, [self.dongle])
+        watchdog.daemon = True
+        watchdog.start()
+
+    def _greeting_overdue(self, expected):
+        if self.dongle is not expected or self.greeting is not None:
+            return  # answered, or this connection is already history
+        self.state_text = "no greeting"
+        self.hub.publish({
+            "type": "line", "kind": "warn",
+            "text": f"WARN no greeting after {GREETING_TIMEOUT:.0f}s - "
+                    f"wrong port, or the dongle is not running this firmware?"})
+        self.hub.publish(self.status_event())
 
     def disconnect(self):
         self._stop.set()

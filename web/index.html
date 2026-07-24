@@ -16,11 +16,6 @@
   <button id="connect" class="btn primary">Connect</button>
 
   <span id="state" class="pill idle"><i class="dot"></i><span id="state-text">not connected</span></span>
-
-  <span class="spacer"></span>
-
-  <label class="inline-label" for="decoder">Decoder</label>
-  <select id="decoder" class="control"></select>
 </header>
 
 <section class="setup">
@@ -90,8 +85,18 @@
 </section>
 
 <main>
-  <div class="table-wrap">
-    <table id="frames">
+  <section class="frames">
+    <div class="frames-head">
+      <label class="inline-label" for="decoder">Decoder</label>
+      <select id="decoder" class="control"></select>
+      <span class="spacer"></span>
+      <span id="count" class="dim">0 frames</span>
+      <label class="check"><input type="checkbox" id="follow" checked> Follow</label>
+      <button id="clear" class="btn ghost small">Clear</button>
+    </div>
+
+    <div class="table-wrap">
+    <table id="frame-table">
       <thead>
         <tr>
           <th class="c-time">Time</th>
@@ -104,7 +109,8 @@
       <tbody id="rows"></tbody>
     </table>
     <p id="empty" class="empty">No frames yet — connect, then <b>Start</b>.</p>
-  </div>
+    </div>
+  </section>
 
   <div class="bottom">
     <div class="tabs">
@@ -134,13 +140,6 @@
     </div>
   </div>
 </main>
-
-<footer class="statusbar">
-  <button id="clear" class="btn ghost small">Clear frames</button>
-  <label class="check"><input type="checkbox" id="follow" checked> Follow</label>
-  <span class="spacer"></span>
-  <span id="count" class="dim">0 frames</span>
-</footer>
 
 <script src="/app.js"></script>
 </body>
