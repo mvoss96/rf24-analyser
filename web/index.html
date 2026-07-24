@@ -22,9 +22,9 @@
   <button id="setup-open" class="btn ghost">Setup…</button>
   <code id="summary" class="summary"></code>
   <span class="spacer"></span>
-  <button class="btn ghost" data-cmd="stop">Stop</button>
-  <button class="btn ghost" data-cmd="scan">Scan</button>
-  <button id="start" class="btn primary">Start</button>
+  <button class="btn ghost needs-link" data-cmd="stop">Stop</button>
+  <button class="btn ghost needs-link" data-cmd="scan">Scan</button>
+  <button id="start" class="btn primary needs-link">Start</button>
 </section>
 
 <main>
@@ -77,8 +77,8 @@
     <div class="panel" id="panel-log" hidden>
       <pre id="log" class="mono log"></pre>
       <form id="cmdform" class="cmdrow">
-        <input id="cmd" class="control grow" placeholder="tx 4254484D45 4D565202 noack" autocomplete="off">
-        <button class="btn ghost" type="submit">Send</button>
+        <input id="cmd" class="control grow needs-link" placeholder="tx 4254484D45 4D565202 noack" autocomplete="off">
+        <button class="btn ghost needs-link" type="submit">Send</button>
       </form>
     </div>
   </div>
@@ -141,7 +141,7 @@
     </div>
 
     <footer class="dialog-foot">
-      <button class="btn ghost small" data-cmd="hwclear" type="button">Forget stored wiring</button>
+      <button class="btn ghost small needs-link" data-cmd="hwclear" type="button">Forget stored wiring</button>
       <span class="spacer"></span>
       <button class="btn">Close</button>
     </footer>

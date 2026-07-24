@@ -31,6 +31,16 @@ function log(text, kind) {
 
 let state = "not connected";
 
+// Controls that send something to the dongle are pointless without one. Letting
+// them be pressed anyway only moved the failure into the log, where "[not
+// connected]" is easy to miss and reads like the dongle refused the command.
+function setLinkControls(enabled) {
+  for (const el of document.querySelectorAll(".needs-link")) {
+    el.disabled = !enabled;
+    el.title = enabled ? "" : "connect to the dongle first";
+  }
+}
+
 function setState(text, cls) {
   state = text;
   $("state-text").textContent = text;
@@ -225,6 +235,7 @@ function handle(event) {
   } else if (event.type === "status") {
     connected = event.connected;
     $("connect").textContent = connected ? "Disconnect" : "Connect";
+    setLinkControls(connected);
     const text = event.state || (connected ? "connected" : "not connected");
     setState(text, stateClass(text, connected));
   } else if (event.type === "parser") {
@@ -284,6 +295,7 @@ function init() {
   loadPorts();
   loadParsers();
   updateSummary();
+  setLinkControls(false);   // until the first status event says otherwise
 
   // Formatting first, so the summary below reads the grouped value and not the
   // one keystroke it was a moment ago.

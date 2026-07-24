@@ -82,6 +82,13 @@ body {
 .btn.ghost { background: transparent; }
 .btn.ghost:hover { background: var(--surface-2); }
 .btn.small { padding: 3px 9px; font-size: 12px; }
+.btn:disabled, .control:disabled, input:disabled {
+  opacity: .4;
+  cursor: not-allowed;
+}
+.btn:disabled:hover { background: var(--surface); }
+.btn.ghost:disabled:hover { background: transparent; }
+.btn:disabled:active { transform: none; }
 
 .control {
   border: 1px solid var(--border-strong);
