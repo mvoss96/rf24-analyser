@@ -84,6 +84,21 @@ function buildListen() {
   return parts.join(" ");
 }
 
+// Addresses are typed as bare hex and grouped as you go: 4254 becomes 42:54.
+// Anything that is not a hex digit is dropped, including separators the user
+// types themselves, so a pasted 42-54-48-4D-45 lands in the same shape.
+function formatAddress(el) {
+  const typedBefore = el.value.slice(0, el.selectionStart ?? el.value.length);
+  const digitsBefore = (typedBefore.match(/[0-9a-f]/gi) || []).length;
+
+  const digits = (el.value.match(/[0-9a-f]/gi) || []).join("").toUpperCase().slice(0, 10);
+  el.value = (digits.match(/.{1,2}/g) || []).join(":");
+
+  // Every completed pair ahead of the caret pushed it one colon to the right.
+  const caret = digitsBefore + Math.max(0, Math.floor((digitsBefore - 1) / 2));
+  el.setSelectionRange(caret, caret);
+}
+
 const send = (line) => post("/api/command", { line });
 
 async function sendSequence(lines, gap = 150) {
@@ -234,6 +249,11 @@ function init() {
   loadParsers();
   updateSummary();
 
+  // Formatting first, so the summary below reads the grouped value and not the
+  // one keystroke it was a moment ago.
+  for (const n of PIPES) {
+    $("pipe" + n).addEventListener("input", (e) => formatAddress(e.target));
+  }
   for (const id of [...WIRING, ...RADIO, ...PIPES.map((n) => "pipe" + n)]) {
     $(id).addEventListener("input", updateSummary);
     $(id).addEventListener("change", updateSummary);
@@ -256,11 +276,6 @@ function init() {
   // fills the dialog box, so a click landing on the dialog itself is outside.
   $("setup").addEventListener("click", (e) => {
     if (e.target === $("setup")) $("setup").close();
-  });
-  $("pipes-toggle").addEventListener("click", () => {
-    const more = $("pipes-more");
-    more.hidden = !more.hidden;
-    $("pipes-toggle").textContent = more.hidden ? "more" : "less";
   });
 
   // Start is the one primary action: the wiring and the radio config always go

@@ -214,10 +214,20 @@ dialog.setup::backdrop { background: rgba(0, 0, 0, .45); }
   color: var(--text-dim);
 }
 .pairs input, .pairs select { width: 100%; min-width: 0; }
-#pipes-more { margin-top: 8px; }
 
-.checks { display: flex; flex-wrap: wrap; gap: 6px 16px; }
-.checks, .indent { margin-top: 10px; margin-left: 68px; }   /* line up with the fields */
+.note {
+  margin: 9px 0 0 68px;
+  font-size: 11px;
+  line-height: 1.45;
+  color: var(--text-faint);
+}
+
+.checks {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px 16px;
+  margin: 10px 0 0 68px;   /* line up with the fields */
+}
 
 /* --- main --- */
 

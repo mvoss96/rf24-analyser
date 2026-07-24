@@ -23,7 +23,6 @@
   <code id="summary" class="summary"></code>
   <span class="spacer"></span>
   <button class="btn ghost" data-cmd="stop">Stop</button>
-  <button class="btn ghost" data-cmd="info">Info</button>
   <button class="btn ghost" data-cmd="scan">Scan</button>
   <button id="start" class="btn primary">Start</button>
 </section>
@@ -130,18 +129,15 @@
 
       <h3 class="group">Pipe addresses</h3>
       <div class="pairs wide" id="pipes">
-        <label><span>1</span><input id="pipe1" value="42:54:48:4D:45"></label>
+        <label><span>0</span><input id="pipe0" maxlength="14" placeholder="empty"></label>
+        <label><span>1</span><input id="pipe1" maxlength="14" value="42:54:48:4D:45"></label>
+        <label><span>2</span><input id="pipe2" maxlength="14" placeholder="empty"></label>
+        <label><span>3</span><input id="pipe3" maxlength="14" placeholder="empty"></label>
+        <label><span>4</span><input id="pipe4" maxlength="14" placeholder="empty"></label>
+        <label><span>5</span><input id="pipe5" maxlength="14" placeholder="empty"></label>
       </div>
-      <div class="pairs wide" id="pipes-more" hidden>
-        <label><span>0</span><input id="pipe0"></label>
-        <label><span>2</span><input id="pipe2"></label>
-        <label><span>3</span><input id="pipe3"></label>
-        <label><span>4</span><input id="pipe4"></label>
-        <label><span>5</span><input id="pipe5"></label>
-      </div>
-      <div class="indent">
-        <button id="pipes-toggle" class="btn ghost small" type="button">more</button>
-      </div>
+      <p class="note">Pipes 2–5 differ from pipe 1 in their first byte only —
+      the radio takes the remaining bytes from pipe 1 whatever you type here.</p>
     </div>
 
     <footer class="dialog-foot">
