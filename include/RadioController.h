@@ -97,6 +97,44 @@ public:
   void setShowRepeats(bool on) { showRepeats_ = on; }
   bool showRepeats() const { return showRepeats_; }
 
+  // How a payload is taken out of the RX FIFO. The shipping behaviour (RX_FULL)
+  // was arrived at empirically and still lets an old payload through now and
+  // then, so the alternatives have to be comparable against the same sender
+  // without reflashing - the fault does not reproduce against synthetic
+  // traffic, which makes every reflash a lost afternoon.
+  //   RX_WIDTH:   read the width the chip reports, leave the FIFO alone
+  //   RX_FULL:    read the whole 32-byte slot, leave the FIFO alone
+  //   RX_FLUSH:   read the whole slot, then flush - what master does
+  //   RX_NOWID:   never ask for the width at all, report the whole slot
+  //   RX_WIDLATE: ask for the width only after the payload has been read
+  //
+  // The last two exist because R_RX_PL_WID is the one chip command the clean
+  // configurations never issue: static payload sizes were always clean, and they
+  // take the length from RX_PW_Pn instead. If asking for the width is itself
+  // what makes the chip announce a second, stale arrival, then asking later - the
+  // trace shows the width still readable afterwards - costs nothing at all.
+  enum RxMode : uint8_t {
+    RX_WIDTH = 0, RX_FULL = 1, RX_FLUSH = 2, RX_NOWID = 3, RX_WIDLATE = 4
+  };
+  void setRxMode(uint8_t mode) { rxMode_ = mode; }
+  uint8_t rxMode() const { return rxMode_; }
+
+  // Per-pass FIFO trace. Off by default and deliberately so: it adds SPI reads
+  // and a serial line to every drain pass, which is milliseconds in exactly the
+  // window being measured.
+  void setRxDbg(bool on) { rxDbg_ = on; }
+  bool rxDbg() const { return rxDbg_; }
+
+  // Dumps the chip's registers, so two dongles showing different behaviour on
+  // the same traffic can be compared byte for byte.
+  void printRegs();
+
+  // Raw register access for the diagnosis. Reaches states applyConfig() cannot
+  // express, which is the whole point - the suspicion is that the configuration
+  // itself (dynamic payloads without auto-ack) is what the chip mishandles.
+  uint8_t regPeek(uint8_t reg) { return regRead(reg); }
+  void regPoke(uint8_t reg, uint8_t value) { regWrite(reg, value); }
+
   void startListening();
   void stopListening();
 
@@ -146,6 +184,9 @@ private:
   bool configured_ = false;
   bool listening_ = false;
   bool showRepeats_ = true;
+  uint8_t rxMode_ = RX_FLUSH;
+  bool rxDbg_ = false;
+  uint32_t rxPass_ = 0;   // drain passes since boot, to line traces up
   HwState hwState_ = HW_NONE;
   uint32_t rxCount_ = 0;
   uint16_t fifoFull_ = 0;

@@ -402,11 +402,48 @@ void CommandParser::dispatch(char *line) {
     if (v != 0 && v != 1) { err(F("repeats 0|1")); return; }
     radio_.setShowRepeats(v == 1);
     ok();
+  } else if (strcmp(cmd, "rxmode") == 0) {
+    int v = rest ? atoi(rest) : -1;
+    if (v < 0 || v > 4) {
+      err(F("rxmode 0..4 (width|full|full+flush|no-width|width-after)"));
+      return;
+    }
+    radio_.setRxMode((uint8_t)v);
+    ok();
+  } else if (strcmp(cmd, "rxdbg") == 0) {
+    int v = rest ? atoi(rest) : -1;
+    if (v != 0 && v != 1) { err(F("rxdbg 0|1")); return; }
+    radio_.setRxDbg(v == 1);
+    ok();
+  } else if (strcmp(cmd, "regs") == 0) {
+    if (!radio_.hwReady()) { err(F("no hardware - run hwset first")); return; }
+    radio_.printRegs();
+  } else if (strcmp(cmd, "reg") == 0) {
+    // Deliberately unguarded: the point of it is to put the chip into states the
+    // configuration path cannot express - a listening receiver with auto-ack on
+    // one pipe, say - and see which of them stop the duplicates. A `listen`
+    // afterwards puts the configured values back.
+    if (!radio_.hwReady()) { err(F("no hardware - run hwset first")); return; }
+    char *addr = rest ? strtok_r(rest, " \t", &save) : nullptr;
+    if (addr == nullptr) { err(F("usage: reg <addr-hex> [value-hex]")); return; }
+    char *value = strtok_r(nullptr, " \t", &save);
+    long a = strtol(addr, nullptr, 16);
+    if (a < 0 || a > 0x1F) { err(F("addr must be 00..1F")); return; }
+    if (value != nullptr) {
+      long v = strtol(value, nullptr, 16);
+      if (v < 0 || v > 0xFF) { err(F("value must be 00..FF")); return; }
+      radio_.regPoke((uint8_t)a, (uint8_t)v);
+    }
+    Serial.print(F("OK reg "));
+    Serial.print((uint8_t)a, HEX);
+    Serial.print('=');
+    Serial.println(radio_.regPeek((uint8_t)a), HEX);
   } else if (strcmp(cmd, "help") == 0) {
     Serial.println(F("hwset ce=<pin> csn=<pin> [irq=<pin|none>] [led_rx=<pin|none>] [led_tx=<pin|none>]"));
     Serial.println(F("listen ch= rate= crc= aw= pa= ack= dpl= [plsize=] pipeN=<addr>"));
     Serial.println(F("hwclear | listen | stop | info | scan [passes] | repeats <0|1>"));
     Serial.println(F("tx <addr> <hex...> [ack|noack] [x<n>] [gap=<ms>]"));
+    Serial.println(F("rxmode <0|1|2> | rxdbg <0|1> | regs | reg <addr> [val]  (diagnosis)"));
     ok();
   } else {
     err(F("unknown cmd (try help)"));

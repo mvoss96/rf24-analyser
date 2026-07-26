@@ -115,6 +115,10 @@ NRF24SNIFFER fw=3.0.0 api=3 state=nohw hw=failed ce=8 csn=10 irq=2 led_rx=8 led_
 | `scan off` | stop a live scan and resume whatever was running |
 | `repeats <0\|1>` | `0` suppresses identical back-to-back frames |
 | `tx <addr> <hex...> [ack\|noack] [x<n>] [gap=<ms>]` | transmit a payload (default `noack`), optionally `n` copies `gap` ms apart |
+| `rxmode <0..4>` | how a payload is taken out of the RX FIFO — diagnosis only, see below |
+| `rxdbg <0\|1>` | one `DBG` line per drain pass with the FIFO registers |
+| `regs` | dump the chip's registers by name |
+| `reg <addr> [value]` | read or write one register, bypassing the configuration |
 | `help` | usage summary |
 
 **`hwset`** — `ce` and `csn` are mandatory, the rest default to `none`. Pins are
@@ -129,6 +133,42 @@ Every successful `hwset` is **stored in EEPROM** and restored on the next boot,
 so a dongle keeps working without the host restating its wiring. This is the one
 piece of remembered state, and it never becomes hidden state: the greeting spells
 the pins out on every connect. `hwclear` returns the dongle to a virgin state.
+
+### Duplicate frames, and the `rxmode` switch
+
+These dongles hand out every payload **shorter than 32 bytes twice**, the second
+copy carrying an earlier payload. `rxmode` exists to measure that rather than
+argue about it; `2` is the default and the only setting anyone should run.
+
+| Mode | Read strategy | Result against a real sender |
+|---|---|---|
+| `0` | read the width `R_RX_PL_WID` reports | duplicates, plus misalignment: `len=3` frames, payloads shifted or stitched together |
+| `1` | read the whole 32-byte slot | one stale frame per burst |
+| `2` | read the whole slot, then `FLUSH_RX` | **clean**, verified over a mix of 8, 16 and 32-byte payloads |
+| `3` | never ask for the width, report 32 bytes | one stale frame per burst |
+| `4` | ask for the width after reading the payload | one stale frame per burst |
+
+What the measurements settled:
+
+- It is **made up locally**. Two dongles hearing the same single click report
+  *different* stale payloads for it, so nothing extra was on the air. Three
+  senders (a RotRemote, the other dongle, and `tx` bursts) all provoke it.
+- It is **not the read width**, not `R_RX_PL_WID` (modes 3 and 4), not `RX_PW_Pn`,
+  and not the dynamic-payload configuration — enabling auto-ack on the open pipe,
+  which is what the datasheet asks for, changes nothing.
+- A payload that **fills** the 32-byte slot comes out exactly once. A shorter one
+  leaves the FIFO a payload out of step, and the next arrival is announced twice.
+- Stale bytes live in the **chip's FIFO RAM** and outlive an ATmega reset, a
+  firmware upload and any number of `FLUSH_RX` calls — flushing resets pointers,
+  it does not clear RAM. A frame from ten minutes ago can surface at any time, so
+  a duplicate hunt has to start from a known state or it measures history.
+- The flush after **every single payload** is the only measure that works. It
+  costs the copies queued behind the one being read, which is why bursts sent
+  with `gap=0` lose copies; a sender repeats each event anyway.
+
+Reproducing it takes no user and no remote: point one dongle at another, set the
+listener to `rxmode 1`, and send single 16-byte payloads a second apart. Every
+one of them is reported twice, the second time as the payload before it.
 
 ### The CE self-test
 
