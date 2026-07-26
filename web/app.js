@@ -203,17 +203,33 @@ function setColumns(columns) {
 // had to reconstruct by subtracting timestamps.
 const GROUP_WINDOW_MS = 2000;
 
+// How far back to look when the frames carry no device timestamp and the
+// window cannot be applied. Two events' repeats interleaving is the case this
+// exists for, so a handful of rows is plenty.
+const GROUP_SCAN_DEPTH = 8;
+
 function groupable(frame) {
   if (!$("group").checked || !groups.length) return null;
-  const last = groups[groups.length - 1];
-  if (last.identity !== frame.identity) return null;
-  // A window as well as an identity: a sender stuck on one packet id must not
-  // collapse minutes of traffic into a row that hides when any of it happened.
-  const first = last.frames[0];
-  if (frame.deviceMs !== null && first.deviceMs !== null) {
-    return frame.deviceMs - first.deviceMs <= GROUP_WINDOW_MS ? last : null;
+  // Not just the last row: two events' repeats arrive interleaved (a stale
+  // frame carrying the previous packet id lands in the middle of the current
+  // burst), so the group this frame belongs to is often one row further back.
+  // Matching only against the last row split one event across three rows and
+  // made a single click look like five.
+  for (let i = groups.length - 1; i >= 0; i--) {
+    const group = groups[i];
+    const first = group.frames[0];
+    // A window as well as an identity: a sender stuck on one packet id must not
+    // collapse minutes of traffic into a row that hides when any of it happened.
+    // Groups are in arrival order, so once one is out of the window the older
+    // ones are too.
+    if (frame.deviceMs !== null && first.deviceMs !== null) {
+      if (frame.deviceMs - first.deviceMs > GROUP_WINDOW_MS) break;
+    } else if (groups.length - i > GROUP_SCAN_DEPTH) {
+      break;
+    }
+    if (group.identity === frame.identity) return group;
   }
-  return last;
+  return null;
 }
 
 function spread(group) {
@@ -264,16 +280,31 @@ function paintRow(group) {
 // Packet counters run in sequence per sender, so a jump in one is the only
 // direct evidence a sniffer has that something never arrived. The counter is a
 // byte, hence the wrap.
-const lastPacket = new Map();   // source -> last packet id seen
+const lastPacket = new Map();   // source -> furthest packet id seen
 let missingTotal = 0;
+
+// Ids do not arrive in order. A sender repeats each event, and a frame left
+// over from an earlier transmission can arrive in the middle of the current
+// burst carrying the id before it. Read frame to frame, every such step back
+// counts as a jump forward of 255 and reports 254 packets lost - the mistake
+// the capture summary was fixed for, still living here until now. Only a step
+// FORWARD from the furthest id seen means something never arrived; anything
+// behind it is a repeat or a straggler and says nothing about loss.
+const BEHIND_TOLERANCE = 64;
 
 function missingBefore(frame) {
   if (frame.packetId === null || frame.packetId === undefined || !frame.source) return 0;
-  const previous = lastPacket.get(frame.source);
-  lastPacket.set(frame.source, frame.packetId);
+  const furthest = lastPacket.get(frame.source);
+  if (furthest === undefined) {
+    lastPacket.set(frame.source, frame.packetId);
+    return 0;
+  }
+  const ahead = (frame.packetId - furthest) & 0xFF;
   // Equal means a retransmission of the event we just saw, not a new one.
-  if (previous === undefined || previous === frame.packetId) return 0;
-  return (frame.packetId - previous - 1) & 0xFF;
+  if (ahead === 0) return 0;
+  if (ahead > 0xFF - BEHIND_TOLERANCE) return 0;   // behind: a repeat or a stale frame
+  lastPacket.set(frame.source, frame.packetId);
+  return ahead - 1;
 }
 
 function missingNote(frame, missing) {

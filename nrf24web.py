@@ -27,6 +27,7 @@ import webbrowser
 from collections import deque
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
+from urllib.parse import parse_qs, urlparse
 
 import nrf24_dongle as dongle
 import nrf24_parsers as parsers
@@ -405,6 +406,10 @@ class Session:
             "packetId": packet_id,
             "detail": detail,
             "hex": parsers.hexdump(data),
+            # The payload as one compact hex string. The hexdump above is laid
+            # out for a human to read; a consumer comparing two frames byte for
+            # byte should not have to unpick its columns first.
+            "raw": bytes(data).hex().upper(),
             "flagged": flagged,
             # Retransmissions of one event share this; the UI folds them into a
             # single row. Decoder-specific, so it is recomputed on every switch.
@@ -567,6 +572,24 @@ class Handler(BaseHTTPRequestHandler):
                          # radio-level columns are fixed.
                          "columns": column_spec(p)}
                         for p in parsers.all_parsers()])
+        elif self.path.startswith("/api/frames"):
+            # The retained history, decoded - what the browser shows, for a
+            # consumer that has no browser. capture() only ever sees the window
+            # it was called for, so a frame already on screen was unreachable
+            # to an agent until now; reading back over past frames is how you
+            # tell a repeat from a new event after the fact.
+            query = parse_qs(urlparse(self.path).query)
+            frames = self.session.decoded_history()
+            try:
+                limit = int(query.get("limit", ["0"])[0])
+            except ValueError:
+                limit = 0
+            if limit > 0:
+                frames = frames[-limit:]
+            self._json({"decoder": self.session.parser.name,
+                        "state": self.session.state_text,
+                        "retained": len(self.session.frames),
+                        "frames": frames})
         elif self.path == "/api/events":
             self._events()
         elif self.path == "/api/state":
@@ -590,6 +613,17 @@ class Handler(BaseHTTPRequestHandler):
                 self.session.connect(payload["port"])
             elif self.path == "/api/disconnect":
                 self.session.disconnect()
+            elif self.path == "/api/reconnect":
+                # Reopening the port pulls DTR, which resets the dongle: the
+                # cheapest way to prove a frame did not come out of the
+                # sniffer's own RX FIFO is to empty it and look again. The
+                # radio configuration does not survive - `listen` again after.
+                port = payload.get("port") or (self.session.dongle and self.session.dongle.port)
+                if not port:
+                    raise RuntimeError("not connected and no port given")
+                self.session.connect(port)
+                self._json({"ok": True, "port": port})
+                return
             elif self.path == "/api/command":
                 # wait=true turns the fire-and-forget send into a round trip:
                 # the response carries the firmware's own OK/ERR line, so a

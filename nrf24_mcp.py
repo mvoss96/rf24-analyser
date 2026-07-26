@@ -12,8 +12,12 @@ Tools:
   nrf24_state       what the dongle is doing right now
   nrf24_configure   tune the radio and start listening
   nrf24_capture     collect and summarise frames over a time window
+  nrf24_history     read back frames already captured
   nrf24_transmit    send one frame, optionally repeated ms apart (x<n>/gap)
   nrf24_burst       send a sequence of frames, one firmware reply each
+  nrf24_command     any raw firmware command (status, info, scan, ...)
+  nrf24_clear       discard the retained history
+  nrf24_reset       reset the dongle, emptying its FIFO
   nrf24_stop        stop receiving
 
 Register it in the consuming session's MCP config, e.g.:
@@ -190,6 +194,70 @@ def nrf24_stop() -> dict:
     browser's Start resumes it."""
     _command("stop")
     return _request("GET", "/api/state", timeout=5)
+
+
+@mcp.tool()
+def nrf24_command(line: str) -> dict:
+    """Send one raw firmware command line and return the firmware's own reply.
+
+    The escape hatch: everything the dongle can do is reachable here without a
+    dedicated tool. The ones worth knowing:
+
+      status            counters - `rx=` frames received, `fifofull=` overflows.
+                        The answer to "is the radio hearing anything at all",
+                        which an empty capture cannot tell you.
+      info              the active configuration, pipe by pipe
+      scan [passes]     energy per channel - which channels are busy. Needs no
+                        radio configuration, so it works before you pick one.
+      repeats 0|1       0 suppresses identical back-to-back frames
+      help              the firmware's own command list
+
+    Replies are "OK ..." or "ERR ..."; an ERR raises. Anything the firmware
+    prints asynchronously (received frames, warnings) is not the reply - read
+    those with nrf24_capture or nrf24_history."""
+    return {"reply": _command(line).get("reply", "")}
+
+
+@mcp.tool()
+def nrf24_history(limit: int = 50) -> dict:
+    """Return frames the sniffer already captured, newest last.
+
+    nrf24_capture only sees the window it was asked for, so a frame that
+    arrived a minute ago was out of reach. This reads the retained history
+    instead - which is what lets you compare a frame against earlier ones and
+    notice that it is byte for byte a repeat of something older.
+
+    Each frame carries `raw` (compact hex of the whole payload), the decoded
+    `cells`, `source` and `packetId`. Compare `raw` when the decoded view looks
+    ambiguous: two frames can decode to the same measurements and still differ
+    in the packet id, which is exactly the case worth catching."""
+    frames = _request("GET", f"/api/frames?limit={max(0, int(limit))}", timeout=15)
+    return frames
+
+
+@mcp.tool()
+def nrf24_clear() -> dict:
+    """Discard the retained frame history, giving a measurement a clean zero.
+
+    Affects the browser view too - a person watching loses the same rows."""
+    _request("POST", "/api/clear", {}, timeout=5)
+    return {"cleared": True}
+
+
+@mcp.tool()
+def nrf24_reset() -> dict:
+    """Reopen the serial port, which pulls DTR and resets the dongle.
+
+    Empties the radio's RX FIFO and the firmware's state. Use it to tell "this
+    frame came off the air just now" from "this frame was still sitting in the
+    sniffer": after a reset the dongle cannot know anything that happened
+    before it.
+
+    The radio configuration does NOT survive - call nrf24_configure again
+    before capturing, or the dongle sits there unconfigured and silent."""
+    result = _request("POST", "/api/reconnect", {}, timeout=20)
+    return {"reset": True, "port": result.get("port"),
+            "note": "radio is unconfigured now - call nrf24_configure before capturing"}
 
 
 if __name__ == "__main__":

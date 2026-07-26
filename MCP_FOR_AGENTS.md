@@ -32,6 +32,10 @@ Point it at a non-default host with the `NRF24_WEB_URL` env var
 | `nrf24_capture(seconds=10)` | listen for `seconds`, return every frame decoded plus a per-sender summary |
 | `nrf24_transmit(address, payload, ack=False, repeat=1, gap_ms=0)` | send one frame — a stimulus to provoke a response. `repeat`/`gap_ms` send up to 16 copies genuinely milliseconds apart (firmware-side), like a real sender's event repeats |
 | `nrf24_burst(frames, address="", ack=False)` | send a sequence of frames: each entry a payload hex string or `{"payload", "repeat", "gap_ms", "address", "pause_ms"}`. Per-entry firmware replies; ~5-10 ms serial round trip between entries |
+| `nrf24_history(limit=50)` | frames already captured, newest last, each with compact `raw` hex |
+| `nrf24_command(line)` | any raw firmware command — `status`, `info`, `scan`, `repeats 0\|1`, `help` |
+| `nrf24_clear()` | discard the retained history, for a clean measurement zero |
+| `nrf24_reset()` | reset the dongle (empties its RX FIFO); radio is unconfigured afterwards |
 | `nrf24_stop()` | stop receiving |
 
 `nrf24_transmit` and `nrf24_burst` return the firmware's own reply: `sent`
@@ -66,6 +70,27 @@ frames and statistics, **not** a verdict — the pass/fail criteria are yours.
 3. **The dongle is shared.** A human may be watching in the browser.
    `nrf24_configure` and `nrf24_transmit` change their view too. That is
    intended, but you are not alone on the device.
+
+4. **An empty capture is not proof the radio is deaf.** `nrf24_command("status")`
+   answers that directly: `rx=` counts frames the firmware received since it
+   started listening, `fifofull=` counts overflows. A capture showing nothing
+   while `rx` climbs means the frames arrived and something downstream lost
+   them — a very different problem from a silent sender.
+
+5. **Compare `raw`, not the decoded text.** Two frames can decode to identical
+   measurements and still carry different packet ids — a sender may emit a
+   leftover frame from its previous transmission in the middle of the current
+   burst, which reads as a second event unless you look at the bytes.
+   `nrf24_history` gives you the earlier frames to compare against.
+
+## Telling the sniffer's faults from the device's
+
+If something appears that you cannot account for, `nrf24_reset()` settles who
+produced it: the port is reopened, which resets the dongle and empties its RX
+FIFO, so afterwards it cannot know anything from before. Reconfigure with
+`nrf24_configure` (the reset drops the radio configuration), provoke the same
+behaviour again, and if it reappears it came off the air rather than out of the
+sniffer.
 
 ## Typical loop
 
