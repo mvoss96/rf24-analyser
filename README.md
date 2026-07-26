@@ -418,6 +418,11 @@ server that proxies to the running web UI over HTTP** and touches nothing
 itself. A person keeps watching in the browser while an agent captures,
 configures and transmits through the same dongle.
 
+The consuming session's handout is [`MCP_FOR_AGENTS.md`](MCP_FOR_AGENTS.md) — a
+self-contained page with the registration, the tools, and the traps that
+otherwise produce wrong conclusions (an idle device that only broadcasts hourly,
+NO_ACK duplicate frames, the shared dongle). Point the other agent at that file.
+
 Start the web UI (`start.cmd`), then register the MCP server in the *consuming*
 session — the copy in [`mcp.example.json`](mcp.example.json), or:
 
