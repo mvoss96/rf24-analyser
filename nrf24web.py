@@ -51,44 +51,68 @@ def column_spec(parser):
 def _capture_stats(frames):
     """Per-sender summary of a captured window, for an autonomous consumer.
 
-    The packet counter is a byte and only runs per sender, so gaps are computed
-    within each source. A gap of n past half a cycle is reported as a floor, not
-    a fact, for the same reason the table marks it "at least" - a wrap of 256
-    cannot be told from a genuine loss of n from the numbers alone.
+    Loss is computed over the set of distinct packet ids per sender, not frame
+    by frame. A sender repeats each event several times and the repeats arrive
+    interleaved - ...66, 67, 66, 68, 67... - so a frame-by-frame difference reads
+    every step back to an earlier repeat as a huge gap. What is missing is which
+    counter values never appeared at all: the span from the first id to the last
+    (one byte, so one wrap is handled) minus the count of distinct ids seen.
+
+    A wrap of the byte counter cannot be told from a genuine loss of 256 from
+    these numbers, so `missing_uncertain` flags a span that used most of the
+    cycle - the same caution the live table shows as "at least".
     """
     senders = {}
-    total_missing = 0
     events = set()
     for frame in frames:
         events.add(frame.get("identity"))
         source = frame.get("source")
-        packet_id = frame.get("packetId")
         if source is None:
             continue
-        s = senders.setdefault(source, {"frames": 0, "events": set(), "packet_ids": [],
-                                        "first_id": None, "last_id": None, "missing": 0})
+        s = senders.setdefault(source, {"frames": 0, "events": set(), "ids": [], "id_set": set()})
         s["frames"] += 1
         s["events"].add(frame.get("identity"))
+        packet_id = frame.get("packetId")
         if packet_id is not None:
-            if s["last_id"] is not None and packet_id != s["last_id"]:
-                gap = (packet_id - s["last_id"] - 1) & 0xFF
-                s["missing"] += gap
-                total_missing += gap
-            if s["first_id"] is None:
-                s["first_id"] = packet_id
-            s["last_id"] = packet_id
-            s["packet_ids"].append(packet_id)
+            s["ids"].append(packet_id)
+            s["id_set"].add(packet_id)
 
-    for s in senders.values():
-        s["events"] = len(s["events"])
-        s["missing_uncertain"] = s["missing"] >= 128   # a wrap could inflate it
+    total_missing = 0
+    out_senders = {}
+    for source, s in senders.items():
+        summary = {"frames": s["frames"], "events": len(s["events"])}
+        if s["ids"]:
+            span, missing = _id_span(s["id_set"])
+            total_missing += missing
+            summary.update(first_id=s["ids"][0], last_id=s["ids"][-1],
+                           distinct_ids=len(s["id_set"]), missing=missing,
+                           missing_uncertain=span >= 128)
+        out_senders[source] = summary
 
     return {
         "frames": len(frames),
-        "events": len(events - {None}) or len(events),
-        "senders": senders,
+        "events": len(events - {None}),
+        "senders": out_senders,
         "missing": total_missing,
     }
+
+
+def _id_span(id_set):
+    """(span, missing) for a set of byte packet ids on the 256 ring.
+
+    The smallest arc that contains every id is the whole ring minus its largest
+    empty gap; that arc is wrap-agnostic, so it needs neither a known start nor
+    an assumption that ids arrive in order. `missing` is the arc's length minus
+    the ids actually seen - the counter values that never appeared.
+    """
+    ids = sorted(id_set)
+    n = len(ids)
+    if n == 1:
+        return 1, 0
+    gaps = [ids[i + 1] - ids[i] for i in range(n - 1)]
+    gaps.append(256 - ids[-1] + ids[0])   # the wrap-around gap
+    span = 257 - max(gaps)                 # ids from one arc end to the other
+    return span, span - n
 
 
 class Hub:
