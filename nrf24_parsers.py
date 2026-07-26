@@ -438,6 +438,35 @@ class BTHomeParser(Parser):
             collector.records,
         )
 
+    # BTHome objects are self-describing, so a payload has to add up exactly:
+    # the objects either fill it or they do not. The reference parser notices
+    # when they do not, but says so at DEBUG - for a BLE receiver a malformed
+    # advert is merely one to skip, while for a sniffer it is the finding.
+    #
+    # It is worth flagging loudly because the cause is not on the air. Measured
+    # against a sender's own log, about 4% of frames arrived with the wrong
+    # length - a 17-byte payload read as 16, a 16-byte one as 17 - on two
+    # dongles and on an ESP32 running an unrelated driver alike. A frame read
+    # one byte short silently loses its last object; one read long gains a junk
+    # one. Both decode into something plausible, which is the dangerous part.
+    _MALFORMED = ("invalid payload data length", "invalid object id")
+
+    @classmethod
+    def _malformed(cls, records):
+        """The parser's own complaint that the objects do not fill the payload."""
+        # Which way it went is not something these messages settle: a frame read
+        # one byte long makes the trailing byte look like an object id whose own
+        # data is then missing, so it reports a length problem too. Say what is
+        # certain - the objects and the payload disagree - and leave the rest to
+        # the hex dump.
+        for _level, text in records:
+            lowered = text.lower()
+            if "invalid payload data length" in lowered:
+                return "objects and payload length disagree - frame read with the wrong length?"
+            if "invalid object id" in lowered:
+                return "bytes left over after the last object - frame read too long?"
+        return None
+
     # -- Parser API --
 
     @staticmethod
@@ -493,11 +522,13 @@ class BTHomeParser(Parser):
             if getattr(key, "key", None) != "packet_id":
                 parts.append(f"{value.name} {value.native_value}")
 
-        flagged = any(level >= logging.WARNING for level, _ in records)
+        note = self._malformed(records)
+        flagged = note is not None or any(level >= logging.WARNING for level, _ in records)
+        suffix = f"  !! {note}" if note else ("  !!" if flagged else "")
         return {
             "id": "" if number is None else number,
             "sender": ":".join(f"{b:02X}" for b in sender),
-            "data": ("; ".join(parts) + ("  !!" if flagged else "")) if parts
+            "data": ("; ".join(parts) + suffix) if parts
                     else "!! rejected by bthome-ble",
         }
 
@@ -548,8 +579,17 @@ class BTHomeParser(Parser):
             lines.append("  objects   : " + " ".join(f"{b:02X}" for b in payload))
             shown = records
         else:
-            # Anything the library warned about is worth surfacing even on success.
-            shown = [r for r in records if r[0] >= logging.WARNING]
+            # Anything the library warned about is worth surfacing even on
+            # success - and so is a payload that does not add up, which it
+            # reports below WARNING because a BLE receiver would just skip it.
+            shown = [r for r in records
+                     if r[0] >= logging.WARNING
+                     or any(m in r[1].lower() for m in self._MALFORMED)]
+        note = self._malformed(records)
+        if note is not None:
+            lines.append(f"  !! {note}")
+            lines.append(f"  objects   : {' '.join(f'{b:02X}' for b in payload)}"
+                         f"   ({len(payload)} bytes of object data)")
         for _level, message in shown:
             lines.append(f"  reason    : {message}")
 
