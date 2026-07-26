@@ -19,6 +19,7 @@ there is deliberately no --port flag duplicating that.
 import argparse
 import json
 import queue
+import re
 import socket
 import threading
 import time
@@ -158,6 +159,10 @@ class Session:
         self.scan = None
         self._pump = None
         self._stop = threading.Event()
+        # Serialises command()s so each reply is matched to its own command.
+        # Only API-side commands hold it; a human typing in the browser terminal
+        # can still interleave - the dongle is shared, that is documented.
+        self._cmd_lock = threading.Lock()
 
     # -- connection --
 
@@ -234,6 +239,93 @@ class Session:
             raise RuntimeError("not connected")
         self.dongle.send(line)
         self.hub.publish({"type": "line", "text": f"> {line}", "kind": "sent"})
+
+    def command(self, line, timeout=5.0):
+        """Sends one command and returns the firmware's OK/ERR reply line.
+
+        The fire-and-forget send() leaves the reply in the event stream, where
+        only a browser can see it - an HTTP consumer (the MCP server above all)
+        was left believing every command succeeded. Waiting here is what makes
+        "ERR bad payload byte" reach the caller that caused it. The lock keeps
+        concurrent API commands from claiming each other's replies; RX frames
+        and WARN lines pass through unclaimed either way.
+        """
+        with self._cmd_lock:
+            q = self.hub.subscribe()
+            try:
+                self.send(line)
+                deadline = time.monotonic() + timeout
+                while True:
+                    remaining = deadline - time.monotonic()
+                    if remaining <= 0:
+                        raise TimeoutError(
+                            f"no OK/ERR reply to {line.split()[0]!r} within {timeout:.1f}s")
+                    try:
+                        event = q.get(timeout=remaining)
+                    except queue.Empty:
+                        continue
+                    # `status` answers with the greeting line, not OK/ERR - it
+                    # is a reply all the same (and the one that carries fw=).
+                    if event.get("type") == "greeting":
+                        return event.get("text", "")
+                    if event.get("type") != "line" or event.get("kind") == "sent":
+                        continue
+                    text = event.get("text", "")
+                    if text.startswith("OK") or text.startswith("ERR"):
+                        return text
+            finally:
+                self.hub.unsubscribe(q)
+
+    def burst(self, address, frames, ack=False):
+        """Transmits a sequence of frames, waiting for each firmware reply.
+
+        `frames` entries are {"payload": hex, "repeat": 1..16, "gap_ms": 0..250,
+        "address": optional override, "pause_ms": host-side pause afterwards} -
+        or a bare payload string. Repeats of one payload are the firmware's
+        x<n>, i.e. genuinely milliseconds apart; between entries sits at least
+        the serial round trip (~5-10 ms). Returns one result per entry; an ERR
+        does not stop the rest - entries are independent stimuli and the caller
+        sees per-entry ok flags.
+        """
+        if not isinstance(frames, list) or not frames:
+            raise ValueError("frames must be a non-empty list")
+        if len(frames) > 64:
+            raise ValueError("at most 64 frames per burst")
+
+        results = []
+        for entry in frames:
+            if isinstance(entry, str):
+                entry = {"payload": entry}
+            payload = str(entry.get("payload", "")).strip()
+            if not payload:
+                raise ValueError("frame without payload")
+            repeat = int(entry.get("repeat", 1))
+            gap_ms = int(entry.get("gap_ms", 0))
+            if not 1 <= repeat <= 16:
+                raise ValueError("repeat must be 1..16")
+            if not 0 <= gap_ms <= 250:
+                raise ValueError("gap_ms must be 0..250")
+            addr = str(entry.get("address") or address or "").strip()
+            if not addr:
+                raise ValueError("frame without address (no burst-level default)")
+
+            line = f"tx {addr} {payload} {'ack' if ack else 'noack'}"
+            if repeat > 1:
+                line += f" x{repeat}"
+            if gap_ms:
+                line += f" gap={gap_ms}"
+            reply = self.command(line, timeout=5.0 + repeat * (gap_ms + 50) / 1000.0)
+
+            m = re.search(r"sent=(\d+)(?:/(\d+))?", reply)
+            sent = int(m.group(1)) if m else 0
+            results.append({"payload": payload, "address": addr, "repeat": repeat,
+                            "gap_ms": gap_ms, "reply": reply,
+                            "sent": sent, "ok": reply.startswith("OK") and sent == repeat})
+
+            pause_ms = int(entry.get("pause_ms", 0))
+            if pause_ms > 0:
+                time.sleep(min(pause_ms, 10000) / 1000.0)
+        return results
 
     # -- decoding --
 
@@ -499,7 +591,20 @@ class Handler(BaseHTTPRequestHandler):
             elif self.path == "/api/disconnect":
                 self.session.disconnect()
             elif self.path == "/api/command":
+                # wait=true turns the fire-and-forget send into a round trip:
+                # the response carries the firmware's own OK/ERR line, so a
+                # non-browser consumer finally sees its errors.
+                if payload.get("wait"):
+                    reply = self.session.command(payload["line"])
+                    self._json({"ok": not reply.startswith("ERR"), "reply": reply})
+                    return
                 self.session.send(payload["line"])
+            elif self.path == "/api/burst":
+                results = self.session.burst(payload.get("address"),
+                                             payload.get("frames"),
+                                             bool(payload.get("ack", False)))
+                self._json({"ok": all(r["ok"] for r in results), "results": results})
+                return
             elif self.path == "/api/capture":
                 # Blocks for the window, which ThreadingHTTPServer serves on its
                 # own thread, so the browser and its SSE stream keep running.

@@ -250,21 +250,31 @@ void RadioController::poll() {
   }
 }
 
-bool RadioController::transmit(const uint8_t *addr, const uint8_t *data,
-                              uint8_t len, bool noack) {
+uint8_t RadioController::transmit(const uint8_t *addr, const uint8_t *data,
+                                  uint8_t len, bool noack, uint8_t count,
+                                  uint16_t gapMs) {
   radio_.stopListening();
   radio_.openWritingPipe(addr);
   led(hw_.ledTx, true);
-  // Bounded, deliberately not RF24::write(): if the CE pin is not actually
-  // wired to the chip the transmission never starts, TX_DS/MAX_RT never arrive
-  // and write() spins forever. With a timeout this becomes a reported failure -
-  // and sent=0 doubles as the only practical check that CE is correct, since
-  // isChipConnected() exercises SPI only and never touches CE.
-  radio_.startFastWrite(data, len, noack); // noack => NO_ACK flag
-  bool sent = radio_.txStandBy(TX_TIMEOUT_MS);
-  if (!sent) radio_.flush_tx();
+  uint8_t sent = 0;
+  for (uint8_t i = 0; i < count; i++) {
+    // Bounded, deliberately not RF24::write(): if the CE pin is not actually
+    // wired to the chip the transmission never starts, TX_DS/MAX_RT never arrive
+    // and write() spins forever. With a timeout this becomes a reported failure -
+    // and sent=0 doubles as the only practical check that CE is correct, since
+    // isChipConnected() exercises SPI only and never touches CE.
+    radio_.startFastWrite(data, len, noack); // noack => NO_ACK flag
+    if (radio_.txStandBy(TX_TIMEOUT_MS)) {
+      sent++;
+    } else {
+      radio_.flush_tx();
+    }
+    if (gapMs != 0 && i + 1 < count) delay(gapMs);
+  }
   led(hw_.ledTx, false);
   // openWritingPipe clobbers pipe 0; restore reading pipes and listen state.
+  // Done once after the whole burst - reconfiguring between copies would add
+  // milliseconds of SPI traffic exactly where the burst is meant to be tight.
   reconfigure();
   return sent;
 }

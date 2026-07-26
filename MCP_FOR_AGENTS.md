@@ -30,8 +30,15 @@ Point it at a non-default host with the `NRF24_WEB_URL` env var
 | `nrf24_state()` | connected? `listening`/`idle`/`scanning`? on what wiring? |
 | `nrf24_configure(channel, pipe1, rate=250, crc=16, aw=5, pa="low", ack=0, dpl=1, plsize=32)` | tune the radio and start listening. Only `channel` and `pipe1` (e.g. `"42:54:48:4D:45"`) are required; the defaults match a BTHome-over-nRF24 sender |
 | `nrf24_capture(seconds=10)` | listen for `seconds`, return every frame decoded plus a per-sender summary |
-| `nrf24_transmit(address, payload, ack=False)` | send one frame — a stimulus to provoke a response |
+| `nrf24_transmit(address, payload, ack=False, repeat=1, gap_ms=0)` | send one frame — a stimulus to provoke a response. `repeat`/`gap_ms` send up to 16 copies genuinely milliseconds apart (firmware-side), like a real sender's event repeats |
+| `nrf24_burst(frames, address="", ack=False)` | send a sequence of frames: each entry a payload hex string or `{"payload", "repeat", "gap_ms", "address", "pause_ms"}`. Per-entry firmware replies; ~5-10 ms serial round trip between entries |
 | `nrf24_stop()` | stop receiving |
+
+`nrf24_transmit` and `nrf24_burst` return the firmware's own reply: `sent`
+counts the copies the radio confirmed on air, and a rejected command (bad hex,
+unconfigured radio) raises instead of pretending success. The dongle cannot
+receive its own transmissions — a capture never contains them; point a second
+receiver at the channel to see them land.
 
 `nrf24_capture` returns, per sender: `frames`, `events`, `first_id`/`last_id`,
 `distinct_ids`, `missing` (skipped counter values), and `missing_uncertain`
@@ -41,10 +48,11 @@ frames and statistics, **not** a verdict — the pass/fail criteria are yours.
 ## Three things that otherwise cause wrong conclusions
 
 1. **An empty capture does not mean "broken".** The test device (a RotRemote)
-   broadcasts its periodic status only **once an hour** when idle. Waiting for it
-   passively is pointless. Validate **stimulus-driven**: send `nrf24_transmit(...)`
-   then capture briefly, or have a human interact with the device while you
-   capture.
+   broadcasts its periodic status only when idle — every ~1 min on the current
+   test firmware, hourly on production builds, and not at all on a dead
+   battery. Waiting for it passively is pointless. Validate **stimulus-driven**:
+   send `nrf24_transmit(...)` then capture briefly, or have a human interact
+   with the device while you capture.
 
 2. **Frames arrive duplicated and out of order.** The sender broadcasts with
    NO_ACK and repeats each event three times; NO_ACK disables the nRF24's
