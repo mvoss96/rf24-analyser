@@ -19,6 +19,7 @@ there is deliberately no --port flag duplicating that.
 import argparse
 import json
 import queue
+import socket
 import threading
 import time
 import webbrowser
@@ -436,19 +437,44 @@ class Handler(BaseHTTPRequestHandler):
         self.wfile.flush()
 
 
+def _already_serving(port):
+    """True if something answers an HTTP request on the port already."""
+    try:
+        with socket.create_connection(("127.0.0.1", port), timeout=0.3):
+            return True
+    except OSError:
+        return False
+
+
 def main():
     ap = argparse.ArgumentParser(description="Browser front end for the nrf24-sniffer dongle.")
     ap.add_argument("--http", type=int, default=8724, help="http port (default 8724)")
     ap.add_argument("--no-browser", action="store_true", help="do not open a browser")
     args = ap.parse_args()
 
+    url = f"http://127.0.0.1:{args.http}/"
+
+    # On Windows the server socket allows address reuse, so a second start would
+    # bind the same port instead of failing - two servers, and the second one
+    # cannot open the dongle the first is holding. Double-clicking start.cmd a
+    # second time is exactly how that happens, so check first and just point the
+    # browser at the instance already running.
+    if _already_serving(args.http):
+        print(f"nrf24-sniffer is already running on {url}")
+        if not args.no_browser:
+            webbrowser.open(url)
+        return
+
     hub = Hub()
     session = Session(hub)
     Handler.hub = hub
     Handler.session = session
 
-    server = ThreadingHTTPServer(("127.0.0.1", args.http), Handler)
-    url = f"http://127.0.0.1:{args.http}/"
+    try:
+        server = ThreadingHTTPServer(("127.0.0.1", args.http), Handler)
+    except OSError as exc:
+        print(f"cannot start on port {args.http}: {exc}")
+        return
     print(f"nrf24-sniffer web ui on {url}   (Ctrl-C to stop)")
     if not args.no_browser:
         threading.Timer(0.5, lambda: webbrowser.open(url)).start()
