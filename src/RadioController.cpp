@@ -18,6 +18,79 @@ static uint8_t crc8(const uint8_t *data, uint8_t len) {
   return crc;
 }
 
+// --- Register-level RX -------------------------------------------------------
+//
+// The RF24 library's available()/getDynamicPayloadSize()/read() sequence hands
+// out every frame twice on these dongles: the second copy carries the previous
+// burst's payload, and when the two differ in length it comes out read with the
+// wrong width. Measured against an ESP32 receiving the same traffic, which sees
+// each frame exactly once - and that receiver issues the very same chip
+// commands, just not through the library. Static 32-byte payloads (which skip
+// R_RX_PL_WID entirely) are also clean. So the chip is fine and the sequence is
+// fine; what is not is the library's bookkeeping around it. Talking to the
+// registers directly is shorter than working out which part.
+namespace {
+constexpr uint8_t CMD_R_REGISTER = 0x00;
+constexpr uint8_t CMD_R_RX_PL_WID = 0x60;
+constexpr uint8_t CMD_R_RX_PAYLOAD = 0x61;
+constexpr uint8_t CMD_FLUSH_RX = 0xE2;
+constexpr uint8_t REG_STATUS = 0x07;
+constexpr uint8_t REG_FIFO_STATUS = 0x17;
+constexpr uint8_t FIFO_RX_EMPTY = 0x01;
+constexpr uint8_t STATUS_RX_DR = 0x40;
+
+// The dongle's SPI is shared with nothing else, so one setting object is fine.
+const SPISettings NRF_SPI(4000000, MSBFIRST, SPI_MODE0);
+}  // namespace
+
+uint8_t RadioController::regRead(uint8_t reg) {
+  SPI.beginTransaction(NRF_SPI);
+  digitalWrite(hw_.csn, LOW);
+  SPI.transfer(CMD_R_REGISTER | reg);
+  const uint8_t value = SPI.transfer(0xFF);
+  digitalWrite(hw_.csn, HIGH);
+  SPI.endTransaction();
+  return value;
+}
+
+void RadioController::regWrite(uint8_t reg, uint8_t value) {
+  SPI.beginTransaction(NRF_SPI);
+  digitalWrite(hw_.csn, LOW);
+  SPI.transfer(0x20 | reg);
+  SPI.transfer(value);
+  digitalWrite(hw_.csn, HIGH);
+  SPI.endTransaction();
+}
+
+void RadioController::spiCommand(uint8_t cmd) {
+  SPI.beginTransaction(NRF_SPI);
+  digitalWrite(hw_.csn, LOW);
+  SPI.transfer(cmd);
+  digitalWrite(hw_.csn, HIGH);
+  SPI.endTransaction();
+}
+
+uint8_t RadioController::payloadWidth() {
+  SPI.beginTransaction(NRF_SPI);
+  digitalWrite(hw_.csn, LOW);
+  SPI.transfer(CMD_R_RX_PL_WID);
+  const uint8_t width = SPI.transfer(0xFF);
+  digitalWrite(hw_.csn, HIGH);
+  SPI.endTransaction();
+  return width;
+}
+
+void RadioController::readPayload(uint8_t *out, uint8_t len) {
+  SPI.beginTransaction(NRF_SPI);
+  digitalWrite(hw_.csn, LOW);
+  SPI.transfer(CMD_R_RX_PAYLOAD);
+  for (uint8_t i = 0; i < len; i++) {
+    out[i] = SPI.transfer(0xFF);
+  }
+  digitalWrite(hw_.csn, HIGH);
+  SPI.endTransaction();
+}
+
 RadioController::RadioController() {}
 
 void RadioController::led(uint8_t pin, bool on) {
@@ -202,9 +275,13 @@ void RadioController::drainRx() {
     Serial.println(fifoFull_);
   }
 
-  uint8_t pipe = 0;
-  while (radio_.available(&pipe)) {
-    uint8_t len = cfg_.dpl ? radio_.getDynamicPayloadSize() : cfg_.plSize;
+  for (uint8_t guard = 0; guard < 8; guard++) {
+    if (regRead(REG_FIFO_STATUS) & FIFO_RX_EMPTY) {
+      break;
+    }
+    // RX_P_NO in STATUS names the pipe of the payload at the FIFO top.
+    const uint8_t pipe = (regRead(REG_STATUS) >> 1) & 0x07;
+    uint8_t len = cfg_.dpl ? payloadWidth() : cfg_.plSize;
     if (len == 0 || len > 32) {
       // Say so. This used to discard silently, which in a tool whose whole
       // purpose is to show what arrives is the worst possible failure mode.
@@ -212,11 +289,20 @@ void RadioController::drainRx() {
       Serial.print(len);
       Serial.print(F(" on p"));
       Serial.println(pipe);
-      radio_.flush_rx(); // corrupt dynamic length: discard to unstick the FIFO
+      spiCommand(CMD_FLUSH_RX); // corrupt dynamic length: discard to unstick the FIFO
       break;
     }
+    // Clock the whole slot, then reset the FIFO. A read of the reported width
+    // is not always a read of the whole payload - the width lags - and the
+    // bytes left behind shift everything after them, which is where the
+    // duplicate frames and the wrong lengths both come from. Taking one
+    // payload per pass and flushing costs the copies queued behind it, but a
+    // sender repeats every event several times anyway, and a lost copy is
+    // worth far more than an invented frame.
     uint8_t buf[32];
-    radio_.read(buf, len);
+    readPayload(buf, 32);
+    regWrite(REG_STATUS, STATUS_RX_DR);
+    spiCommand(CMD_FLUSH_RX);
     // Stamped where the frame leaves the FIFO, which is the earliest moment the
     // firmware knows of it. Host arrival times cannot resolve the few
     // milliseconds between a sender's repeats: they carry the serial transfer

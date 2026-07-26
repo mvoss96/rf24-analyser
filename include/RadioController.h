@@ -1,6 +1,7 @@
 #pragma once
 #include <Arduino.h>
 #include <RF24.h>
+#include <SPI.h>
 
 // Maximum nRF24 address width in bytes.
 constexpr uint8_t MAX_ADDR_WIDTH = 5;
@@ -170,6 +171,15 @@ private:
 
   void reconfigure();
   void drainRx();
+
+  // Chip access for the RX path, bypassing the library - see the comment on
+  // these in RadioController.cpp for why the library's own read sequence is
+  // not used here.
+  uint8_t regRead(uint8_t reg);
+  void regWrite(uint8_t reg, uint8_t value);
+  void spiCommand(uint8_t cmd);
+  uint8_t payloadWidth();
+  void readPayload(uint8_t *out, uint8_t len);
   // Records the frame and reports whether it repeats the previous one.
   bool isRepeat(const uint8_t *buf, uint8_t len);
 };
