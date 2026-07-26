@@ -183,6 +183,36 @@ An ESP32 with its own driver, listening to the same frames, reports each of them
 exactly once — which is what makes this a property of these dongles rather than
 of the traffic.
 
+#### Where it probably comes from
+
+The modules are most likely **Si24R1** rather than genuine nRF24L01+ — a clone
+that is routinely sold under the Nordic part number. Its known defect fits: it
+"got the ACK bit inverted (following an error in the datasheet), so it's
+incompatible with the real nRF24L01+ (and good clones) in ESB mode"
+([MySensors forum](https://forum.mysensors.org/topic/1153/we-are-mostly-using-fake-nrf24l01-s-but-worse-fakes-are-emerging)),
+and the bit in question sits in the packet control field right next to the
+payload-length field that dynamic payloads depend on. Libraries carry
+accommodations specifically for it — CircuitPython's `allow_ask_no_ack` exists
+"only for the Si24R1 chinese clone". This has **not** been confirmed against the
+chip marking here; it is the best available explanation, not a verified fact.
+
+Everything the chip's configuration space offers was tried against it, with the
+listener on `rxmode 1` so any stale frame shows. None of it is a fix:
+
+| Change | Result |
+|---|---|
+| auto-ack on the open pipe (`EN_AA`), `DYNPD` narrowed to it | stale frame unchanged |
+| `EN_ACK_PAY` added, i.e. Nordic's own recipe for dynamic payloads without ack (`DYNPD` + `EN_DPL` + `EN_ACK_PAY` + `EN_DYN_ACK`, [DevZone](https://devzone.nordicsemi.com/f/nordic-q-a/1575/nrf24l01-dynamic-payload-configuration-without-ack)) | stale frame unchanged |
+| `EN_DPL` alone, without `EN_DYN_ACK` | stale frame unchanged |
+| `RX_PW_Pn` set to the true payload length | stale frame unchanged |
+| sender transmits **without** the NO_ACK bit | stale frames gone — but half the frames go missing, and the rest arrive with flipped bytes |
+| same, plus auto-ack on the receiving pipe | stale frames gone — link acknowledges, yet payload bytes still arrive corrupted |
+| receiver without dynamic payloads (`dpl=0 plsize=16`) | nothing is received at all: dynamic payloads have to match on both sides |
+
+The two variants that do stop the stale frames break reception instead, and both
+need the *sender* changed — which is not on offer when the sender is somebody's
+remote control. That leaves the flush.
+
 ### The CE self-test
 
 `chip=connected` comes from `isChipConnected()`, which exercises **SPI only** —
