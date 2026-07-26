@@ -5,6 +5,19 @@
 static volatile bool s_rxFlag = false;
 static void onRadioIrq() { s_rxFlag = true; }
 
+// CRC-8/ATM (polynomial 0x07). Small and table-less; it only has to catch
+// corruption on the way to the host, not to be cryptographically anything.
+static uint8_t crc8(const uint8_t *data, uint8_t len) {
+  uint8_t crc = 0;
+  for (uint8_t i = 0; i < len; i++) {
+    crc ^= data[i];
+    for (uint8_t bit = 0; bit < 8; bit++) {
+      crc = (crc & 0x80) ? (uint8_t)((crc << 1) ^ 0x07) : (uint8_t)(crc << 1);
+    }
+  }
+  return crc;
+}
+
 RadioController::RadioController() {}
 
 void RadioController::led(uint8_t pin, bool on) {
@@ -222,6 +235,18 @@ void RadioController::drainRx() {
     Serial.print(pipe);
     Serial.print(F(" len="));
     Serial.print(len);
+    // Everything after the radio's own CRC is unprotected: the SPI read, this
+    // buffer, and the serial line. Measured with two dongles listening side by
+    // side, one reported a quarter of its frames differing from what the sender
+    // had logged - single flipped bits anywhere in the payload, sometimes two
+    // lines run together - while the other reported 4%. A wrong byte in the
+    // packet id turns a retransmission into what looks like a second event, so
+    // without this the host cannot tell a measurement from an artefact. Taken
+    // over the bytes as they left the FIFO, so it covers the whole path.
+    Serial.print(F(" crc="));
+    const uint8_t crc = crc8(buf, len);
+    if (crc < 0x10) Serial.print('0');
+    Serial.print(crc, HEX);
     Serial.print(' ');
     for (uint8_t i = 0; i < len; i++) {
       if (buf[i] < 0x10) Serial.print('0');
