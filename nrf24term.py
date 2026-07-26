@@ -65,10 +65,15 @@ def try_pretty(line):
     received = dongle.parse_rx(line)
     if received is None:
         return None
-    stamp, pipe, data = received
+    stamp, pipe, data, intact = received
     header = f"-- RX pipe {pipe}  ({len(data)} bytes)"
     if stamp is not None:
         header += f"  t={stamp}ms"
+    if intact is False:
+        # Decoding it would dress up corruption as a measurement.
+        return "\n".join([header + "  !! CHECKSUM MISMATCH",
+                          "   corrupted between radio and host - not what the radio received",
+                          *parsers.hexdump(data)])
     return "\n".join([header] + decode_frame(data))
 
 

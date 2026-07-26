@@ -7,6 +7,11 @@
 //
 // 3.2.0 extended tx with optional burst arguments (x<n>, gap=<ms>). Purely
 // additive: a host that never sends them sees the exact old behaviour, so the
-// api version stays at 3.
-#define FW_VERSION "3.2.0"
-#define API_VERSION 3
+// api version stayed at 3.
+//
+// api=4 adds `crc=<XX>` to every RX line, covering the payload from the moment
+// it leaves the RX FIFO. Not additive: a host that does not know the field
+// would try to read it as payload hex and drop the frame, so the version has
+// to move with it.
+#define FW_VERSION "3.3.0"
+#define API_VERSION 4

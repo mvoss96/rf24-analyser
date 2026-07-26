@@ -20,7 +20,7 @@ except ImportError:  # pragma: no cover - reported by the entry points
 
 # Command-protocol version this client speaks; compared against the firmware's
 # greeting so a mismatch is reported instead of producing cryptic errors.
-EXPECTED_API = 3
+EXPECTED_API = 4
 
 DEFAULT_BAUD = 500000
 
@@ -47,13 +47,33 @@ def parse_greeting(line):
     return fields
 
 
+def crc8(data):
+    """CRC-8/ATM (polynomial 0x07) over a byte sequence - the firmware's."""
+    crc = 0
+    for byte in data:
+        crc ^= byte
+        for _ in range(8):
+            crc = ((crc << 1) ^ 0x07) & 0xFF if crc & 0x80 else (crc << 1) & 0xFF
+    return crc
+
+
 def parse_rx(line):
-    """Parses 'RX t=<ms> p<pipe> len=<n> <hex>' into (stamp_ms, pipe, data).
+    """Parses 'RX t=<ms> p<pipe> len=<n> crc=<XX> <hex>' into
+    (stamp_ms, pipe, data, intact).
 
     Returns None for any other line. `stamp_ms` is the firmware's own millis()
     at the moment the frame left the RX FIFO - the only clock in the system that
     has not had the serial link and the host scheduler added to it. It is None
     for the pre-api-3 form, which carried no timestamp.
+
+    `intact` is False when the payload does not match the checksum the firmware
+    computed as the frame left the FIFO, and None when the firmware did not send
+    one (pre-api-4). Everything between those two points is unprotected - the
+    SPI read, the firmware's buffer, the serial line - and measurably lossy: two
+    dongles listening to the same traffic disagreed with the sender's own log on
+    24% and 4% of frames respectively. A frame that fails here is not evidence
+    about the air; it says the sniffer mangled it. The caller decides what to do
+    with that, but it must not be able to mistake one for the other.
 
     Accepts both the compact hex the firmware emits ("4D565202...") and the
     space-separated form older logs used.
@@ -62,11 +82,17 @@ def parse_rx(line):
         return None
     stamp = None
     pipe = None
+    claimed = None
     tokens = []
     for token in line.split()[1:]:
         if token.startswith("t=") and stamp is None:
             try:
                 stamp = int(token[2:])
+            except ValueError:
+                return None
+        elif token.startswith("crc=") and claimed is None:
+            try:
+                claimed = int(token[4:], 16)
             except ValueError:
                 return None
         elif token.startswith("p") and pipe is None:
@@ -85,7 +111,8 @@ def parse_rx(line):
         data = [int(blob[i:i + 2], 16) for i in range(0, len(blob), 2)]
     except ValueError:
         return None
-    return stamp, pipe, data
+    intact = None if claimed is None else crc8(data) == claimed
+    return stamp, pipe, data, intact
 
 
 def parse_scan(line):

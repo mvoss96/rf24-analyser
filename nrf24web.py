@@ -382,7 +382,24 @@ class Session:
             "stats": _capture_stats(collected),
         }
 
-    def _decode(self, stamp, delta, device_ms, pipe, data):
+    def _decode(self, stamp, delta, device_ms, pipe, data, intact=None):
+        # A frame the checksum rejects was altered between the RX FIFO and here,
+        # so nothing decoded from it describes the air. Say that instead of
+        # decoding it: a plausible-looking row is worse than an obviously broken
+        # one, and a flipped bit in a packet id reads as a whole extra event.
+        if intact is False:
+            return {
+                "type": "frame", "time": stamp, "delta": delta, "deviceMs": device_ms,
+                "pipe": pipe, "len": len(data),
+                "cells": {"data": "!! corrupted between radio and host (checksum)"},
+                "source": None, "packetId": None,
+                "detail": ["  !! CHECKSUM MISMATCH - the payload below is not what the radio received",
+                           "     (corruption on the SPI read or the serial line, not on the air)"],
+                "hex": parsers.hexdump(data),
+                "raw": bytes(data).hex().upper(),
+                "flagged": True,
+                "identity": None,
+            }
         try:
             cells = {key: str(value) for key, value in self.parser.cells(data).items()}
             detail = self.parser.detail(data)
@@ -431,7 +448,7 @@ class Session:
     def _handle(self, line):
         received = dongle.parse_rx(line)
         if received is not None:
-            device_ms, pipe, data = received
+            device_ms, pipe, data, intact = received
             now = time.time()
             stamp = (time.strftime("%H:%M:%S", time.localtime(now))
                      + f".{int(now % 1 * 1000):03d}")
@@ -445,8 +462,8 @@ class Session:
             else:
                 delta = None if self.last_stamp is None else round((now - self.last_stamp) * 1000, 1)
             self.last_stamp = now
-            self.frames.append((stamp, delta, device_ms, pipe, data))
-            self.hub.publish(self._decode(stamp, delta, device_ms, pipe, data))
+            self.frames.append((stamp, delta, device_ms, pipe, data, intact))
+            self.hub.publish(self._decode(stamp, delta, device_ms, pipe, data, intact))
             return
 
         greeting = dongle.parse_greeting(line)
