@@ -148,11 +148,25 @@ argue about it; `2` is the default and the only setting anyone should run.
 | `3` | never ask for the width, report 32 bytes | one stale frame per burst |
 | `4` | ask for the width after reading the payload | one stale frame per burst |
 
-What the measurements settled:
+> **Not settled — read this first.** Everything below was measured on channel
+> 100, the channel the RotRemote and two RF24 lamps use. Repeated on **channel
+> 90**, with nothing but two dongles on the air, the default configuration
+> produced **no stale frames at all**: 18 payloads, 18 correct. Same firmware,
+> same read strategy, same 16-byte payloads. So the effect needs something else
+> on the channel, and the "made up locally" conclusion below does not survive
+> that. A device answering on the same address is the obvious suspect: a receiver
+> whose `EN_AA` is set answers frames flagged NO_ACK on these chips (an
+> acknowledgement was captured as a 1-byte frame), and an acknowledgement
+> carrying a payload would arrive as exactly this - a complete, unshifted older
+> payload, queued right behind the real frame, which is also why flushing hides
+> it. Deciding it needs the lamps powered down, which has not been done.
 
-- It is **made up locally**. Two dongles hearing the same single click report
-  *different* stale payloads for it, so nothing extra was on the air. Three
-  senders (a RotRemote, the other dongle, and `tx` bursts) all provoke it.
+What the measurements showed:
+
+- Two dongles hearing the same single click sometimes report *different* stale
+  payloads for it. That was read as proof the frame was invented locally; with
+  two lamps able to answer, two different answers explain it just as well.
+  Three senders (a RotRemote, the other dongle, and `tx` bursts) all provoke it.
 - It is **not the read width**, not `R_RX_PL_WID` (modes 3 and 4), not `RX_PW_Pn`,
   and not the dynamic-payload configuration — enabling auto-ack on the open pipe,
   which is what the datasheet asks for, changes nothing.
@@ -185,8 +199,13 @@ of the traffic.
 
 #### Where it probably comes from
 
-The modules are most likely **Si24R1** rather than genuine nRF24L01+ — a clone
-that is routinely sold under the Nordic part number. Its known defect fits: it
+The modules may be **Si24R1** rather than genuine nRF24L01+ — a clone that is
+routinely sold under the Nordic part number. The one software test on offer for
+this (writing bit 0 of `RF_SETUP`, which genuine silicon is said to ignore;
+[nRF24/RF24#603](https://github.com/nRF24/RF24/issues/603)) calls **every** module
+here a clone, including the ESP32's — and that one never duplicates a frame. So
+the test does not discriminate, and the chip identity is still open; only the
+marking or a current measurement will settle it. Its known defect fits, though: it
 "got the ACK bit inverted (following an error in the datasheet), so it's
 incompatible with the real nRF24L01+ (and good clones) in ESB mode"
 ([MySensors forum](https://forum.mysensors.org/topic/1153/we-are-mostly-using-fake-nrf24l01-s-but-worse-fakes-are-emerging)),
