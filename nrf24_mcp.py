@@ -12,7 +12,8 @@ Tools:
   nrf24_state       what the dongle is doing right now
   nrf24_configure   tune the radio and start listening
   nrf24_capture     collect and summarise frames over a time window
-  nrf24_transmit    send one frame (a stimulus to provoke a response)
+  nrf24_transmit    send one frame, optionally repeated ms apart (x<n>/gap)
+  nrf24_burst       send a sequence of frames, one firmware reply each
   nrf24_stop        stop receiving
 
 Register it in the consuming session's MCP config, e.g.:
@@ -26,6 +27,7 @@ Point it elsewhere with NRF24_WEB_URL (default http://127.0.0.1:8724).
 
 import json
 import os
+import re
 import urllib.error
 import urllib.request
 
@@ -56,10 +58,18 @@ def _request(method, path, body=None, timeout=None):
 
 
 def _command(line, timeout=15):
-    """Send one firmware command line and confirm the server accepted it."""
-    result = _request("POST", "/api/command", {"line": line}, timeout=timeout)
+    """Send one firmware command line and return the firmware's reply.
+
+    wait=true makes the web server hold the request until the firmware answers
+    with OK or ERR, so an error like "ERR bad payload byte" lands here as an
+    exception instead of scrolling past unseen in the browser log. It also
+    means the state the firmware reports afterwards is settled - reading
+    /api/state right after this cannot race the reply anymore.
+    """
+    result = _request("POST", "/api/command", {"line": line, "wait": True},
+                      timeout=timeout)
     if result.get("ok") is False:
-        raise DongleError(result.get("error", "command rejected"))
+        raise DongleError(result.get("error") or result.get("reply", "command rejected"))
     return result
 
 
@@ -120,15 +130,58 @@ def nrf24_capture(seconds: float = 10) -> dict:
 
 
 @mcp.tool()
-def nrf24_transmit(address: str, payload: str, ack: bool = False) -> dict:
+def nrf24_transmit(address: str, payload: str, ack: bool = False,
+                   repeat: int = 1, gap_ms: int = 0) -> dict:
     """Transmit one frame - a stimulus to provoke a response you then capture.
 
     `address` and `payload` are hex, compact ("4254484D45") or separated
     ("42:54:48:4D:45"); the address length must match the configured aw. With
     ack=False (the default) the frame carries the NO_ACK flag, matching a
-    broadcast sender. Requires a configured radio (nrf24_configure first)."""
-    _command(f"tx {address} {payload} {'ack' if ack else 'noack'}")
-    return {"sent": True, "note": "the firmware's tx reply is in the web UI log"}
+    broadcast sender. Requires a configured radio (nrf24_configure first).
+
+    repeat (1..16) sends that many copies back to back from the firmware,
+    gap_ms (0..250) milliseconds apart - genuinely milliseconds, like a real
+    sender's event repeats, with no serial round trip in between. The reply is
+    the firmware's own: `sent` counts the copies the radio confirmed, and a
+    malformed payload raises instead of pretending it was sent."""
+    if not 1 <= repeat <= 16:
+        raise DongleError("repeat must be 1..16")
+    if not 0 <= gap_ms <= 250:
+        raise DongleError("gap_ms must be 0..250")
+    line = f"tx {address} {payload} {'ack' if ack else 'noack'}"
+    if repeat > 1:
+        line += f" x{repeat}"
+    if gap_ms:
+        line += f" gap={gap_ms}"
+    result = _command(line)
+    reply = result.get("reply", "")
+    match = re.search(r"sent=(\d+)(?:/(\d+))?", reply)
+    sent = int(match.group(1)) if match else 0
+    return {"sent": sent, "of": repeat, "reply": reply}
+
+
+@mcp.tool()
+def nrf24_burst(frames: list, address: str = "", ack: bool = False) -> dict:
+    """Transmit a sequence of frames in one go, e.g. to exercise a receiver's
+    FIFO or dedup logic without a serial round trip per MCP call.
+
+    Each entry in `frames` is either a bare payload hex string or an object
+    {"payload": hex, "repeat": 1..16, "gap_ms": 0..250, "address": override,
+    "pause_ms": host-side pause after the entry}. `repeat` copies of one entry
+    go out milliseconds apart (firmware-side); between entries sits the serial
+    round trip (~5-10 ms). `address` is the default for entries without their
+    own. Returns per-entry results with the firmware's reply and sent count;
+    an ERR on one entry does not stop the rest."""
+    body = {"address": address, "frames": frames, "ack": ack}
+    total = sum((int(f.get("repeat", 1)) if isinstance(f, dict) else 1) *
+                (int(f.get("gap_ms", 0)) if isinstance(f, dict) else 0) +
+                (int(f.get("pause_ms", 0)) if isinstance(f, dict) else 0)
+                for f in frames) if isinstance(frames, list) else 0
+    result = _request("POST", "/api/burst", body,
+                      timeout=30 + len(frames or []) * 5 + total / 1000.0)
+    if result.get("ok") is False and "error" in result:
+        raise DongleError(result["error"])
+    return result
 
 
 @mcp.tool()

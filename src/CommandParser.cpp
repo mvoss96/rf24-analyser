@@ -305,7 +305,7 @@ void CommandParser::handleListen(char *args) {
 
 void CommandParser::handleTx(char *args) {
   if (!radio_.configured()) { err(F("unconfigured - run listen first")); return; }
-  if (args == nullptr) { err(F("usage: tx <addr> <hex...> [ack|noack]")); return; }
+  if (args == nullptr) { err(F("usage: tx <addr> <hex...> [ack|noack] [x<n>] [gap=<ms>]")); return; }
 
   const RadioConfig &cfg = radio_.config();
   char *save = nullptr;
@@ -318,20 +318,40 @@ void CommandParser::handleTx(char *args) {
 
   uint8_t payload[32];
   uint8_t plen = 0;
-  bool noack = true; // default: emulate a broadcast sender
+  bool noack = true;  // default: emulate a broadcast sender
+  uint8_t count = 1;  // x<n>: copies of the frame, back to back like a sender's repeats
+  uint16_t gapMs = 0; // gap=<ms>: pause between the copies
   for (char *tok = strtok_r(nullptr, " \t", &save); tok != nullptr;
        tok = strtok_r(nullptr, " \t", &save)) {
     if (strcmp(tok, "ack") == 0)   { noack = false; continue; }
     if (strcmp(tok, "noack") == 0) { noack = true;  continue; }
+    if (tok[0] == 'x' && tok[1] >= '0' && tok[1] <= '9') {
+      int x = atoi(tok + 1);
+      if (x < 1 || x > 16) { err(F("x 1..16")); return; }
+      count = (uint8_t)x;
+      continue;
+    }
+    if (strncmp(tok, "gap=", 4) == 0) {
+      int x = atoi(tok + 4);
+      if (x < 0 || x > 250) { err(F("gap 0..250 ms")); return; }
+      gapMs = (uint16_t)x;
+      continue;
+    }
     int n = parseHexList(tok, payload, plen, 32);
     if (n < 0) { err(F("bad payload byte")); return; }
     plen = (uint8_t)n;
   }
   if (plen == 0) { err(F("empty payload")); return; }
 
-  bool sent = radio_.transmit(addr, payload, plen, noack);
+  uint8_t sent = radio_.transmit(addr, payload, plen, noack, count, gapMs);
   Serial.print(F("OK tx sent="));
-  Serial.print(sent ? 1 : 0);
+  Serial.print(sent);
+  // The single-frame reply keeps its exact historic shape; only a burst gets
+  // the /n suffix, so an old host parsing "sent=1" never sees anything new.
+  if (count > 1) {
+    Serial.print('/');
+    Serial.print(count);
+  }
   Serial.print(F(" ack="));
   Serial.println(noack ? F("no") : F("yes"));
 }
@@ -386,7 +406,7 @@ void CommandParser::dispatch(char *line) {
     Serial.println(F("hwset ce=<pin> csn=<pin> [irq=<pin|none>] [led_rx=<pin|none>] [led_tx=<pin|none>]"));
     Serial.println(F("listen ch= rate= crc= aw= pa= ack= dpl= [plsize=] pipeN=<addr>"));
     Serial.println(F("hwclear | listen | stop | info | scan [passes] | repeats <0|1>"));
-    Serial.println(F("tx <addr> <hex...> [ack|noack]"));
+    Serial.println(F("tx <addr> <hex...> [ack|noack] [x<n>] [gap=<ms>]"));
     ok();
   } else {
     err(F("unknown cmd (try help)"));

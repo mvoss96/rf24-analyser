@@ -114,7 +114,7 @@ NRF24SNIFFER fw=3.0.0 api=3 state=nohw hw=failed ce=8 csn=10 irq=2 led_rx=8 led_
 | `scan live [passes]` | keep scanning, one report per N sweeps (default 8) |
 | `scan off` | stop a live scan and resume whatever was running |
 | `repeats <0\|1>` | `0` suppresses identical back-to-back frames |
-| `tx <addr> <hex...> [ack\|noack]` | transmit a payload (default `noack`) |
+| `tx <addr> <hex...> [ack\|noack] [x<n>] [gap=<ms>]` | transmit a payload (default `noack`), optionally `n` copies `gap` ms apart |
 | `help` | usage summary |
 
 **`hwset`** — `ce` and `csn` are mandatory, the rest default to `none`. Pins are
@@ -217,6 +217,15 @@ OK listening
 
 `info` prints what those pipes actually listen on, joined with pipe 1's bytes:
 `pipe2=4D:54:48:4D:45`.
+
+**`tx`** — `x<n>` (1–16) transmits the same payload `n` times back to back,
+`gap=<ms>` (0–250) milliseconds apart; with `gap=0` the copies are separated
+only by the air time. That emulates a real broadcast sender's event repeats and
+is the only way to get genuinely milliseconds-apart frames — driving single
+`tx` commands over serial puts a round trip between every copy. The radio is
+reconfigured for RX once after the whole burst, not between copies. A burst
+replies `OK tx sent=<k>/<n>`; the single-frame reply keeps its historic
+`sent=<0|1>` shape.
 
 ### Example session
 
@@ -406,7 +415,8 @@ greeting, the current state and the retained frames.
 | `GET /api/events` | SSE stream of frames, log lines, greeting and status |
 | `GET /api/ports`, `/api/parsers` | what is available |
 | `GET /api/state` | one synchronous snapshot: connected, state, wiring |
-| `POST /api/connect`, `/api/disconnect`, `/api/command` | control |
+| `POST /api/connect`, `/api/disconnect`, `/api/command` | control; `command` with `"wait": true` blocks for and returns the firmware's OK/ERR reply |
+| `POST /api/burst` | transmit a frame sequence (`{"address", "frames": [{"payload", "repeat", "gap_ms", …}]}`), one awaited reply per entry |
 | `POST /api/capture` | block for `seconds`, return the window's frames + stats |
 | `POST /api/parser` | switch decoder, returns the history re-decoded |
 

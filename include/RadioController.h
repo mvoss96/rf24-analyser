@@ -102,9 +102,13 @@ public:
   // Drains any pending RX frames to serial. Cheap to call every loop.
   void poll();
 
-  // Transmits one payload to `addr`. noack=true sends with the NO_ACK flag
-  // (per-packet), matching a broadcast sender. Returns radio.write() result.
-  bool transmit(const uint8_t *addr, const uint8_t *data, uint8_t len, bool noack);
+  // Transmits `count` copies of one payload to `addr`, `gapMs` apart. noack=true
+  // sends with the NO_ACK flag (per-packet), matching a broadcast sender - which
+  // repeats each event a few ms apart, exactly what count/gap emulate. The radio
+  // stays in TX between the copies, so gap=0 spaces them only by the air time.
+  // Returns how many copies the radio reported as sent.
+  uint8_t transmit(const uint8_t *addr, const uint8_t *data, uint8_t len,
+                   bool noack, uint8_t count = 1, uint16_t gapMs = 0);
 
   // Energy scan across all 126 channels, `passes` sweeps. Prints hits.
   void scan(uint16_t passes);
