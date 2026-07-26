@@ -405,8 +405,39 @@ greeting, the current state and the retained frames.
 |---|---|
 | `GET /api/events` | SSE stream of frames, log lines, greeting and status |
 | `GET /api/ports`, `/api/parsers` | what is available |
+| `GET /api/state` | one synchronous snapshot: connected, state, wiring |
 | `POST /api/connect`, `/api/disconnect`, `/api/command` | control |
+| `POST /api/capture` | block for `seconds`, return the window's frames + stats |
 | `POST /api/parser` | switch decoder, returns the history re-decoded |
+
+## Letting another agent drive the dongle (MCP)
+
+The serial port takes one owner at a time, so a second process cannot open the
+dongle while the web UI holds it. `nrf24_mcp.py` sidesteps that: it is an **MCP
+server that proxies to the running web UI over HTTP** and touches nothing
+itself. A person keeps watching in the browser while an agent captures,
+configures and transmits through the same dongle.
+
+Start the web UI (`start.cmd`), then register the MCP server in the *consuming*
+session — the copy in [`mcp.example.json`](mcp.example.json), or:
+
+```bash
+claude mcp add-json nrf24 "{\"command\":\"C:/Repos/tools/nrf24-sniffer/.venv/Scripts/python.exe\",\"args\":[\"C:/Repos/tools/nrf24-sniffer/nrf24_mcp.py\"]}"
+```
+
+| Tool | What it does |
+|---|---|
+| `nrf24_state` | connected? listening? on what wiring? |
+| `nrf24_configure(channel, pipe1, …)` | tune the radio and start listening |
+| `nrf24_capture(seconds)` | collect the window's frames, decoded, plus a per-sender summary (counts, packet-id range, skipped counter values) |
+| `nrf24_transmit(address, payload, ack)` | send one frame — a stimulus to provoke a response |
+| `nrf24_stop` | stop receiving |
+
+A typical validation loop: `nrf24_configure` for the channel under test, flash
+the firmware, `nrf24_capture(20)`, read the summary, decide pass/fail. The tools
+return frames and statistics, not a verdict — the criteria live with the caller.
+Reconfiguring or transmitting affects the browser view too; that is the price of
+one shared dongle, and it is deliberate.
 
 ### Adding a decoder
 
@@ -477,5 +508,6 @@ nrf24-sniffer/
   web/                        index.html, app.css, app.js
   nrf24_dongle.py             serial protocol client, shared by both
   nrf24_parsers.py            decoder registry: raw, bthome, nrf24smart
+  nrf24_mcp.py                MCP server: lets another agent drive the dongle
   requirements.txt            pyserial, bthome-ble
 ```

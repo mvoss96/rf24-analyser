@@ -1,2 +1,3 @@
 pyserial>=3.5
 bthome-ble>=3.24.0
+mcp>=1.28    ; only for nrf24_mcp.py - letting another agent drive the dongle

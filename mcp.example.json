@@ -1,0 +1,12 @@
+{
+  "_comment": "Register the sniffer as an MCP server in the CONSUMING session (the one doing the validation), not here. Copy this mcpServers entry into that project's .mcp.json, or run: claude mcp add-json nrf24 '<the object below>'. The web UI (start.cmd) must be running - the MCP server is a thin proxy to it and owns nothing itself.",
+  "mcpServers": {
+    "nrf24": {
+      "command": "C:/Repos/tools/nrf24-sniffer/.venv/Scripts/python.exe",
+      "args": ["C:/Repos/tools/nrf24-sniffer/nrf24_mcp.py"],
+      "env": {
+        "NRF24_WEB_URL": "http://127.0.0.1:8724"
+      }
+    }
+  }
+}

@@ -48,6 +48,49 @@ def column_spec(parser):
             for key, label, width in parser.columns]
 
 
+def _capture_stats(frames):
+    """Per-sender summary of a captured window, for an autonomous consumer.
+
+    The packet counter is a byte and only runs per sender, so gaps are computed
+    within each source. A gap of n past half a cycle is reported as a floor, not
+    a fact, for the same reason the table marks it "at least" - a wrap of 256
+    cannot be told from a genuine loss of n from the numbers alone.
+    """
+    senders = {}
+    total_missing = 0
+    events = set()
+    for frame in frames:
+        events.add(frame.get("identity"))
+        source = frame.get("source")
+        packet_id = frame.get("packetId")
+        if source is None:
+            continue
+        s = senders.setdefault(source, {"frames": 0, "events": set(), "packet_ids": [],
+                                        "first_id": None, "last_id": None, "missing": 0})
+        s["frames"] += 1
+        s["events"].add(frame.get("identity"))
+        if packet_id is not None:
+            if s["last_id"] is not None and packet_id != s["last_id"]:
+                gap = (packet_id - s["last_id"] - 1) & 0xFF
+                s["missing"] += gap
+                total_missing += gap
+            if s["first_id"] is None:
+                s["first_id"] = packet_id
+            s["last_id"] = packet_id
+            s["packet_ids"].append(packet_id)
+
+    for s in senders.values():
+        s["events"] = len(s["events"])
+        s["missing_uncertain"] = s["missing"] >= 128   # a wrap could inflate it
+
+    return {
+        "frames": len(frames),
+        "events": len(events - {None}) or len(events),
+        "senders": senders,
+        "missing": total_missing,
+    }
+
+
 class Hub:
     """Fan-out of events to every connected browser tab."""
 
@@ -185,6 +228,42 @@ class Session:
     def decoded_history(self):
         """Every retained frame, decoded with the current parser."""
         return [self._decode(*frame) for frame in self.frames]
+
+    def capture(self, seconds):
+        """Collect the frames decoded over the next `seconds` and summarise them.
+
+        Subscribes to the same event stream the browser tabs use, so it captures
+        exactly what the running configuration receives - it does not touch the
+        dongle or the port, which is what lets a second consumer read along while
+        someone watches in the browser. The radio must already be listening; how
+        it is configured is the caller's business (that is what nrf24_configure
+        and tx are for).
+        """
+        seconds = max(0.1, min(float(seconds), 600.0))
+        q = self.hub.subscribe()
+        collected = []
+        deadline = time.monotonic() + seconds
+        try:
+            while True:
+                remaining = deadline - time.monotonic()
+                if remaining <= 0:
+                    break
+                try:
+                    event = q.get(timeout=remaining)
+                except queue.Empty:
+                    break
+                if event.get("type") == "frame":
+                    collected.append(event)
+        finally:
+            self.hub.unsubscribe(q)
+
+        return {
+            "seconds": seconds,
+            "decoder": self.parser.name,
+            "listening": self.state_text == "listening",
+            "frames": collected,
+            "stats": _capture_stats(collected),
+        }
 
     def _decode(self, stamp, delta, device_ms, pipe, data):
         try:
@@ -374,6 +453,17 @@ class Handler(BaseHTTPRequestHandler):
                         for p in parsers.all_parsers()])
         elif self.path == "/api/events":
             self._events()
+        elif self.path == "/api/state":
+            # A synchronous snapshot for a non-browser consumer: the browser
+            # learns state from the SSE stream, but an agent wants one answer to
+            # one question ("is it listening, on what wiring?").
+            greeting = self.session.greeting or {}
+            self._json({"connected": self.session.dongle is not None,
+                        "state": self.session.state_text,
+                        "decoder": self.session.parser.name,
+                        "wiring": {k: greeting.get("fields", {}).get(k)
+                                   for k in ("ce", "csn", "irq", "led_rx", "led_tx")}
+                                  if greeting else None})
         else:
             self.send_error(404)
 
@@ -386,6 +476,11 @@ class Handler(BaseHTTPRequestHandler):
                 self.session.disconnect()
             elif self.path == "/api/command":
                 self.session.send(payload["line"])
+            elif self.path == "/api/capture":
+                # Blocks for the window, which ThreadingHTTPServer serves on its
+                # own thread, so the browser and its SSE stream keep running.
+                self._json(self.session.capture(payload.get("seconds", 10)))
+                return
             elif self.path == "/api/parser":
                 self.session.set_parser(payload["name"])
                 self._json({"ok": True, "columns": column_spec(self.session.parser),
