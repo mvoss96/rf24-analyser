@@ -34,8 +34,6 @@ constexpr uint8_t CMD_R_REGISTER = 0x00;
 constexpr uint8_t CMD_R_RX_PL_WID = 0x60;
 constexpr uint8_t CMD_R_RX_PAYLOAD = 0x61;
 constexpr uint8_t CMD_FLUSH_RX = 0xE2;
-constexpr uint8_t REG_EN_AA = 0x01;
-constexpr uint8_t REG_DYNPD = 0x1C;
 constexpr uint8_t REG_STATUS = 0x07;
 constexpr uint8_t REG_FIFO_STATUS = 0x17;
 constexpr uint8_t FIFO_RX_EMPTY = 0x01;
@@ -173,13 +171,6 @@ void RadioController::reconfigure() {
 
   if (cfg_.dpl) {
     radio_.enableDynamicPayloads();
-    // Receive-side only: DPL and ENAA for exactly the pipes that are open.
-    uint8_t mask = 0;
-    for (uint8_t p = 0; p < 6; p++) {
-      if (cfg_.pipeEn[p]) mask |= (uint8_t)(1u << p);
-    }
-    regWrite(REG_EN_AA, mask);
-    regWrite(REG_DYNPD, mask);
   } else {
     radio_.disableDynamicPayloads();
     radio_.setPayloadSize(cfg_.plSize);
@@ -309,8 +300,9 @@ void RadioController::drainRx() {
     // sender repeats every event several times anyway, and a lost copy is
     // worth far more than an invented frame.
     uint8_t buf[32];
-    readPayload(buf, len);
+    readPayload(buf, 32);
     regWrite(REG_STATUS, STATUS_RX_DR);
+    spiCommand(CMD_FLUSH_RX);
     // Stamped where the frame leaves the FIFO, which is the earliest moment the
     // firmware knows of it. Host arrival times cannot resolve the few
     // milliseconds between a sender's repeats: they carry the serial transfer
@@ -374,11 +366,6 @@ uint8_t RadioController::transmit(const uint8_t *addr, const uint8_t *data,
                                   uint16_t gapMs) {
   radio_.stopListening();
   radio_.openWritingPipe(addr);
-  // Widen DPL again for the send: the datasheet requires DPL_P0 on a
-  // transmitter, and `tx` writes through pipe 0. reconfigure() at the end of
-  // this function narrows it back to the open reading pipes, because leaving
-  // DPL_P0 set while listening is the fault this whole path avoids.
-  if (cfg_.dpl) radio_.enableDynamicPayloads();
   led(hw_.ledTx, true);
   uint8_t sent = 0;
   for (uint8_t i = 0; i < count; i++) {
