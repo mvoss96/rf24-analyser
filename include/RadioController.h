@@ -97,11 +97,10 @@ public:
   void setShowRepeats(bool on) { showRepeats_ = on; }
   bool showRepeats() const { return showRepeats_; }
 
-  // How a payload is taken out of the RX FIFO. The shipping behaviour (RX_FULL)
-  // was arrived at empirically and still lets an old payload through now and
-  // then, so the alternatives have to be comparable against the same sender
-  // without reflashing - the fault does not reproduce against synthetic
-  // traffic, which makes every reflash a lost afternoon.
+  // How a payload is taken out of the RX FIFO. The shipping behaviour is
+  // RX_FLUSH, which was arrived at empirically, so the alternatives have to be
+  // comparable against the same traffic without reflashing: the fault depends on
+  // FIFO history, and a reflash is one of the few things that disturbs it.
   //   RX_WIDTH:   read the width the chip reports, leave the FIFO alone
   //   RX_FULL:    read the whole 32-byte slot, leave the FIFO alone
   //   RX_FLUSH:   read the whole slot, then flush - what master does

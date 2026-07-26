@@ -162,13 +162,26 @@ What the measurements settled:
   firmware upload and any number of `FLUSH_RX` calls — flushing resets pointers,
   it does not clear RAM. A frame from ten minutes ago can surface at any time, so
   a duplicate hunt has to start from a known state or it measures history.
-- The flush after **every single payload** is the only measure that works. It
-  costs the copies queued behind the one being read, which is why bursts sent
-  with `gap=0` lose copies; a sender repeats each event anyway.
+- The flush after **every single payload** is the only measure that works, and it
+  is close to free. Measured over four `x8 gap=0` bursts each: mode `2` delivers
+  4 of 8 copies every time, mode `1` without any flush delivers 4–5 (and pays for
+  it in phantoms). So a back-to-back burst loses copies **in the chip**, not in
+  the flush — about one copy in eight is down to flushing. From `gap=5` ms upward
+  mode `2` delivers every copy.
+- Collecting the whole FIFO before flushing once, instead of flushing per
+  payload, was built and measured: **no gain at all**, 4 of 8 like mode `2`. The
+  copies do not queue up, because they arrive while the previous frame is still
+  being printed, and by then the flush has already happened. Not worth a second
+  code path, so it is not in the firmware — recorded here so it is not
+  re-invented.
 
 Reproducing it takes no user and no remote: point one dongle at another, set the
 listener to `rxmode 1`, and send single 16-byte payloads a second apart. Every
 one of them is reported twice, the second time as the payload before it.
+
+An ESP32 with its own driver, listening to the same frames, reports each of them
+exactly once — which is what makes this a property of these dongles rather than
+of the traffic.
 
 ### The CE self-test
 
