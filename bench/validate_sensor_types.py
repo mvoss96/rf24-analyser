@@ -54,8 +54,16 @@ def next_pid():
 
 
 def send(objects, sender=PROBE):
+    """One stimulus, sent the way a real sender sends: three copies of the same
+    frame under one packet id, which the receiver dedups into a single event.
+
+    Sent once, a vector fails whenever the channel drops that one frame - which
+    showed up here as failures that moved from run to run and named a different
+    innocent type each time. Repeating costs nothing at the receiver and takes
+    the measurement out of the noise.
+    """
     lab.hub_clear()
-    lab.tx(lab.WEB_A, lab.payload(sender, next_pid(), objects))
+    lab.tx(lab.WEB_A, lab.payload(sender, next_pid(), objects), repeat=3, gap=8)
     lab.settle(1.2)
 
 
@@ -154,7 +162,14 @@ for key, oid, raw, value_bytes, value, unit, dec in vectors:
 # Nothing to scale here, so what a vector proves is that the id reaches the
 # entity the table names and that both states arrive - a sensor stuck at its
 # initial state passes a one-sided check without ever having worked.
+#
+# Each vector is preceded by the opposite state, for the same reason the text
+# vectors are primed: a binary sensor publishes only on a change, so a second
+# run of this bench would find the entity already holding the value and read the
+# silence as a fault. Measured, not assumed - the binary block passed once and
+# failed on the next run before this was added.
 for key, oid, value_bytes, state in BINARY_VECTORS:
+    send(encoded(oid, "00" if state else "01"))
     send(encoded(oid, value_bytes))
     want = "on" if state else "off"
     got = decoded_binary(oid)
@@ -244,6 +259,25 @@ hum, _ = published("humidity")
 lab.verdict("T measurements and a binary object in one payload",
             temp is not None and motion == "ON" and hum is not None,
             f"temperature {temp}, motion {motion}, humidity {hum}")
+
+# --- T+2c: a frame filled to capacity ----------------------------------------
+# Eleven single-byte objects: a 32-byte slot leaves 23 bytes after the sender
+# id, the BTHome header and the packet id, and the smallest object is two bytes.
+# (A payload without a packet id fits twelve, which is what the receiver's
+# instance array is sized for - the host test covers that case.) The last id is
+# sent twice: an array sized for fewer ids never records the ones past its end
+# and answers instance 1 for both, which distinct ids alone would not reveal,
+# because 1 is the right answer for those either way.
+FULL_IDS = [0x01, 0x09, 0x0F, 0x21, 0x2E, 0x2F, 0x46, 0x57, 0x58, 0x64, 0x64]
+send("".join(encoded(oid, "01") for oid in FULL_IDS))
+seen = [oid for oid in set(FULL_IDS)
+        if lab.hub_grep(rf"{PROBE_TEXT}: (sensor|binary) 0x{oid:02X}#1: ")]
+second = lab.hub_grep(rf"{PROBE_TEXT}: sensor 0x64#2: ")
+noise = lab.hub_grep(r"malformed BTHome payload")
+lab.verdict("T a frame filled to capacity counts every object",
+            len(seen) == len(set(FULL_IDS)) and bool(second) and not noise,
+            f"{len(seen)}/{len(set(FULL_IDS))} ids at instance 1, "
+            f"the repeated id reached instance 2: {bool(second)}, warnings: {len(noise)}")
 
 # --- T+3: an object nobody mapped ---------------------------------------------
 # 0xF0 is a device type id: the library knows it, no platform maps it to an

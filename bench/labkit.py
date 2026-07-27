@@ -5,6 +5,7 @@ Extracted so the benches cannot drift apart in how they talk to the hardware -
 a frame built one way in one bench and another way in the next makes their
 results incomparable, which is the one thing a bench must not be.
 """
+import atexit
 import json
 import re
 import subprocess
@@ -63,7 +64,14 @@ def tx(base, body, address=ADDR_FIXED, repeat=1, gap=0, ack=False, pad=True):
         line += f" x{repeat}"
     if gap:
         line += f" gap={gap}"
-    return post(base, "/api/command", {"line": line, "wait": True})
+    reply = post(base, "/api/command", {"line": line, "wait": True})
+    # A refused command is not a test result. The dongle rejects an over-long
+    # payload with "ERR bad payload byte", and a bench that ignores that reads
+    # the resulting silence at the receiver as a fault in the receiver - which
+    # is how a miscounted frame length came to look like a decoding bug.
+    if not reply.get("ok", False):
+        raise RuntimeError(f"dongle refused the transmit: {reply.get('reply')!r}\n  {line}")
+    return reply
 
 
 # ---- the hub's view, read off its log over the network -----------------------
@@ -82,6 +90,11 @@ def hub_start(yaml_path, ip):
     """Attach to the receiver's log and wait for the handshake - starting a test
     before it lands means running deaf and blaming the component for it."""
     global _proc
+    # The reader holds one of the receiver's few API connection slots for as long
+    # as it lives. A bench that dies on an exception used to leave it behind, and
+    # enough of those and the next run cannot get a connection at all - which
+    # reads as "the hub is unreachable" and sends you looking at the hardware.
+    atexit.register(hub_stop)
     _proc = subprocess.Popen(
         ["esphome", "logs", str(yaml_path), "--device", ip],
         stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
