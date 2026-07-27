@@ -15,5 +15,13 @@
 // to move with it.
 // 3.4.0 adds rxmode/rxdbg/regs for the RX-FIFO diagnosis. Additive, and the
 // default rxmode is what 3.3.0 did unconditionally, so api stayed at 4.
-#define FW_VERSION "3.4.0"
+//
+// 3.5.0 makes `listen` and `hwset` acknowledge with the state they left behind
+// instead of a bare OK, in the same key=value grammar `info` uses - so a host
+// parses one thing, and a setting the firmware quietly changed (an irq pin that
+// cannot interrupt, a chip that did not take a value) is visible in the very
+// line that reports success. Additive: the tokens come after the OK, and a host
+// that checks for OK and stops reading sees the old behaviour, so api stayed at
+// 4 and a dongle on older firmware still works with a newer host.
+#define FW_VERSION "3.5.0"
 #define API_VERSION 4

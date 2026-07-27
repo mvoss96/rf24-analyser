@@ -162,6 +162,27 @@ public:
   // Prints the current state and configuration.
   void printInfo();
 
+  // Where a reported configuration came from.
+  //
+  // The registers hold what the chip was actually given, which is the only
+  // account that survives a value the chip did not take - but they say that only
+  // while it is listening. stopListening() writes the TX address into RX_ADDR_P0
+  // and force-enables pipe 0 (RF24.cpp), and a scan retunes the channel and the
+  // data rate across the band. Read outside that window they describe the
+  // library's plumbing rather than the configuration, so there the honest answer
+  // is what the firmware holds - said as such, in `src=`.
+  enum ConfigSource : uint8_t { SRC_CHIP, SRC_FIRMWARE };
+
+  // Fills `out` with the configuration and says where it came from.
+  ConfigSource readConfig(RadioConfig &out);
+
+  // Completes the OK line of a command that may have changed the radio: the
+  // state, the wiring and the configuration it left behind, as key=value tokens
+  // in the grammar `info` uses, terminated by a newline. Acknowledging the
+  // outcome instead of the mere fact of success is the point - `hwset` may
+  // downgrade an irq pin to polling, and it discards the radio configuration.
+  void printAck();
+
 private:
   // A frame repeated within this window counts as a retransmit of the previous
   // one (a sender typically repeats each event a few ms apart).
@@ -212,10 +233,16 @@ private:
   void reconfigure();
   void drainRx();
 
+  // The configuration as key=value tokens. `block` picks the layout - one field
+  // per indented line for the `info` dump, all on the current line for an
+  // acknowledgement - and nothing else differs, so one grammar reads both.
+  void printConfig(const RadioConfig &c, ConfigSource src, bool block);
+
   // Chip access for the RX path, bypassing the library - see the comment on
   // these in RadioController.cpp for why the library's own read sequence is
   // not used here.
   uint8_t regRead(uint8_t reg);
+  void regReadBuf(uint8_t reg, uint8_t *buf, uint8_t len);
   void regWrite(uint8_t reg, uint8_t value);
   void spiCommand(uint8_t cmd);
   uint8_t payloadWidth();

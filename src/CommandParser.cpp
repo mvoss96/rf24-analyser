@@ -206,7 +206,11 @@ void CommandParser::handleHwset(char *args) {
   // Persist what is actually in use (setHardware may have downgraded irq), so
   // the dongle comes back on the same wiring after a reset.
   HwStore::save(radio_.hw());
-  Serial.println(F("OK hw connected saved"));
+  // Not a bare OK: setHardware() may have downgraded an irq pin that cannot
+  // interrupt, and it discards the radio configuration. Both are in the answer
+  // now, so a host does not have to know either rule to stay in step.
+  Serial.print(F("OK hw connected saved"));
+  radio_.printAck();
 }
 
 void CommandParser::handleListen(char *args) {
@@ -218,7 +222,10 @@ void CommandParser::handleListen(char *args) {
   if (args == nullptr) {
     if (!radio_.configured()) { reportMissing(0); return; }
     radio_.startListening();
-    Serial.println(F("OK listening"));
+    // Resuming is exactly where the caller does not know what it resumed with,
+    // so this is the acknowledgement that has to say.
+    Serial.print(F("OK listening"));
+    radio_.printAck();
     return;
   }
 
@@ -300,7 +307,10 @@ void CommandParser::handleListen(char *args) {
 
   radio_.applyConfig(c);
   radio_.startListening();
-  Serial.println(F("OK listening"));
+  // Read back off the chip, not echoed from the request: the answer is only
+  // worth having if it can differ from what was asked for.
+  Serial.print(F("OK listening"));
+  radio_.printAck();
 }
 
 void CommandParser::handleTx(char *args) {

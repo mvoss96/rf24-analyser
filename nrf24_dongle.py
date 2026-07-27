@@ -107,6 +107,26 @@ def parse_info(lines):
     return info
 
 
+def parse_ack(line):
+    """The state an `OK` line reports having left behind, or None.
+
+    From firmware 3.5.0 the acknowledgements of `listen` and `hwset` carry the
+    resulting state as key=value tokens in the same grammar as `info` - so this
+    is parse_info() with a different line ending. Acknowledging the outcome
+    rather than the fact of success is what makes a setting the firmware quietly
+    changed visible: an irq pin downgraded to polling, a configuration discarded
+    by hwset, a value the chip did not take.
+
+    Older firmware answers with a bare `OK listening`, which returns None here,
+    and the host falls back to asking. That is why the tokens were added after
+    the OK rather than replacing it, and why the api version did not have to
+    move: a dongle that has not been reflashed still works.
+    """
+    if not line.startswith("OK") or " state=" not in line:
+        return None
+    return parse_info([line])
+
+
 def crc8(data):
     """CRC-8/ATM (polynomial 0x07) over a byte sequence - the firmware's."""
     crc = 0

@@ -144,6 +144,12 @@ function renderSummary() {
     .map((n) => `p${n}=${r.pipes[n]}`).join(" ");
   el.textContent = `${wiring}  |  ch${r.channel} ${r.rate}k crc${r.crc} ` +
                    `aw${r.aw} pa=${r.pa}  |  ${pipes}`;
+  // Measured or merely intended - the difference is worth having, but not worth
+  // a badge in the toolbar of a tool whose radio is normally listening.
+  el.title = r.src === "chip"
+    ? "read back from the chip's registers"
+    : "as the firmware holds it — the registers describe the configuration only "
+      + "while the radio is listening";
 }
 
 // The setup fields hold the dongle's configuration, so that opening the dialog

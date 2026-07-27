@@ -109,7 +109,10 @@ def nrf24_configure(
     a BTHome-over-nRF24 sender (250 kbps, CRC16, 5-byte address, dynamic
     payloads). Reconfiguring affects anyone watching in the browser too.
 
-    Returns the dongle state afterwards; check that state == "listening"."""
+    Returns the dongle state afterwards; check that state == "listening" and
+    that `radio` holds the values you asked for. From firmware 3.5.0 the radio
+    reports those back off its own registers rather than echoing the request,
+    so a setting the chip did not take shows up as a difference here."""
     if not _request("GET", "/api/state", timeout=5).get("connected"):
         raise DongleError("the dongle is not connected in the web UI - connect "
                           "it there first (the port is chosen in the browser).")

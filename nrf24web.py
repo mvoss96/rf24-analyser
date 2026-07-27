@@ -674,6 +674,17 @@ class Session:
             self.was_listening = False
             self.set_state("idle")
 
+        # From firmware 3.5.0 the acknowledgement of a command that changed the
+        # radio carries the state it left behind. Taking it here means the
+        # snapshot is right the moment the command is answered, without waiting
+        # for the poll - and it is the firmware's account of what it did, not an
+        # echo of what was asked, so a downgraded irq pin arrives with the OK
+        # that reports success. Older firmware answers with a bare OK; then this
+        # is None and the poll below does the work as before.
+        ack = dongle.parse_ack(line)
+        if ack is not None:
+            self._set_radio(ack)
+
         kind = "info"
         if line.startswith("ERR"):
             kind = "error"

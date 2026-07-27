@@ -33,7 +33,7 @@ Point it at a non-default host with the `NRF24_WEB_URL` env var
 | `nrf24_transmit(address, payload, ack=False, repeat=1, gap_ms=0)` | send one frame — a stimulus to provoke a response. `repeat`/`gap_ms` send up to 16 copies genuinely milliseconds apart (firmware-side), like a real sender's event repeats |
 | `nrf24_burst(frames, address="", ack=False)` | send a sequence of frames: each entry a payload hex string or `{"payload", "repeat", "gap_ms", "address", "pause_ms"}`. Per-entry firmware replies; ~5-10 ms serial round trip between entries |
 | `nrf24_history(limit=50)` | frames already captured, newest last, each with compact `raw` hex |
-| `nrf24_command(line)` | any raw firmware command — `status`, `info`, `scan`, `repeats 0\|1`, `help` |
+| `nrf24_command(line)` | any raw firmware command — `status`, `info`, `scan`, `repeats 0\|1`, `help`. `listen` and `hwset` answer with the state they left behind, not a bare `OK` |
 | `nrf24_clear()` | discard the retained history, for a clean measurement zero |
 | `nrf24_reset()` | reset the dongle (empties its RX FIFO); radio is unconfigured afterwards |
 | `nrf24_stop()` | stop receiving |

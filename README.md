@@ -51,8 +51,8 @@ pio run -e nano -t upload
 ```
 
 If that ends in an avrdude sync timeout, use `-e nano_old`. Only dependency is
-`nrf24/RF24` (TMRh20), pulled automatically. Build size: **flash ~12.8 KB (42%)**,
-**RAM ~795 B (39%)**.
+`nrf24/RF24` (TMRh20) 1.6.1, pulled automatically. Build size at 3.5.0:
+**flash 17.9 KB (58%)**, **RAM 1198 B (58%)**.
 
 ## Serial protocol
 
@@ -103,13 +103,13 @@ NRF24SNIFFER fw=3.0.0 api=3 state=nohw hw=failed ce=8 csn=10 irq=2 led_rx=8 led_
 
 | Command | Meaning |
 |---|---|
-| `hwset ce=<pin> csn=<pin> [irq=<pin\|none>] [led_rx=<pin\|none>] [led_tx=<pin\|none>]` | define the wiring, bring the radio up, store it |
+| `hwset ce=<pin> csn=<pin> [irq=<pin\|none>] [led_rx=<pin\|none>] [led_tx=<pin\|none>]` | define the wiring, bring the radio up, store it — [answers with the wiring it adopted](#acknowledgements-say-what-they-left-behind) |
 | `hwclear` | forget the stored wiring (effective on reset) |
-| `listen <k=v>...` | apply a complete radio config and start receiving |
-| `listen` | resume with the retained config |
+| `listen <k=v>...` | apply a complete radio config and start receiving — [answers with the configuration read back off the chip](#acknowledgements-say-what-they-left-behind) |
+| `listen` | resume with the retained config, and say what that was |
 | `stop` | stop receiving, keep the config |
 | `status` | the greeting line again, at any time |
-| `info` | state, wiring and configuration |
+| `info` | state, wiring and configuration, with `src=` saying whether it was read off the chip |
 | `scan [passes]` | one energy scan across all channels (default 64) |
 | `scan live [passes]` | keep scanning, one report per N sweeps (default 8) |
 | `scan off` | stop a live scan and resume whatever was running |
@@ -356,14 +356,64 @@ reconfigured for RX once after the whole burst, not between copies. A burst
 replies `OK tx sent=<k>/<n>`; the single-frame reply keeps its historic
 `sent=<0|1>` shape.
 
+### Acknowledgements say what they left behind
+
+`listen` and `hwset` do not answer with a bare `OK`. They complete it with the
+resulting state, as `key=value` tokens in the same grammar `info` uses — so a
+host parses one thing, and what the firmware *did* is in the line reporting that
+it succeeded:
+
+```
+> hwset ce=9 csn=10 irq=5 led_rx=8 led_tx=A1
+WARN irq pin 5 is not interrupt-capable, falling back to polling
+OK hw connected saved state=unconfigured ce=9 csn=10 irq=none led_rx=8 led_tx=A1
+```
+
+Two things a caller would otherwise have to know by heart are simply stated
+there: the irq pin it asked for was not taken, and `hwset` discarded the radio
+configuration. A bare `OK` made both invisible, and a host that reconstructed
+them was keeping a second copy of the firmware's rules — the copy that is right
+until someone changes the firmware.
+
+`listen` answers the same way, including the bare `listen` that resumes with the
+retained configuration, which is exactly where the caller does not know what it
+resumed with:
+
+```
+> listen
+OK listening state=listening ce=9 csn=10 irq=2 led_rx=8 led_tx=A1 channel=90 rate=250kbps crc=16 aw=5 pa=low ack=0 dpl=0 plsize=32 pipe1=43:54:48:4D:45 src=chip
+```
+
+**`src=`** says where those values came from. `chip` means they were read back
+out of the chip's registers, which is the only account that survives a value the
+chip did not take. `firmware` means they are what the firmware holds, and it is
+what you get whenever the radio is not listening — because there the registers
+describe the library's plumbing rather than the configuration. Measured, on an
+idle dongle configured for pipe 1 only:
+
+```
+listening  EN_RXADDR=0x02        (pipe 1)
+idle       EN_RXADDR=0x03        (pipe 0 too), RX_ADDR_P0 = the last TX address
+```
+
+`RF24::stopListening()` writes the TX address into `RX_ADDR_P0` and force-enables
+pipe 0, and a scan retunes channel and data rate across the band. Read
+unconditionally, `info` would report a pipe 0 nobody configured — a
+plausible-looking wrong value, which is worse than an obviously missing one.
+
+This is additive: the tokens come after the `OK`, so a host that checks for `OK`
+and stops reading sees the old behaviour. That is why `api` stayed at 4 and a
+dongle still on older firmware works with a newer host — it answers `OK
+listening`, and the host asks `info` as it always did.
+
 ### Example session
 
 ```
-NRF24SNIFFER fw=3.0.0 api=3 state=nohw hw=none t=91 rx=0 fifofull=0
+NRF24SNIFFER fw=3.5.0 api=4 state=nohw hw=none t=91 rx=0 fifofull=0
 > hwset ce=9 csn=10 irq=2 led_rx=8 led_tx=A1
-OK hw connected saved
+OK hw connected saved state=unconfigured ce=9 csn=10 irq=2 led_rx=8 led_tx=A1
 > listen ch=100 rate=250 crc=16 aw=5 pa=low ack=0 dpl=1 pipe1=42:54:48:4D:45
-OK listening
+OK listening state=listening ce=9 csn=10 irq=2 led_rx=8 led_tx=A1 channel=100 rate=250kbps crc=16 aw=5 pa=low ack=0 dpl=1 plsize=32 pipe1=42:54:48:4D:45 src=chip
 RX t=43230 p1 len=16 4D565202D2FC44004501350C8B093A01
 ```
 
@@ -535,7 +585,10 @@ collapsed or shoving the frame table down the window every time it opened.
 state pill, the open port, the tuned bar in the scan chart and the setup fields
 themselves all come from the dongle's own `info`, which the server parses into a
 snapshot, publishes as a `radio` event and answers `/api/state` with. It asks
-after every command it sends and every ten seconds besides. This is not a detail
+after every command it sends and every ten seconds besides — and takes the
+snapshot straight out of the
+[acknowledgements](#acknowledgements-say-what-they-left-behind) of `listen` and
+`hwset`, which carry it in the same grammar. This is not a detail
 of taste: the summary line used to be assembled from the setup fields, so a page
 that had not configured anything itself described its own form — one freshly
 loaded tab claimed `ch100 … p1=42:54:48:4D:45` while the dongle underneath it
