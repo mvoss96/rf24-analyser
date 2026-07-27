@@ -152,6 +152,18 @@ input[type="text"], input:not([type]) {
 .pill.warn { background: var(--surface-2); color: var(--warn); }
 .pill.bad { background: var(--danger-bg); color: var(--danger); }
 
+/* Running build. Quiet by default - it only needs reading when something looks
+   wrong - and loud when the source on disk has moved past the running process,
+   because then everything else on screen is suspect. */
+.build { font-family: var(--mono); font-size: 11px; white-space: nowrap; }
+.build.stale {
+  color: var(--warn);
+  background: var(--surface-2);
+  padding: 3px 8px;
+  border-radius: 999px;
+  cursor: help;
+}
+
 /* --- toolbar --- */
 
 .toolbar {

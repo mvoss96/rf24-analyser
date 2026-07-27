@@ -35,6 +35,40 @@ import nrf24_parsers as parsers
 HERE = Path(__file__).resolve().parent
 WEB_DIR = HERE / "web"
 MAX_FRAMES = 5000
+
+APP_VERSION = "1.0.0"
+
+# Python imports a module once and keeps it: editing nrf24_parsers.py while the
+# server runs changes nothing until the process is restarted. That cost a real
+# debugging session - the browser flagged correct frames as malformed for hours
+# because the padding fix was on disk and not in memory. So the freshness of the
+# running code is measured rather than trusted: the mtime of every source file
+# this app serves from is taken at import and compared on request.
+_SOURCE_FILES = ("nrf24web.py", "nrf24_parsers.py", "nrf24_dongle.py",
+                 "web/index.html", "web/app.js", "web/app.css")
+
+
+def _source_stamp():
+    """(path, mtime) for each source file, skipping any that is missing."""
+    stamp = {}
+    for name in _SOURCE_FILES:
+        path = HERE / name
+        try:
+            stamp[name] = path.stat().st_mtime
+        except OSError:
+            continue
+    return stamp
+
+
+_STARTED_AT = time.time()
+_STAMP_AT_START = _source_stamp()
+
+
+def _stale_sources():
+    """Source files that changed on disk since this process loaded them."""
+    now = _source_stamp()
+    return sorted(name for name, mtime in now.items()
+                  if _STAMP_AT_START.get(name) != mtime)
 # Opening the port pulls DTR and resets the dongle, so the greeting takes about
 # two seconds. After that we ask instead of waiting - not every adapter resets
 # the board, and a dongle that was already running never greets at all. Only if
@@ -614,12 +648,19 @@ class Handler(BaseHTTPRequestHandler):
             # learns state from the SSE stream, but an agent wants one answer to
             # one question ("is it listening, on what wiring?").
             greeting = self.session.greeting or {}
+            stale = _stale_sources()
             self._json({"connected": self.session.dongle is not None,
                         "state": self.session.state_text,
                         "decoder": self.session.parser.name,
                         "wiring": {k: greeting.get("fields", {}).get(k)
                                    for k in ("ce", "csn", "irq", "led_rx", "led_tx")}
-                                  if greeting else None})
+                                  if greeting else None,
+                        # The running build, so an answer from this server can be
+                        # told apart from an answer from the code on disk.
+                        "app": {"version": APP_VERSION,
+                                "started": _STARTED_AT,
+                                "uptime": round(time.time() - _STARTED_AT),
+                                "stale": stale}})
         else:
             self.send_error(404)
 

@@ -660,6 +660,49 @@ function init() {
   const stream = new EventSource("/api/events");
   stream.onmessage = (e) => handle(JSON.parse(e.data));
   stream.onerror = () => setState("server lost", "bad");
+
+  showBuild();
+  // Polled, not pushed: the answer changes when a file on disk changes, which
+  // the server has no event for. A minute is soon enough to catch an edit
+  // before it wastes an hour of debugging.
+  setInterval(showBuild, 60000);
+}
+
+// --- which build is answering ----------------------------------------------
+
+let staleWarned = false;
+
+async function showBuild() {
+  let app;
+  try {
+    app = (await (await fetch("/api/state")).json()).app;
+  } catch {
+    return;  // the stream's own error handling already says the server is gone
+  }
+  if (!app) return;
+
+  const el = $("build");
+  const started = new Date(app.started * 1000).toLocaleString();
+  if (app.stale && app.stale.length) {
+    el.classList.add("stale");
+    el.classList.remove("dim");
+    el.textContent = `v${app.version} — restart to load changes`;
+    el.title = `Changed on disk since this server started (${started}):\n` +
+               app.stale.join("\n") +
+               "\n\nPython keeps imported modules in memory, so what you see " +
+               "is the older code.";
+    if (!staleWarned) {
+      staleWarned = true;
+      log(`[warning] source changed since start (${app.stale.join(", ")}) - ` +
+          `restart the server, this page is showing older behaviour`, "warn");
+    }
+  } else {
+    el.classList.remove("stale");
+    el.classList.add("dim");
+    el.textContent = `v${app.version}`;
+    el.title = `Running since ${started}`;
+    staleWarned = false;
+  }
 }
 
 init();
