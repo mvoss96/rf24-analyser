@@ -148,10 +148,21 @@ argue about it; `2` is the default and the only setting anyone should run.
 | `3` | never ask for the width, report 32 bytes | one stale frame per burst |
 | `4` | ask for the width after reading the payload | one stale frame per burst |
 
-> **Not settled — read this first.** Everything below was measured on channel
-> 100, the channel the RotRemote and two RF24 lamps use. Repeated on **channel
-> 90**, with nothing but two dongles on the air, the default configuration
-> produced **no stale frames at all**: 18 payloads, 18 correct. Same firmware,
+> **Not settled, and probably measured on a jammed channel — read this first.**
+> Eight frames dongle to dongle, 20 ms apart, per channel:
+>
+> | ch | 85 | 90 | 95 | **100** | **102** | 105 | 110 |
+> |---|---|---|---|---|---|---|---|
+> | arrived intact | 8/8 | 8/8 | 8/8 | **0/8** | **0/8** | 8/8 | 8/8 |
+>
+> Channel 100 is where the RotRemote, an ESPHome lamp and an old-protocol lamp
+> all live, and it is unusable - on channel 100 three of eight frames arrived at
+> all and none of them intact, while every channel outside 100-102 delivered
+> everything perfectly. Whatever sits there is narrow-band and constant.
+>
+> Everything below was measured on channel 100. Repeated on **channel 90**, with
+> nothing but two dongles on the air, the default configuration produced **no
+> stale frames at all**: 18 payloads, 18 correct. Same firmware,
 > same read strategy, same 16-byte payloads. So the effect needs something else
 > on the channel, and the "made up locally" conclusion below does not survive
 > that. A device answering on the same address is the obvious suspect: a receiver
