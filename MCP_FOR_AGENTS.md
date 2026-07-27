@@ -27,7 +27,7 @@ Point it at a non-default host with the `NRF24_WEB_URL` env var
 
 | Tool | Purpose |
 |---|---|
-| `nrf24_state()` | connected? `listening`/`idle`/`scanning`? on what wiring? |
+| `nrf24_state()` | connected on which port? `listening`/`idle`/`scanning`? on what wiring? `radio` carries the dongle's own channel, rate, crc, aw, pa and pipe addresses (`radioAge` = seconds since it said so) — what the radio reports, not what was asked of it |
 | `nrf24_configure(channel, pipe1, rate=250, crc=16, aw=5, pa="low", ack=0, dpl=1, plsize=32)` | tune the radio and start listening. Only `channel` and `pipe1` (e.g. `"42:54:48:4D:45"`) are required; the defaults match a BTHome-over-nRF24 sender |
 | `nrf24_capture(seconds=10)` | listen for `seconds`, return every frame decoded plus a per-sender summary |
 | `nrf24_transmit(address, payload, ack=False, repeat=1, gap_ms=0)` | send one frame — a stimulus to provoke a response. `repeat`/`gap_ms` send up to 16 copies genuinely milliseconds apart (firmware-side), like a real sender's event repeats |

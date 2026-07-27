@@ -76,6 +76,18 @@ def _stale_sources():
 GREETING_ASK = 2.0
 GREETING_TIMEOUT = 4.5
 
+# How often to ask the dongle what it is doing while it is connected. Every
+# command this process sends already triggers one, so the heartbeat only exists
+# for the configurations that never came through here at all - the MCP tools,
+# bench/*.py, a curl on /api/command from another shell. Without it the display
+# would keep showing the last thing this process happened to witness, which is
+# exactly how a page ended up claiming ch100 while the dongle sat on 90.
+INFO_HEARTBEAT = 10.0
+
+# Everything else this process sends may change what the dongle is doing, so it
+# is followed by an `info`. A tx does not, and a burst is dozens of them.
+NO_REFRESH_AFTER = {"tx", "info"}
+
 
 def column_spec(parser):
     """The decoder's table columns, as the browser wants them."""
@@ -192,7 +204,17 @@ class Session:
         self.state_text = "not connected"
         self.was_listening = False
         self.scan = None
+        # What the dongle last said about itself, from an `info` block. This is
+        # the only thing the browser is allowed to render as radio state: an
+        # input field holds what someone typed, which is a wish, and a wish that
+        # is drawn as a fact makes the tool lie for as long as nobody notices.
+        self.radio = None
+        self.radio_at = None
+        self._info_block = None     # lines collected since the `info:` header
+        self._info_quiet = False    # swallow this block instead of logging it
+        self._info_pending = 0      # blocks asked for by this class, not a user
         self._pump = None
+        self._beat = None
         self._stop = threading.Event()
         # Serialises command()s so each reply is matched to its own command.
         # Only API-side commands hold it; a human typing in the browser terminal
@@ -208,10 +230,13 @@ class Session:
         self._stop.clear()
         self._pump = threading.Thread(target=self._pump_loop, daemon=True)
         self._pump.start()
+        self._beat = threading.Thread(target=self._heartbeat_loop,
+                                      args=(self.dongle,), daemon=True)
+        self._beat.start()
         # Not "connected" yet: the port is open, but nothing has proved there is
         # a sniffer on the other end. The greeting is what does that.
         self.state_text = "connecting…"
-        self.hub.publish(self.status_event(port))
+        self.hub.publish(self.status_event())
         self._unless_greeted(GREETING_ASK, self._ask_status)
         self._unless_greeted(GREETING_TIMEOUT, self._greeting_overdue)
 
@@ -251,11 +276,24 @@ class Session:
         self.greeting = None
         self.was_listening = False
         self.state_text = "not connected"
+        self.radio = None
+        self.radio_at = None
+        self._info_block = None
+        self._info_pending = 0
         self.hub.publish(self.status_event())
+        self.hub.publish(self.radio_event())
 
-    def status_event(self, port=None):
+    def status_event(self):
+        # The port comes off the open dongle, never from an argument or from
+        # whatever a browser last selected: a tab that did not do the connecting
+        # showed the port from its own dropdown, which was COM9 while the
+        # capture underneath it came from COM18.
         return {"type": "status", "connected": self.dongle is not None,
-                "port": port, "state": self.state_text, "greeting": self.greeting}
+                "port": self.dongle.port if self.dongle else None,
+                "state": self.state_text, "greeting": self.greeting}
+
+    def radio_event(self):
+        return {"type": "radio", "radio": self.radio, "at": self.radio_at}
 
     def set_state(self, text):
         """Records the state and tells every tab.
@@ -269,11 +307,89 @@ class Session:
         self.state_text = text
         self.hub.publish(self.status_event())
 
-    def send(self, line):
+    def send(self, line, quiet=False):
         if self.dongle is None:
             raise RuntimeError("not connected")
         self.dongle.send(line)
+        if quiet:
+            return
         self.hub.publish({"type": "line", "text": f"> {line}", "kind": "sent"})
+        # Whatever that was, it may have changed what the dongle is doing, and
+        # only the dongle knows what it did with it. Asking straight afterwards
+        # is free: the firmware handles lines in order, so the answer describes
+        # the state the command left behind, not the one before it.
+        head = line.split()[0] if line.split() else ""
+        if head not in NO_REFRESH_AFTER:
+            self.refresh_info()
+
+    def refresh_info(self):
+        """Asks the dongle what it is doing; the answer is not printed.
+
+        Swallowing the block is what makes polling possible at all - twenty
+        lines every ten seconds would bury the terminal panel. The snapshot it
+        produces is published instead, and that is what the display reads.
+        """
+        self._info_pending += 1
+        try:
+            self.send("info", quiet=True)
+        except Exception:
+            self._info_pending = max(0, self._info_pending - 1)
+            raise
+
+    def _heartbeat_loop(self, owner):
+        while not self._stop.wait(INFO_HEARTBEAT):
+            # Reconnecting clears the stop flag again within microseconds, which
+            # this thread may sleep straight through - so it checks whose dongle
+            # the session holds now rather than trusting the flag alone.
+            if self.dongle is not owner:
+                return
+            # A sweep retunes the radio across the band and reports as it goes;
+            # asking it about itself in the middle of that interleaves with the
+            # report and tells us only that it is scanning, which we know.
+            if self.state_text == "scanning":
+                continue
+            try:
+                self.refresh_info()
+            except Exception:
+                pass   # disconnected between the check and the write
+
+    def _set_radio(self, info):
+        self.radio = info
+        self.radio_at = time.time()
+        state = info.get("state")
+        # The dongle's own word for what it is doing outranks the inference from
+        # OK lines: that one only knows about the commands this process saw.
+        if state in ("listening", "idle"):
+            self.was_listening = state == "listening"
+        if state:
+            self.set_state(state)
+        self.hub.publish(self.radio_event())
+
+    def _consume_info(self, line):
+        """Feeds one line to the `info:` collector; True if it must not be shown.
+
+        Every block is collected, whoever asked for it - the heartbeat, an agent
+        on /api/command, a human typing `info` in the terminal - so the snapshot
+        is never more than one poll behind. Only the blocks this class asked for
+        are swallowed; a typed `info` still prints its answer, as it must.
+        """
+        if line == dongle.INFO_HEADER:
+            self._info_block = []
+            self._info_quiet = self._info_pending > 0
+            self._info_pending = max(0, self._info_pending - 1)
+            return self._info_quiet
+        if line.startswith("  "):
+            self._info_block.append(line)
+            return self._info_quiet
+        if line.startswith("OK") or line.startswith("ERR"):
+            if line.startswith("OK"):
+                self._set_radio(dongle.parse_info(self._info_block))
+            quiet, self._info_quiet = self._info_quiet, False
+            self._info_block = None
+            return quiet
+        # A WARN can land in the middle of the block. It is not part of it and
+        # not ours to swallow, and it does not end the block either.
+        return False
 
     def command(self, line, timeout=5.0):
         """Sends one command and returns the firmware's OK/ERR reply line.
@@ -500,6 +616,14 @@ class Session:
             self.hub.publish(self._decode(stamp, delta, device_ms, pipe, data, intact))
             return
 
+        # `info` answers with an indented block closed by OK, and it is the one
+        # thing in this stream that describes the radio rather than reporting an
+        # event. RX lines were handled above, so a frame arriving mid-block
+        # cannot break it.
+        if line == dongle.INFO_HEADER or self._info_block is not None:
+            if self._consume_info(line):
+                return
+
         greeting = dongle.parse_greeting(line)
         if greeting is not None:
             event = {"type": "greeting", "fields": greeting, "text": line,
@@ -509,6 +633,11 @@ class Session:
             self.state_text = greeting.get("state", "connected")
             self.was_listening = self.state_text == "listening"
             self.hub.publish(event)
+            # The greeting proves there is a sniffer there and carries the
+            # wiring, but not the radio configuration - and after a reset it
+            # would not be the current one anyway. Ask, so the first thing the
+            # display shows is the dongle and not a page default.
+            self.refresh_info()
             return
 
         # A scan answers with one line per channel that had a hit, so a quiet
@@ -647,14 +776,26 @@ class Handler(BaseHTTPRequestHandler):
             # A synchronous snapshot for a non-browser consumer: the browser
             # learns state from the SSE stream, but an agent wants one answer to
             # one question ("is it listening, on what wiring?").
-            greeting = self.session.greeting or {}
+            session = self.session
+            greeting = session.greeting or {}
             stale = _stale_sources()
-            self._json({"connected": self.session.dongle is not None,
-                        "state": self.session.state_text,
-                        "decoder": self.session.parser.name,
-                        "wiring": {k: greeting.get("fields", {}).get(k)
-                                   for k in ("ce", "csn", "irq", "led_rx", "led_tx")}
-                                  if greeting else None,
+            radio = session.radio or {}
+            self._json({"connected": session.dongle is not None,
+                        "port": session.dongle.port if session.dongle else None,
+                        "state": session.state_text,
+                        "decoder": session.parser.name,
+                        # What the dongle last said about itself, and how long
+                        # ago it said it: a caller that has to trust this needs
+                        # to know whether it is a second or an hour old.
+                        "radio": session.radio,
+                        "radioAge": (None if session.radio_at is None
+                                     else round(time.time() - session.radio_at, 1)),
+                        # The wiring the dongle reports, falling back to the one
+                        # it greeted with before the first info arrived.
+                        "wiring": radio.get("wiring") or
+                                  ({k: greeting.get("fields", {}).get(k)
+                                    for k in ("ce", "csn", "irq", "led_rx", "led_tx")}
+                                   if greeting else None),
                         # The running build, so an answer from this server can be
                         # told apart from an answer from the code on disk.
                         "app": {"version": APP_VERSION,
@@ -733,6 +874,8 @@ class Handler(BaseHTTPRequestHandler):
             if self.session.greeting is not None:
                 self._sse(self.session.greeting)
             self._sse(self.session.status_event())
+            # Third, because it outranks both: what the dongle itself last said.
+            self._sse(self.session.radio_event())
             for frame in self.session.decoded_history():
                 self._sse(frame)
             while True:

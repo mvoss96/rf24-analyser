@@ -47,6 +47,66 @@ def parse_greeting(line):
     return fields
 
 
+INFO_HEADER = "info:"
+
+# `info` answers with an indented block, not one line: the state, then - as far
+# as the dongle has got - the wiring, then the radio configuration, then the
+# counters, closed by OK. Fields it cannot know yet are simply absent (a dongle
+# without wiring reports state and nothing else), so a caller has to ask what is
+# there rather than index into a fixed shape.
+INFO_INT_FIELDS = ("channel", "crc", "aw", "plsize", "ack", "dpl", "repeats",
+                   "rxmode", "rxdbg", "rx", "fifofull")
+
+
+def parse_info(lines):
+    """Parses the body of an `info:` block into a snapshot of the radio.
+
+    `lines` are the indented lines between `info:` and its `OK`. Everything in
+    them is key=value, one or more per line, so the wiring line parses like any
+    other. Numbers become numbers; `rate=250kbps` loses its unit; the pipes are
+    collected separately because their count varies with the configuration.
+
+    This is what the dongle says about itself, which is the only thing that can
+    honestly be shown as its state - a form field says what someone typed.
+    """
+    fields = {}
+    pipes = {}
+    for line in lines:
+        for token in line.split():
+            if "=" not in token:
+                continue
+            key, value = token.split("=", 1)
+            if key.startswith("pipe") and key[4:].isdigit():
+                pipes[int(key[4:])] = value
+            else:
+                fields[key] = value
+
+    info = {"pipes": pipes}
+    for key, value in fields.items():
+        if key in INFO_INT_FIELDS:
+            try:
+                info[key] = int(value)
+            except ValueError:
+                info[key] = value
+        elif key == "rate":
+            try:
+                info[key] = int(value.removesuffix("kbps"))
+            except ValueError:
+                info[key] = value
+        else:
+            info[key] = value
+
+    info["wiring"] = {key: fields[key] for key in
+                      ("ce", "csn", "irq", "led_rx", "led_tx") if key in fields}
+    # Two questions the block answers by omission: printInfo() stops after the
+    # state when there is no wiring, and after the counters-free part when the
+    # radio was never configured. Saying so explicitly keeps every consumer from
+    # rediscovering that rule.
+    info["hwReady"] = bool(info["wiring"])
+    info["configured"] = "channel" in info
+    return info
+
+
 def crc8(data):
     """CRC-8/ATM (polynomial 0x07) over a byte sequence - the firmware's."""
     crc = 0

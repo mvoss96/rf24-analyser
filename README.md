@@ -530,8 +530,28 @@ Settings live in a **dialog**, with a one-line summary of the active
 configuration left in the toolbar. Settings are read and changed in bursts,
 while frames arrive continuously, so an in-flow panel spent its life either
 collapsed or shoving the frame table down the window every time it opened.
-`Start` sends `hwset` and `listen` in one go, preceded by `stop` when a capture
-is already running — the firmware refuses `hwset` while listening.
+
+**Every status display reads the dongle, never the form.** The summary line, the
+state pill, the open port, the tuned bar in the scan chart and the setup fields
+themselves all come from the dongle's own `info`, which the server parses into a
+snapshot, publishes as a `radio` event and answers `/api/state` with. It asks
+after every command it sends and every ten seconds besides. This is not a detail
+of taste: the summary line used to be assembled from the setup fields, so a page
+that had not configured anything itself described its own form — one freshly
+loaded tab claimed `ch100 … p1=42:54:48:4D:45` while the dongle underneath it
+was listening on channel 90 with `43:…`, and the frames on screen came from a
+port the selector was not showing either. An input holds what someone typed,
+which is a wish; drawn as a fact it makes the tool lie until somebody notices.
+
+The setup dialog is therefore an **editor of the dongle's configuration**: it
+opens filled with what the radio reports, `Apply` writes it back (`stop`,
+`hwset`, `listen` — the firmware refuses `hwset` while listening — each awaiting
+its reply, so a failure stops the sequence and leaves the dialog open with the
+values still in it), and closing without applying puts the fields back. `Start`
+is then only about reception: it resumes with the configuration the dongle
+already has (a bare `listen`), and falls back to configuring from the fields
+only for a dongle that has none, fresh off a reset.
+
 Frames arrive with **millisecond timestamps and a Δ column** — the
 three repeats of one event sit ~4 ms apart, which per-second resolution hides.
 Selecting a row shows **decoded fields and the hex dump side by side**; frames the
@@ -541,9 +561,9 @@ greeting, the current state and the retained frames.
 
 | Endpoint | Purpose |
 |---|---|
-| `GET /api/events` | SSE stream of frames, log lines, greeting and status |
+| `GET /api/events` | SSE stream of frames, log lines, greeting, status and `radio` (the dongle's own configuration, whenever it changes) |
 | `GET /api/ports`, `/api/parsers` | what is available |
-| `GET /api/state` | one synchronous snapshot: connected, state, wiring |
+| `GET /api/state` | one synchronous snapshot: connected, open port, state, decoder, `radio` (the parsed `info` block) with its `radioAge` in seconds, wiring |
 | `POST /api/connect`, `/api/disconnect`, `/api/command` | control; `command` with `"wait": true` blocks for and returns the firmware's OK/ERR reply |
 | `POST /api/burst` | transmit a frame sequence (`{"address", "frames": [{"payload", "repeat", "gap_ms", …}]}`), one awaited reply per entry |
 | `POST /api/capture` | block for `seconds`, return the window's frames + stats |

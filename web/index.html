@@ -11,7 +11,11 @@
 <header class="topbar">
   <span class="brand">nrf24<span class="dim">-sniffer</span></span>
 
+  <!-- One of the two is shown at a time: the dropdown chooses a port to open,
+       the text says which one is open. A dropdown cannot do the second job -
+       its value is whatever was last selected in this tab. -->
   <select id="port" class="control" aria-label="Serial port"></select>
+  <span id="port-text" class="port" hidden></span>
   <button id="connect" class="btn primary">Connect</button>
 
   <span id="state" class="pill idle"><i class="dot"></i><span id="state-text">not connected</span></span>
@@ -152,7 +156,11 @@
     <footer class="dialog-foot">
       <button class="btn ghost small needs-link" data-cmd="hwclear" type="button">Forget stored wiring</button>
       <span class="spacer"></span>
+      <!-- Closing discards: these fields show the dongle's configuration, and
+           the only way to change them is to change the dongle. -->
       <button class="btn">Close</button>
+      <button id="apply" class="btn primary needs-link" type="button"
+              title="Write this to the dongle: stop, hwset, listen">Apply</button>
     </footer>
   </form>
 </dialog>

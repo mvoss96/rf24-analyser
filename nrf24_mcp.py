@@ -82,9 +82,13 @@ def _command(line, timeout=15):
 
 @mcp.tool()
 def nrf24_state() -> dict:
-    """Report what the dongle is doing: connected, listening/idle/scanning, the
-    active decoder, and the wiring it came up on. Call this first to check the
-    web UI is up and the dongle is listening before capturing."""
+    """Report what the dongle is doing: connected, on which port,
+    listening/idle/scanning, the active decoder, and `radio` - the dongle's own
+    answer about its channel, rate, crc, address width, pa level and pipe
+    addresses, with `radioAge` saying how many seconds ago it said so. Call this
+    first to check the web UI is up and the dongle is listening before capturing,
+    and again after configuring: `radio` is what the radio reports, not what was
+    asked of it, so it is the one place a silently rejected setting shows up."""
     return _request("GET", "/api/state", timeout=5)
 
 

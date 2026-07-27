@@ -8,6 +8,13 @@ let frames = [];      // every decoded frame, in arrival order
 let groups = [];      // table rows: frames folded by event identity
 let selected = -1;
 
+// What the dongle last said about itself, from the server's `info` snapshot -
+// or null while nothing has answered yet. Every status display in this file
+// reads from here and from nowhere else. The setup fields are an editor of this
+// value, never a description of it: assembling the toolbar line out of them is
+// what let a freshly loaded page claim ch100 while the dongle sat on ch90.
+let deviceRadio = null;
+
 // --- helpers ---------------------------------------------------------------
 
 async function post(path, body) {
@@ -17,7 +24,9 @@ async function post(path, body) {
     body: JSON.stringify(body || {}),
   });
   const data = await res.json().catch(() => ({}));
-  if (!res.ok || data.ok === false) log(`[${data.error || res.statusText}]`, "err");
+  // The firmware's own words when there are any: a command that waited for its
+  // reply carries the ERR line, which says what was wrong with it.
+  if (!res.ok || data.ok === false) log(`[${data.error || data.reply || res.statusText}]`, "err");
   return data;
 }
 
@@ -106,14 +115,90 @@ function pipeAddresses() {
   return { list, errors, bad };
 }
 
-function updateSummary() {
-  const { list, bad } = pipeAddresses();
+// Marks addresses the radio could not accept. A property of what is typed, so
+// unlike the summary below it does belong to the fields.
+function markPipes() {
+  const { bad } = pipeAddresses();
   for (const n of PIPES) $("pipe" + n).classList.toggle("invalid", bad.has(n));
-  const pipes = list.map(([n, , listensOn]) => `p${n}=${listensOn}`).join(" ");
-  $("summary").textContent =
-    `ce=${$("ce").value} csn=${$("csn").value}  |  ch${$("ch").value} ` +
-    `${$("rate").value}k crc${$("crc").value} aw${$("aw").value} pa=${$("pa").value}` +
-    `  |  ${pipes}`;
+}
+
+// The toolbar line, written from the dongle's answer and nothing else. Where it
+// cannot know something it says so: a line that quietly keeps showing the last
+// known value is indistinguishable from one that is right.
+function renderSummary() {
+  const el = $("summary");
+  const r = deviceRadio;
+  el.classList.toggle("unknown", !r || !r.configured);
+  if (!connected) { el.textContent = "no dongle connected"; return; }
+  if (!r) { el.textContent = "asking the dongle…"; return; }
+  if (!r.hwReady) { el.textContent = "no wiring — Setup…, then Apply"; return; }
+
+  const wiring = `ce=${r.wiring.ce} csn=${r.wiring.csn}`;
+  if (!r.configured) {
+    el.textContent = `${wiring}  |  radio not configured — Setup…, then Apply`;
+    return;
+  }
+  // Pipes 2-5 are reported as the full address they listen on, which is what
+  // the old line showed too - the radio joins their one byte to pipe 1's rest.
+  const pipes = Object.keys(r.pipes).map(Number).sort((a, b) => a - b)
+    .map((n) => `p${n}=${r.pipes[n]}`).join(" ");
+  el.textContent = `${wiring}  |  ch${r.channel} ${r.rate}k crc${r.crc} ` +
+                   `aw${r.aw} pa=${r.pa}  |  ${pipes}`;
+}
+
+// The setup fields hold the dongle's configuration, so that opening the dialog
+// shows what the radio is doing rather than what index.html was written with.
+// Not while it is open: the heartbeat would pull the field out from under the
+// cursor. Closing without applying re-seeds, so the wish never outlives the
+// dialog it was typed into.
+function seedSetup() {
+  const r = deviceRadio;
+  if (!r || $("setup").open) return;
+  for (const key of WIRING) {
+    if (r.wiring[key] !== undefined) $(key).value = r.wiring[key];
+  }
+  if (r.repeats !== undefined) $("repeats").checked = r.repeats === 1;
+  if (!r.configured) return;
+
+  $("ch").value = r.channel;
+  $("rate").value = r.rate;
+  $("crc").value = r.crc;
+  $("aw").value = r.aw;
+  $("pa").value = r.pa;
+  $("plsize").value = r.plsize;
+  $("ack").checked = r.ack === 1;
+  $("dpl").checked = r.dpl === 1;
+  for (const n of PIPES) {
+    const address = r.pipes[n];
+    // A pipe 2-5 field holds that pipe's own byte; the dongle reports the whole
+    // address it listens on, whose first byte that is.
+    $("pipe" + n).value = address === undefined ? ""
+                        : (n >= 2 ? address.slice(0, 2) : address);
+  }
+  for (const n of [0, 1]) $("pipe" + n).maxLength = pipeBytes(n) * 3 - 1;
+  markPipes();
+}
+
+// Writes the fields to the dongle. hwset is refused while the radio listens and
+// it clears the configuration, so the three go together and in this order; the
+// reply of each is waited for, because a listen sent after a failed hwset would
+// configure nothing and report success.
+async function applySetup() {
+  const { errors } = pipeAddresses();
+  if (errors.length) {
+    for (const message of errors) log(`[${message}]`, "err");
+    showTab("terminal");
+    return false;
+  }
+  const running = deviceRadio && (deviceRadio.state === "listening" ||
+                                  deviceRadio.state === "scanning");
+  const ok = await sendAll([...(running ? ["stop"] : []),
+                            buildHwset(), buildListen()]);
+  // Only on success: a dialog that closes on an ERR takes the typed values with
+  // it and leaves the user to retype them from memory.
+  if (ok) $("setup").close();
+  else showTab("terminal");
+  return ok;
 }
 
 function buildHwset() {
@@ -150,11 +235,15 @@ function formatAddress(el, maxBytes) {
 
 const send = (line) => post("/api/command", { line });
 
-async function sendSequence(lines, gap = 150) {
+// Each line waits for the firmware's own OK/ERR before the next one goes out,
+// and an ERR ends the sequence. The fixed pause it replaces was a guess at how
+// long a command takes, and a guess is wrong in both directions.
+async function sendAll(lines) {
   for (const line of lines) {
-    await send(line);
-    await new Promise((resolve) => setTimeout(resolve, gap));
+    const data = await post("/api/command", { line, wait: true });
+    if (data.ok === false) return false;
   }
+  return true;
 }
 
 // --- frame table -----------------------------------------------------------
@@ -429,7 +518,9 @@ function renderScan(event) {
 
   const hits = event.hits || {};
   const busiest = Math.max(0, ...Object.values(hits).map(Number));
-  const tuned = Number($("ch").value);
+  // The channel the radio is on, not the one the form asks for: marking a bar
+  // "tuned here" that the dongle never tuned to is a chart that lies quietly.
+  const tuned = deviceRadio && deviceRadio.configured ? deviceRadio.channel : -1;
 
   // Scaled against the passes in this report, not against the busiest channel
   // in it: a relative scale would make every live report redraw to full height
@@ -470,10 +561,9 @@ function handle(event) {
     addRow(event);
   } else if (event.type === "greeting") {
     log(event.text, "ok");
-    for (const key of WIRING) {
-      if (event.fields[key] !== undefined) $(key).value = event.fields[key];
-    }
-    updateSummary();
+    // The wiring it carries is not copied into the fields here: the `info` the
+    // server asks for next reports the same wiring and the configuration with
+    // it, so there is one path into those fields instead of two.
     if (!event.apiOk) {
       setState(`api ${event.fields.api} mismatch`, "bad");
       log(`[warning] firmware api=${event.fields.api}, this ui expects api=${event.expectedApi}`, "warn");
@@ -487,8 +577,14 @@ function handle(event) {
     connected = event.connected;
     $("connect").textContent = connected ? "Disconnect" : "Connect";
     setLinkControls(connected);
+    showPort(event.port);
     const text = event.state || (connected ? "connected" : "not connected");
     setState(text, stateClass(text, connected));
+    renderSummary();
+  } else if (event.type === "radio") {
+    deviceRadio = event.radio;
+    renderSummary();
+    seedSetup();
   } else if (event.type === "scan") {
     renderScan(event);
   } else if (event.type === "parser") {
@@ -528,6 +624,17 @@ async function loadPorts() {
   if (previous && ports.some((p) => p.device === previous)) select.value = previous;
 }
 
+// While a port is open, which one it is comes from the server and is shown as
+// text; the dropdown steps aside. It is an input - its value is whatever was
+// last picked in this tab, which is how a page capturing from COM18 came to
+// display COM9, the port of something else entirely.
+function showPort(port) {
+  $("port").hidden = connected;
+  $("port-text").hidden = !connected;
+  $("port-text").textContent = port || "";
+  $("port-text").title = port ? `connected on ${port}` : "";
+}
+
 async function loadParsers() {
   const list = await (await fetch("/api/parsers")).json();
   const select = $("decoder");
@@ -550,7 +657,7 @@ async function loadParsers() {
 function init() {
   loadPorts();
   loadParsers();
-  updateSummary();
+  renderSummary();
   setLinkControls(false);   // until the first status event says otherwise
 
   // Formatting first, so the summary below reads the grouped value and not the
@@ -566,11 +673,11 @@ function init() {
       el.maxLength = pipeBytes(n) * 3 - 1;
       formatAddress(el, pipeBytes(n));
     }
-    updateSummary();
+    markPipes();
   });
-  for (const id of [...WIRING, ...RADIO, ...PIPES.map((n) => "pipe" + n)]) {
-    $(id).addEventListener("input", updateSummary);
-    $(id).addEventListener("change", updateSummary);
+  for (const id of [...RADIO, ...PIPES.map((n) => "pipe" + n)]) {
+    $(id).addEventListener("input", markPipes);
+    $(id).addEventListener("change", markPipes);
   }
 
   // No rescan button: the list refreshes as it is opened, which covers the only
@@ -589,24 +696,29 @@ function init() {
     else localStorage.setItem(LAST_PORT, port);
   });
 
-  $("setup-open").addEventListener("click", () => $("setup").showModal());
+  $("setup-open").addEventListener("click", () => {
+    seedSetup();               // whatever the dongle says right now, not before
+    $("setup").showModal();
+  });
   // Esc comes free with showModal(); clicking the backdrop does not. The form
   // fills the dialog box, so a click landing on the dialog itself is outside.
   $("setup").addEventListener("click", (e) => {
     if (e.target === $("setup")) $("setup").close();
   });
+  // However it was closed - Apply, Close, Esc, backdrop - the fields go back to
+  // describing the dongle. An edit that was not applied changed nothing, and a
+  // field left showing it would be the old lie in a smaller box.
+  $("setup").addEventListener("close", seedSetup);
+  $("apply").addEventListener("click", applySetup);
 
-  // Starting means wiring and radio config, always together and in that order.
-  // The firmware refuses hwset while it is listening, so restarting a capture
-  // has to stop first - without that the wiring silently kept what it had.
+  // Start is about reception, not about configuration: the dongle keeps what it
+  // was given until something changes it, so starting again resumes with the
+  // configuration it actually has. Only a dongle that has none - fresh off a
+  // reset - is configured from the fields, because nothing else knows yet.
   $("run").addEventListener("click", () => {
     if (listening()) return void send("stop");
-    const { errors } = pipeAddresses();
-    if (errors.length) {
-      for (const message of errors) log(`[${message}]`, "err");
-      return;
-    }
-    sendSequence([buildHwset(), buildListen()]);
+    if (deviceRadio && deviceRadio.configured) return void send("listen");
+    applySetup();
   });
   for (const btn of document.querySelectorAll("[data-cmd]")) {
     btn.addEventListener("click", () => send(btn.dataset.cmd));
