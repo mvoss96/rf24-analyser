@@ -23,5 +23,11 @@
 // line that reports success. Additive: the tokens come after the OK, and a host
 // that checks for OK and stops reading sees the old behaviour, so api stayed at
 // 4 and a dongle on older firmware still works with a newer host.
-#define FW_VERSION "3.5.0"
-#define API_VERSION 4
+// api=5 renames the greeting from NRF24SNIFFER to NRF24ANALYSER, the project
+// having been renamed. It is the one break this field cannot announce: a host
+// that does not know the new identity never recognises the line, so it never
+// reads the api= in it either. The version moves anyway, because it is the
+// record of what is and is not interchangeable - but what a host actually sees
+// against older firmware is no greeting at all, and the answer is to reflash.
+#define FW_VERSION "3.6.0"
+#define API_VERSION 5

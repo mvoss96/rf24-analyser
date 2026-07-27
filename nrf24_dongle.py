@@ -1,4 +1,4 @@
-"""Serial client for the nrf24-sniffer dongle.
+"""Serial client for the nRF24 Analyser dongle.
 
 Speaks the line-based ASCII protocol described in README.md and is shared by the
 terminal (nrf24term.py) and the GUI (nrf24gui.py) so there is exactly one
@@ -20,7 +20,14 @@ except ImportError:  # pragma: no cover - reported by the entry points
 
 # Command-protocol version this client speaks; compared against the firmware's
 # greeting so a mismatch is reported instead of producing cryptic errors.
-EXPECTED_API = 4
+#
+# api=5 is the rename of the greeting itself, from NRF24SNIFFER to
+# NRF24ANALYSER. It is the one incompatibility this field cannot warn about: a
+# host that does not know the new identity never recognises the line at all, so
+# it never gets as far as reading api= out of it. What it sees instead is
+# silence where the greeting should be, which the ui reports as "no greeting" -
+# and the fix is to reflash the dongle.
+EXPECTED_API = 5
 
 DEFAULT_BAUD = 500000
 
@@ -33,11 +40,16 @@ def available_ports():
 
 
 def parse_greeting(line):
-    """Parses 'NRF24SNIFFER fw=.. api=.. state=.. hw=.. ce=..' into a dict.
+    """Parses 'NRF24ANALYSER fw=.. api=.. state=.. hw=.. ce=..' into a dict.
 
-    Returns None for any other line.
+    Returns None for any other line - including the NRF24SNIFFER greeting of
+    firmware older than 3.6.0, which is deliberate: the identity is what the
+    host recognises the device by, and accepting two of them would leave the
+    project answering to a name it no longer has for as long as anyone remembers
+    to keep both. A dongle that still greets with the old name is reported as
+    not greeting at all, and wants reflashing.
     """
-    if not line.startswith("NRF24SNIFFER"):
+    if not line.startswith("NRF24ANALYSER"):
         return None
     fields = {}
     for token in line.split()[1:]:

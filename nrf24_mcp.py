@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""nrf24_mcp - an MCP server that lets another agent drive the sniffer dongle.
+"""nrf24_mcp - an MCP server that lets another agent drive the analyser dongle.
 
 It is a thin proxy over the running nrf24web.py: every tool is an HTTP call to
 that server, which is the sole owner of the serial port. That indirection is the
@@ -38,7 +38,7 @@ import urllib.request
 from mcp.server.fastmcp import FastMCP
 
 BASE = os.environ.get("NRF24_WEB_URL", "http://127.0.0.1:8724").rstrip("/")
-mcp = FastMCP("nrf24-sniffer")
+mcp = FastMCP("nrf24-analyser")
 
 
 class DongleError(RuntimeError):
@@ -56,7 +56,7 @@ def _request(method, path, body=None, timeout=None):
     except urllib.error.URLError as exc:
         # The single failure that matters: the web UI is not running.
         raise DongleError(
-            f"cannot reach the sniffer web UI at {BASE} ({exc.reason}). "
+            f"cannot reach the analyser web UI at {BASE} ({exc.reason}). "
             f"Start it first with start.cmd (or python nrf24web.py)."
         ) from None
 
@@ -228,7 +228,7 @@ def nrf24_command(line: str) -> dict:
 
 @mcp.tool()
 def nrf24_history(limit: int = 50) -> dict:
-    """Return frames the sniffer already captured, newest last.
+    """Return frames the analyser already captured, newest last.
 
     nrf24_capture only sees the window it was asked for, so a frame that
     arrived a minute ago was out of reach. This reads the retained history

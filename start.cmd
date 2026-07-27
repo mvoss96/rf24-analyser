@@ -1,5 +1,5 @@
 @echo off
-rem Starts the nrf24-sniffer web UI. Double-click, or run from a terminal.
+rem Starts the nRF24 Analyser web UI. Double-click, or run from a terminal.
 rem
 rem Uses the project's own virtualenv on purpose: bthome-ble lives there, and
 rem the system Python would bring the BTHome decoder up as "unavailable".

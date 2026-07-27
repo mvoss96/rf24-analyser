@@ -112,7 +112,7 @@ void CommandParser::feed(char c) {
 // --- Command handlers ------------------------------------------------------
 
 void CommandParser::printStatus() {
-  Serial.print(F("NRF24SNIFFER fw=" FW_VERSION " api="));
+  Serial.print(F("NRF24ANALYSER fw=" FW_VERSION " api="));
   Serial.print(API_VERSION);
   Serial.print(F(" state="));
   Serial.print(radio_.stateName());

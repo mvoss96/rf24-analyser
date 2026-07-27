@@ -1,6 +1,6 @@
-# nRF24 sniffer over MCP — for a consuming agent
+# nRF24 Analyser over MCP — for a consuming agent
 
-You can drive an nRF24 sniffer dongle to validate your firmware against real
+You can drive an nRF24 Analyser dongle to validate your firmware against real
 radio traffic. Access is through an MCP server that proxies to a running web UI;
 that web UI owns the serial port, and you never touch it directly. This
 indirection is deliberate — a person can keep watching in the browser while you
@@ -9,7 +9,7 @@ capture, configure and transmit through the same dongle.
 ## Prerequisite
 
 The web UI must be running: `C:\Repos\tools\nrf24-sniffer\start.cmd`. If any tool
-returns `cannot reach the sniffer web UI`, it is not running — ask the human to
+returns `cannot reach the analyser web UI`, it is not running — ask the human to
 start it. `nrf24_state()` is the cheapest way to check.
 
 ## Register the MCP server (once, in the consuming project)
@@ -83,14 +83,14 @@ frames and statistics, **not** a verdict — the pass/fail criteria are yours.
    burst, which reads as a second event unless you look at the bytes.
    `nrf24_history` gives you the earlier frames to compare against.
 
-## Telling the sniffer's faults from the device's
+## Telling the analyser's faults from the device's
 
 If something appears that you cannot account for, `nrf24_reset()` settles who
 produced it: the port is reopened, which resets the dongle and empties its RX
 FIFO, so afterwards it cannot know anything from before. Reconfigure with
 `nrf24_configure` (the reset drops the radio configuration), provoke the same
 behaviour again, and if it reappears it came off the air rather than out of the
-sniffer.
+analyser.
 
 ## Typical loop
 

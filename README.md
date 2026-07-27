@@ -1,4 +1,4 @@
-# nrf24-sniffer
+# nRF24 Analyser
 
 A debug / sniffer tool for raw nRF24L01 traffic, built to validate and debug the
 **BTHome-over-nRF24** protocol spoken by
@@ -51,7 +51,7 @@ pio run -e nano -t upload
 ```
 
 If that ends in an avrdude sync timeout, use `-e nano_old`. Only dependency is
-`nrf24/RF24` (TMRh20) 1.6.1, pulled automatically. Build size at 3.5.0:
+`nrf24/RF24` (TMRh20) 1.6.1, pulled automatically. Build size at 3.6.0:
 **flash 17.9 KB (58%)**, **RAM 1198 B (58%)**.
 
 ## Serial protocol
@@ -69,7 +69,7 @@ terminal works unconfigured. Every command is answered with `OK ...` or `ERR ...
 ### Greeting and `status`
 
 ```
-NRF24SNIFFER fw=3.0.0 api=3 state=unconfigured hw=connected ce=9 csn=10 irq=2 led_rx=8 led_tx=A1 t=133 rx=0 fifofull=0
+NRF24ANALYSER fw=3.6.0 api=5 state=unconfigured hw=connected ce=9 csn=10 irq=2 led_rx=8 led_tx=A1 t=133 rx=0 fifofull=0
 ```
 
 Printed once at boot, and identically by **`status`** at any time. The greeting
@@ -96,7 +96,7 @@ than reporting them separately. When a wiring fails, the reason is stated in a
 
 ```
 WARN stored wiring: ce pin does not key the radio
-NRF24SNIFFER fw=3.0.0 api=3 state=nohw hw=failed ce=8 csn=10 irq=2 led_rx=8 led_tx=A1
+NRF24ANALYSER fw=3.6.0 api=5 state=nohw hw=failed ce=8 csn=10 irq=2 led_rx=8 led_tx=A1
 ```
 
 ### Commands
@@ -409,7 +409,7 @@ listening`, and the host asks `info` as it always did.
 ### Example session
 
 ```
-NRF24SNIFFER fw=3.5.0 api=4 state=nohw hw=none t=91 rx=0 fifofull=0
+NRF24ANALYSER fw=3.6.0 api=5 state=nohw hw=none t=91 rx=0 fifofull=0
 > hwset ce=9 csn=10 irq=2 led_rx=8 led_tx=A1
 OK hw connected saved state=unconfigured ce=9 csn=10 irq=2 led_rx=8 led_tx=A1
 > listen ch=100 rate=250 crc=16 aw=5 pa=low ack=0 dpl=1 pipe1=42:54:48:4D:45
@@ -746,7 +746,7 @@ rather than guessed.
 ## Layout
 
 ```
-nrf24-sniffer/
+nRF24-Analyser/
   platformio.ini              build environments (nano / nano_old)
   include/RadioController.h   radio wrapper, HwConfig + RadioConfig
   include/CommandParser.h     serial command parser
