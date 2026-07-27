@@ -148,19 +148,26 @@ argue about it; `2` is the default and the only setting anyone should run.
 | `3` | never ask for the width, report 32 bytes | one stale frame per burst |
 | `4` | ask for the width after reading the payload | one stale frame per burst |
 
-> **Not settled, and probably measured on a jammed channel — read this first.**
-> Eight frames dongle to dongle, 20 ms apart, per channel:
+> **Not settled — read this first.** Two things to hold on to.
 >
-> | ch | 85 | 90 | 95 | **100** | **102** | 105 | 110 |
-> |---|---|---|---|---|---|---|---|
-> | arrived intact | 8/8 | 8/8 | 8/8 | **0/8** | **0/8** | 8/8 | 8/8 |
+> **Dongle-to-dongle links die on channels 99-101, and only there.** Twelve
+> frames, 15 ms apart, per channel:
 >
-> Channel 100 is where the RotRemote, an ESPHome lamp and an old-protocol lamp
-> all live, and it is unusable - on channel 100 three of eight frames arrived at
-> all and none of them intact, while every channel outside 100-102 delivered
-> everything perfectly. Whatever sits there is narrow-band and constant.
+> | ch | 96 | 97 | 98 | **99** | **100** | **101** | 102 | 103 | 104 |
+> |---|---|---|---|---|---|---|---|---|---|
+> | intact | 12/12 | 12/12 | 12/12 | **1/12** | **0/12** | **0/12** | 11/12 | 12/12 | 12/12 |
 >
-> Everything below was measured on channel 100. Repeated on **channel 90**, with
+> It is not the channel as such: the RotRemote reaches the same dongle on channel
+> 100 perfectly well, and a dongle transmitting on channel 100 reaches an ESP32
+> receiver perfectly well. It is the two dongles together - both directions,
+> either address - and maximum transmit power does not recover it (channel 99
+> does recover that way, channel 100 does not). The carrier detector, sampled per
+> channel at 250 kbps, reports nothing above its -64 dBm threshold anywhere, so
+> whatever this is, it is weak. Cause unknown. Consequence: **measurements between
+> two dongles must not be taken on 99-101**.
+>
+> Everything below was measured on channel 100, i.e. across that broken link.
+> Repeated on **channel 90**, with
 > nothing but two dongles on the air, the default configuration produced **no
 > stale frames at all**: 18 payloads, 18 correct. Same firmware,
 > same read strategy, same 16-byte payloads. So the effect needs something else
