@@ -16,40 +16,28 @@ Verdicts print per test so a failure names itself.
 
     python bench/validate_component.py
 """
-import json
-import re
-import subprocess
 import sys
-import threading
 import time
-import urllib.request
 from pathlib import Path
 
-WEB_A = "http://127.0.0.1:8724"
-WEB_B = "http://127.0.0.1:8725"
+sys.path.insert(0, str(Path(__file__).resolve().parent))
+from labkit import (ADDR_DYN, ADDR_FIXED, HDR, WEB_A, WEB_B, configure,  # noqa: E402
+                    exit_with_summary, hub_clear, hub_grep, hub_start, payload,
+                    settle, tx, verdict)
+
 HUB_YAML = Path(r"C:\Repos\libs\esphome-rf24-remote\tests\wt32-eth01.yaml")
 HUB_IP = "192.168.2.70"
-
-ADDR_FIXED = "4354484D45"   # CTHME - fixed 32 bytes, no auto-ack
-ADDR_DYN = "4254484D45"     # BTHME - dynamic length, auto-ack
 
 SENDER_A = "AA010001"
 SENDER_B = "AA010002"
 SENDER_UNKNOWN = "DEADBEEF"
 
-HDR = "D2FC44"              # BTHome service uuid (0xFCD2, little endian) + info
-
 
 # ---- frame construction ------------------------------------------------------
-def pad32(hexstr):
-    """Fill to the 32-byte slot with 0xFF, the padding byte the transport strips."""
-    return hexstr + "FF" * (32 - len(hexstr) // 2)
-
-
 def click(sender, pid, header=HDR):
     """A click exactly as the RotRemote sends it: packet id, battery, voltage,
     button press."""
-    return f"{sender}{header}00{pid:02X}01640C3C0D3A01"
+    return payload(sender, pid, "01640C3C0D3A01", header=header)
 
 
 def dimmer(sender, pid, index=1, right=True, steps=5):
@@ -57,95 +45,12 @@ def dimmer(sender, pid, index=1, right=True, steps=5):
     object addresses dimmer k, so index 2 needs a None entry in front."""
     ev = "02" if right else "01"
     body = "3C0000" if index == 2 else ""
-    return f"{sender}{HDR}00{pid:02X}{body}3C{ev}{steps:02X}"
-
-
-# ---- dongle web API ----------------------------------------------------------
-def post(base, path, body):
-    req = urllib.request.Request(
-        base + path, data=json.dumps(body).encode(),
-        headers={"Content-Type": "application/json"}, method="POST")
-    with urllib.request.urlopen(req, timeout=30) as r:
-        return json.load(r)
-
-
-def configure(base, dpl=0, plsize=32, ack=0, channel=90, pipe1=ADDR_FIXED):
-    """Put a dongle on the air. dpl=0/plsize=32 makes it a fixed-length sender
-    like a converted remote; dpl=1/ack=1 is what the dynamic pipe needs."""
-    parts = [f"listen ch={channel}", "rate=250", "crc=16", "aw=5", "pa=low",
-             f"ack={ack}", f"dpl={dpl}"]
-    if not dpl:
-        parts.append(f"plsize={plsize}")
-    parts.append(f"pipe1={pipe1}")
-    return post(base, "/api/command", {"line": " ".join(parts), "wait": True})
-
-
-def tx(base, payload, address=ADDR_FIXED, repeat=1, gap=0, ack=False, pad=True):
-    if pad:
-        payload = pad32(payload)
-    line = f"tx {address} {payload} {'ack' if ack else 'noack'}"
-    if repeat > 1:
-        line += f" x{repeat}"
-    if gap:
-        line += f" gap={gap}"
-    return post(base, "/api/command", {"line": line, "wait": True})
-
-
-# ---- the hub's view, read off its log over the network -----------------------
-hub_lines = []
-hub_lock = threading.Lock()
-hub_proc = None
-
-
-def hub_reader(proc):
-    for raw in proc.stdout:
-        text = raw.rstrip()
-        with hub_lock:
-            hub_lines.append(text)
-
-
-def hub_start():
-    global hub_proc
-    hub_proc = subprocess.Popen(
-        ["esphome", "logs", str(HUB_YAML), "--device", HUB_IP],
-        stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
-        text=True, encoding="utf-8", errors="replace", bufsize=1)
-    threading.Thread(target=hub_reader, args=(hub_proc,), daemon=True).start()
-    # Wait for the handshake, otherwise the first test runs deaf.
-    for _ in range(150):
-        if hub_grep("handshake with"):
-            return True
-        time.sleep(0.2)
-    return False
-
-
-def hub_grep(pattern):
-    rx = re.compile(pattern)
-    with hub_lock:
-        return [l for l in hub_lines if rx.search(l)]
-
-
-def hub_clear():
-    with hub_lock:
-        hub_lines.clear()
-
-
-# ---- verdicts ----------------------------------------------------------------
-results = []
-
-
-def verdict(name, ok, detail):
-    results.append((name, ok, detail))
-    print(f"{'PASS' if ok else 'FAIL'}  {name}\n      {detail}", flush=True)
-
-
-def settle(seconds=1.5):
-    time.sleep(seconds)
+    return payload(sender, pid, f"{body}3C{ev}{steps:02X}")
 
 
 # ---- run ---------------------------------------------------------------------
 print(f"attaching to hub log at {HUB_IP} ...", flush=True)
-if not hub_start():
+if not hub_start(HUB_YAML, HUB_IP):
     print("FATAL: no handshake with the hub - is it reachable?")
     sys.exit(2)
 print("attached", flush=True)
@@ -281,9 +186,14 @@ verdict("G9 wrong service uuid refused as invalid service data",
 # error. Nothing from it is published and none of its events fire - not even the
 # objects that parsed before the fault.
 hub_clear()
-# 0x0C (voltage) announces two bytes and only one follows before the padding.
+# A text object announcing 32 bytes, which the 32-byte slot cannot hold whatever
+# follows. An object merely one byte short would no longer do: the receiver stops
+# trimming the padding (a value byte of 0xFF is data, and cutting it lost every
+# temperature between -0.01 and -2.56 C), so a short object at the end simply
+# absorbs padding bytes and parses. That is inherent to padding a fixed slot -
+# only an object that overruns the slot itself is unambiguously truncated.
 truncated_pid = next_pid()
-tx(WEB_A, f"{SENDER_A}{HDR}00{truncated_pid:02X}3A010C2C")
+tx(WEB_A, f"{SENDER_A}{HDR}00{truncated_pid:02X}3A015320")
 settle(1.5)
 trunc = hub_grep(r"malformed BTHome payload, discarded \(truncated\)")
 press = hub_grep(r"DEV=A button 1: press")
@@ -404,22 +314,51 @@ for _ in range(5):
     tx(WEB_B, click(SENDER_B, next_pid()), repeat=3, gap=8)
     time.sleep(0.5)
 settle(2.0)
+# Protocol-level warnings are the assertion: sound traffic must not produce a
+# single one. A full RX FIFO is counted but not failed on - it says the radio was
+# offered more than it could take at that instant, which depends on how many
+# other senders share the channel (there is a sensor node on it now) and on the
+# logging level, not on whether the frames were understood.
 noise = (hub_grep(r"malformed BTHome") + hub_grep(r"bad length") +
-         hub_grep(r"unregistered sender") + hub_grep(r"RX FIFO full"))
+         hub_grep(r"unregistered sender"))
+congestion = hub_grep(r"RX FIFO full")
 a = hub_grep(r"DEV=A button 1: press")
 b = hub_grep(r"DEV=B button 1: press")
-verdict("G15 30 sound frames, 10 events, no warnings of any kind",
+verdict("G15 30 sound frames, 10 events, no protocol warnings",
         len(a) == 5 and len(b) == 5 and not noise,
-        f"A {len(a)}/5, B {len(b)}/5, warnings: {len(noise)}"
-        + (f" -> {noise[0][:90]}" if noise else ""))
+        f"A {len(a)}/5, B {len(b)}/5, protocol warnings: {len(noise)}"
+        + (f" -> {noise[0][:90]}" if noise else "")
+        + (f", FIFO full {len(congestion)}x (channel congestion, not a fault)"
+           if congestion else ""))
+
+# --- G16: a value byte of 0xFF is data, not padding --------------------------
+# BTHome is little endian, so a signed 16-bit measurement between -0.01 and
+# -2.56 has 0xFF as its last byte - the same value the transport pads with. A
+# receiver that finds the end of the data by trimming trailing 0xFF eats that
+# byte and throws the frame away as truncated. Measured before the fix: a
+# temperature of -1.00 C never arrived, and an outdoor sensor would have gone
+# silent just below freezing with nothing but a malformed-payload line to show.
+hub_clear()
+for label, encoded in (("-1.00", "029CFF"), ("-0.01", "02FFFF")):
+    tx(WEB_A, f"{SENDER_A}{HDR}00{next_pid():02X}{encoded}")
+    settle(1.2)
+below_zero = hub_grep(r"AA:01:00:01: sensor 0x02#1: -1\.000")
+just_below = hub_grep(r"AA:01:00:01: sensor 0x02#1: -0\.010")
+verdict("G16 negative temperatures survive the padding boundary",
+        bool(below_zero) and bool(just_below),
+        f"-1.00 C {'decoded' if below_zero else 'LOST'}, "
+        f"-0.01 C {'decoded' if just_below else 'LOST'}")
+
+# The same, with an object behind the one that ends in 0xFF: the reader has to
+# carry on rather than stop at the first byte that looks like padding.
+hub_clear()
+tx(WEB_A, f"{SENDER_A}{HDR}00{next_pid():02X}029CFF03881300")
+settle(1.5)
+temp = hub_grep(r"AA:01:00:01: sensor 0x02#1: -1\.000")
+hum = hub_grep(r"AA:01:00:01: sensor 0x03#1: 50\.000")
+verdict("G16b an object after an 0xFF-ending value is still read",
+        bool(temp) and bool(hum),
+        f"temperature {'ok' if temp else 'LOST'}, humidity {'ok' if hum else 'LOST'}")
 
 # ---- teardown ---------------------------------------------------------------
-if hub_proc:
-    hub_proc.terminate()
-
-print("\n--- summary ---")
-for name, ok, detail in results:
-    print(f"{'PASS' if ok else 'FAIL'}  {name}")
-failed = [n for n, ok, _ in results if not ok]
-print(f"\n{len(results) - len(failed)}/{len(results)} passed")
-sys.exit(0 if not failed else 1)
+exit_with_summary()
