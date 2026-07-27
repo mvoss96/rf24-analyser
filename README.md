@@ -172,6 +172,15 @@ argue about it; `2` is the default and the only setting anyone should run.
 > payload, queued right behind the real frame, which is also why flushing hides
 > it. Deciding it needs the lamps powered down, which has not been done.
 
+**And the reason a sniffer suffers from it at all**: dynamic payload length is
+gated on auto-acknowledge per pipe, which a sniffer cannot have - answering the
+traffic it is supposed to observe is the one thing it must not do. Demonstrated on
+an ESP32 receiving the same frames, minutes apart on one device: with auto-ack
+enabled on its pipe, every click produced only its own copies; with `EN_AA=0` the
+same device started reporting stale payloads immediately, including a test payload
+from minutes earlier. So this dongle's configuration is permanently the one the
+chip mishandles, and the flush is how a passive receiver lives with it.
+
 What the measurements showed:
 
 - Two dongles hearing the same single click sometimes report *different* stale
