@@ -26,7 +26,12 @@ import labkit as lab  # noqa: E402
 
 COMPONENT_TESTS = Path(r"C:\Repos\libs\esphome-rf24-remote\tests")
 sys.path.insert(0, str(COMPONENT_TESTS))
-from sensor_type_vectors import BINARY_VECTORS, all_vectors, encoded  # noqa: E402
+from sensor_type_vectors import (  # noqa: E402
+    BINARY_VECTORS,
+    TEXT_VECTORS,
+    all_vectors,
+    encoded,
+)
 
 HUB_YAML = COMPONENT_TESTS / "wt32-eth01.yaml"
 HUB_IP = "192.168.2.70"
@@ -81,6 +86,15 @@ def decoded_binary(object_id, instance=1):
 
 def published_binary(key):
     rx = re.compile(rf"'B {re.escape(key)}' >> (ON|OFF)")
+    for line in reversed(lab.hub_dump()):
+        m = rx.search(line)
+        if m:
+            return m.group(1)
+    return None
+
+
+def published_text(name):
+    rx = re.compile(rf"'{re.escape(name)}' >> '(.*)'")
     for line in reversed(lab.hub_dump()):
         m = rx.search(line)
         if m:
@@ -153,6 +167,50 @@ for key, oid, value_bytes, state in BINARY_VECTORS:
     lab.verdict(f"B {key} (0x{oid:02X}, {want})",
                 not faults, "; ".join(faults) or f"decoded {got}, published {shown}")
 
+# --- X1..Xn: text and raw -----------------------------------------------------
+# A text sensor publishes only on change, so each vector is preceded by a
+# priming value: without it a second run of this bench would find the entity
+# already holding the value and read the silence as a fault.
+PRIME = {0x53: "0178", 0x54: "0100"}  # "x", and a single zero byte
+
+for key, oid, value_bytes, shown in TEXT_VECTORS:
+    send(encoded(oid, PRIME[oid]))
+    send(encoded(oid, value_bytes))
+    kind = "text" if oid == 0x53 else "raw"
+    seen = lab.hub_grep(rf"{PROBE_TEXT}: {kind} 0x{oid:02X}#1: \d+ bytes")
+    got = published_text(f"P {key}")
+    faults = []
+    if not seen:
+        faults.append("not decoded")
+    if got != shown:
+        faults.append(f"published {got!r}, expected {shown!r}")
+    lab.verdict(f"X {key} (0x{oid:02X}, {shown})",
+                not faults, "; ".join(faults) or f"published {got!r}")
+
+# --- X+1: the same text again does not republish ------------------------------
+# The property the priming above relies on, asserted rather than assumed.
+NAMED = encoded(0x53, "0A6C61622D73656E736F72")  # "lab-sensor"
+send(encoded(0x53, "0178"))  # leave the entity holding something else
+lab.hub_clear()
+lab.tx(lab.WEB_A, lab.payload(PROBE, next_pid(), NAMED))
+lab.settle(1.2)
+before = len(lab.hub_grep(r"'P text' >> "))
+lab.tx(lab.WEB_A, lab.payload(PROBE, next_pid(), NAMED))
+lab.settle(1.2)
+after = len(lab.hub_grep(r"'P text' >> "))
+lab.verdict("X a changed text publishes once, the same string again does not",
+            before == 1 and after == 1,
+            f"{before} publish(es) for the new string, {after - before} for the repeat")
+
+# --- X+2: a second text object is instance 2 ----------------------------------
+send(encoded(0x53, "0161") + encoded(0x53, "0162"))  # prime both: "a", "b"
+send(encoded(0x53, "0178") + encoded(0x53, "0179"))
+first = published_text("P text")
+second = published_text("P text 2")
+lab.verdict("X index: the second text object feeds the index-2 sensor",
+            first == "x" and second == "y",
+            f"index 1 got {first!r}, index 2 got {second!r} (expected 'x' and 'y')")
+
 # --- T+1: several types in one frame ------------------------------------------
 # A real node sends more than one measurement per broadcast, and the objects are
 # read in one pass over a shared buffer - a per-object bug that a single-object
@@ -188,11 +246,11 @@ lab.verdict("T measurements and a binary object in one payload",
             f"temperature {temp}, motion {motion}, humidity {hum}")
 
 # --- T+3: an object nobody mapped ---------------------------------------------
-# 0x54 is a raw blob: the library knows it, no platform maps it. It has to be
-# read and passed over, not treated as a fault - an unmapped object is a sender
-# doing something this receiver was not configured for, and the rest of the
-# frame is still good.
-send(encoded(0x54, "02AABB") + encoded(0x02, "2909"))
+# 0xF0 is a device type id: the library knows it, no platform maps it to an
+# entity. It has to be read and passed over, not treated as a fault - an
+# unmapped object is a sender doing something this receiver was not configured
+# for, and the rest of the frame is still good.
+send(encoded(0xF0, "3412") + encoded(0x02, "2909"))
 noise = lab.hub_grep(r"malformed BTHome payload")
 temp, _ = published("temperature")
 lab.verdict("T an unmapped but known object is skipped, not faulted",
