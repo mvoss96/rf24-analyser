@@ -20,15 +20,27 @@ static uint8_t crc8(const uint8_t *data, uint8_t len) {
 
 // --- Register-level RX -------------------------------------------------------
 //
-// The RF24 library's available()/getDynamicPayloadSize()/read() sequence hands
-// out every frame twice on these dongles: the second copy carries the previous
-// burst's payload, and when the two differ in length it comes out read with the
-// wrong width. Measured against an ESP32 receiving the same traffic, which sees
-// each frame exactly once - and that receiver issues the very same chip
-// commands, just not through the library. Static 32-byte payloads (which skip
-// R_RX_PL_WID entirely) are also clean. So the chip is fine and the sequence is
-// fine; what is not is the library's bookkeeping around it. Talking to the
-// registers directly is shorter than working out which part.
+// These dongles hand out every payload shorter than 32 bytes twice: the second
+// copy carries an earlier payload, and when the two differ in length it comes
+// out read with the wrong width. Measured, not guessed - and not the library
+// either, which an earlier version of this comment claimed:
+//
+//   * Two dongles hearing the same single click report *different* stale
+//     payloads for it, so it is made up locally, not on the air.
+//   * It survives reading the full 32-byte slot instead of the reported width,
+//     never asking for the width at all, asking for it after the read, setting
+//     RX_PW_Pn to the true length, and a datasheet-legal dynamic-payload
+//     configuration (auto-ack on the open pipe). None of those is the cause.
+//   * A payload that fills the 32-byte slot comes out exactly once. One that
+//     does not leaves the FIFO a payload out of step, and the next arrival is
+//     then announced twice.
+//   * Stale bytes live in the chip's FIFO RAM and outlive an ATmega reset, a
+//     firmware upload and any number of FLUSH_RX calls - flushing resets
+//     pointers, it does not clear RAM. A frame from ten minutes ago can
+//     therefore surface at any time.
+//
+// Talking to the registers directly is what makes the one measure that does
+// work - a flush after every single payload - expressible at all.
 namespace {
 constexpr uint8_t CMD_R_REGISTER = 0x00;
 constexpr uint8_t CMD_R_RX_PL_WID = 0x60;
@@ -276,13 +288,22 @@ void RadioController::drainRx() {
   }
 
   for (uint8_t guard = 0; guard < 8; guard++) {
-    if (regRead(REG_FIFO_STATUS) & FIFO_RX_EMPTY) {
+    const uint8_t fifoPre = regRead(REG_FIFO_STATUS);
+    if (fifoPre & FIFO_RX_EMPTY) {
       break;
     }
+    rxPass_++;
     // RX_P_NO in STATUS names the pipe of the payload at the FIFO top.
-    const uint8_t pipe = (regRead(REG_STATUS) >> 1) & 0x07;
-    uint8_t len = cfg_.dpl ? payloadWidth() : cfg_.plSize;
-    if (len == 0 || len > 32) {
+    const uint8_t statusPre = regRead(REG_STATUS);
+    const uint8_t pipe = (statusPre >> 1) & 0x07;
+    // Where the length comes from is the experiment: before the payload read
+    // (every mode that ships), after it, or not asked for at all.
+    uint8_t len;
+    if (!cfg_.dpl)                    len = cfg_.plSize;
+    else if (rxMode_ == RX_NOWID)     len = 32;
+    else if (rxMode_ == RX_WIDLATE)   len = 0;   // filled in after the read
+    else                              len = payloadWidth();
+    if (rxMode_ != RX_WIDLATE && (len == 0 || len > 32)) {
       // Say so. This used to discard silently, which in a tool whose whole
       // purpose is to show what arrives is the worst possible failure mode.
       Serial.print(F("WARN bad payload length "));
@@ -292,22 +313,66 @@ void RadioController::drainRx() {
       spiCommand(CMD_FLUSH_RX); // corrupt dynamic length: discard to unstick the FIFO
       break;
     }
-    // Clock the whole slot, then reset the FIFO. A read of the reported width
-    // is not always a read of the whole payload - the width lags - and the
-    // bytes left behind shift everything after them, which is where the
-    // duplicate frames and the wrong lengths both come from. Taking one
-    // payload per pass and flushing costs the copies queued behind it, but a
-    // sender repeats every event several times anyway, and a lost copy is
-    // worth far more than an invented frame.
+    // Clock the whole slot, then reset the FIFO. The flush is the part that
+    // matters: it is the only thing measured to put the FIFO back in step, and
+    // with it a mix of 8, 16 and 32-byte payloads comes out exactly as sent.
+    // Reading the whole slot without flushing still duplicates - so does every
+    // other read strategy tried (see the note above). Taking one payload per
+    // pass and flushing costs the copies queued behind it, but a sender repeats
+    // every event several times anyway, and a lost copy is worth far more than
+    // an invented frame.
     uint8_t buf[32];
-    readPayload(buf, 32);
+    readPayload(buf, rxMode_ == RX_WIDTH ? len : 32);
+    if (rxMode_ == RX_WIDLATE) {
+      len = cfg_.dpl ? payloadWidth() : cfg_.plSize;
+      if (len == 0 || len > 32) {
+        Serial.print(F("WARN bad payload length "));
+        Serial.print(len);
+        Serial.print(F(" on p"));
+        Serial.println(pipe);
+        spiCommand(CMD_FLUSH_RX);
+        break;
+      }
+    }
+    // Snapshots, not prints: printing here would put four milliseconds of serial
+    // between the read and the flush, which is the interval under suspicion.
+    const uint8_t fifoMid = rxDbg_ ? regRead(REG_FIFO_STATUS) : 0;
+    // Not in RX_NOWID: the whole point of that mode is that R_RX_PL_WID is never
+    // issued, and a trace that issues it anyway measures the wrong firmware.
+    const uint8_t widthMid =
+        (rxDbg_ && cfg_.dpl && rxMode_ != RX_NOWID) ? payloadWidth() : 0;
     regWrite(REG_STATUS, STATUS_RX_DR);
-    spiCommand(CMD_FLUSH_RX);
+    if (rxMode_ == RX_FLUSH) spiCommand(CMD_FLUSH_RX);
+    const uint8_t fifoPost = rxDbg_ ? regRead(REG_FIFO_STATUS) : 0;
     // Stamped where the frame leaves the FIFO, which is the earliest moment the
     // firmware knows of it. Host arrival times cannot resolve the few
     // milliseconds between a sender's repeats: they carry the serial transfer
     // and the host's scheduling on top.
     uint32_t stamp = millis();
+
+    if (rxDbg_) {
+      // One line per pass, whether or not the frame itself is printed: the
+      // question a trace answers is what the FIFO did, and a frame suppressed
+      // by the repeat filter went through the same FIFO as any other.
+      Serial.print(F("DBG n="));
+      Serial.print(rxPass_);
+      Serial.print(F(" mode="));
+      Serial.print(rxMode_);
+      Serial.print(F(" p"));
+      Serial.print(pipe);
+      Serial.print(F(" w="));
+      Serial.print(len);
+      Serial.print(F(" w2="));
+      Serial.print(widthMid);
+      Serial.print(F(" st="));
+      Serial.print(statusPre, HEX);
+      Serial.print(F(" fifo="));
+      Serial.print(fifoPre, HEX);
+      Serial.print('/');
+      Serial.print(fifoMid, HEX);
+      Serial.print('/');
+      Serial.println(fifoPost, HEX);
+    }
 
     if (isRepeat(buf, len) && !showRepeats_) continue;
 
@@ -503,6 +568,31 @@ void RadioController::printWiring() const {
   Serial.print(F(" led_tx=")); printPin(hw_.ledTx);
 }
 
+// The registers worth comparing between two chips, by name, because "07=0E"
+// tells you nothing you can act on. Addresses are left out: they are multi-byte
+// reads and `info` already prints what the pipes were told to listen on.
+void RadioController::printRegs() {
+  static const struct { uint8_t reg; const char *name; } kRegs[] = {
+      {0x00, "CONFIG"},     {0x01, "EN_AA"},      {0x02, "EN_RXADDR"},
+      {0x03, "SETUP_AW"},   {0x04, "SETUP_RETR"}, {0x05, "RF_CH"},
+      {0x06, "RF_SETUP"},   {0x07, "STATUS"},     {0x08, "OBSERVE_TX"},
+      {0x09, "RPD"},        {0x11, "RX_PW_P0"},   {0x12, "RX_PW_P1"},
+      {0x13, "RX_PW_P2"},   {0x14, "RX_PW_P3"},   {0x15, "RX_PW_P4"},
+      {0x16, "RX_PW_P5"},   {0x17, "FIFO_STATUS"},{0x1C, "DYNPD"},
+      {0x1D, "FEATURE"},
+  };
+  Serial.println(F("regs:"));
+  for (uint8_t i = 0; i < sizeof(kRegs) / sizeof(kRegs[0]); i++) {
+    const uint8_t value = regRead(kRegs[i].reg);
+    Serial.print(F("  "));
+    Serial.print(kRegs[i].name);
+    Serial.print('=');
+    if (value < 0x10) Serial.print('0');
+    Serial.println(value, HEX);
+  }
+  Serial.println(F("OK"));
+}
+
 void RadioController::printInfo() {
   Serial.println(F("info:"));
   Serial.print(F("  state="));   Serial.println(stateName());
@@ -516,6 +606,8 @@ void RadioController::printInfo() {
   Serial.print(F("  "));         printWiring();
   Serial.println();
   Serial.print(F("  repeats=")); Serial.println(showRepeats_ ? 1 : 0);
+  Serial.print(F("  rxmode="));  Serial.println(rxMode_);
+  Serial.print(F("  rxdbg="));   Serial.println(rxDbg_ ? 1 : 0);
 
   if (!configured_) {
     Serial.println(F("OK"));

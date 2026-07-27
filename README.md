@@ -115,6 +115,10 @@ NRF24SNIFFER fw=3.0.0 api=3 state=nohw hw=failed ce=8 csn=10 irq=2 led_rx=8 led_
 | `scan off` | stop a live scan and resume whatever was running |
 | `repeats <0\|1>` | `0` suppresses identical back-to-back frames |
 | `tx <addr> <hex...> [ack\|noack] [x<n>] [gap=<ms>]` | transmit a payload (default `noack`), optionally `n` copies `gap` ms apart |
+| `rxmode <0..4>` | how a payload is taken out of the RX FIFO — diagnosis only, see below |
+| `rxdbg <0\|1>` | one `DBG` line per drain pass with the FIFO registers |
+| `regs` | dump the chip's registers by name |
+| `reg <addr> [value]` | read or write one register, bypassing the configuration |
 | `help` | usage summary |
 
 **`hwset`** — `ce` and `csn` are mandatory, the rest default to `none`. Pins are
@@ -129,6 +133,131 @@ Every successful `hwset` is **stored in EEPROM** and restored on the next boot,
 so a dongle keeps working without the host restating its wiring. This is the one
 piece of remembered state, and it never becomes hidden state: the greeting spells
 the pins out on every connect. `hwclear` returns the dongle to a virgin state.
+
+### Duplicate frames, and the `rxmode` switch
+
+These dongles hand out every payload **shorter than 32 bytes twice**, the second
+copy carrying an earlier payload. `rxmode` exists to measure that rather than
+argue about it; `2` is the default and the only setting anyone should run.
+
+| Mode | Read strategy | Result against a real sender |
+|---|---|---|
+| `0` | read the width `R_RX_PL_WID` reports | duplicates, plus misalignment: `len=3` frames, payloads shifted or stitched together |
+| `1` | read the whole 32-byte slot | one stale frame per burst |
+| `2` | read the whole slot, then `FLUSH_RX` | **clean**, verified over a mix of 8, 16 and 32-byte payloads |
+| `3` | never ask for the width, report 32 bytes | one stale frame per burst |
+| `4` | ask for the width after reading the payload | one stale frame per burst |
+
+> **Not settled — read this first.** Two things to hold on to.
+>
+> **Dongle-to-dongle links die on channels 99-101, and only there.** Twelve
+> frames, 15 ms apart, per channel:
+>
+> | ch | 96 | 97 | 98 | **99** | **100** | **101** | 102 | 103 | 104 |
+> |---|---|---|---|---|---|---|---|---|---|
+> | intact | 12/12 | 12/12 | 12/12 | **1/12** | **0/12** | **0/12** | 11/12 | 12/12 | 12/12 |
+>
+> It is not the channel as such: the RotRemote reaches the same dongle on channel
+> 100 perfectly well, and a dongle transmitting on channel 100 reaches an ESP32
+> receiver perfectly well. It is the two dongles together - both directions,
+> either address - and maximum transmit power does not recover it (channel 99
+> does recover that way, channel 100 does not). The carrier detector, sampled per
+> channel at 250 kbps, reports nothing above its -64 dBm threshold anywhere, so
+> whatever this is, it is weak. Cause unknown. Consequence: **measurements between
+> two dongles must not be taken on 99-101**.
+>
+> Everything below was measured on channel 100, i.e. across that broken link.
+> Repeated on **channel 90**, with
+> nothing but two dongles on the air, the default configuration produced **no
+> stale frames at all**: 18 payloads, 18 correct. Same firmware,
+> same read strategy, same 16-byte payloads. So the effect needs something else
+> on the channel, and the "made up locally" conclusion below does not survive
+> that. A device answering on the same address is the obvious suspect: a receiver
+> whose `EN_AA` is set answers frames flagged NO_ACK on these chips (an
+> acknowledgement was captured as a 1-byte frame), and an acknowledgement
+> carrying a payload would arrive as exactly this - a complete, unshifted older
+> payload, queued right behind the real frame, which is also why flushing hides
+> it. Deciding it needs the lamps powered down, which has not been done.
+
+**And the reason a sniffer suffers from it at all**: dynamic payload length is
+gated on auto-acknowledge per pipe, which a sniffer cannot have - answering the
+traffic it is supposed to observe is the one thing it must not do. Demonstrated on
+an ESP32 receiving the same frames, minutes apart on one device: with auto-ack
+enabled on its pipe, every click produced only its own copies; with `EN_AA=0` the
+same device started reporting stale payloads immediately, including a test payload
+from minutes earlier. So this dongle's configuration is permanently the one the
+chip mishandles, and the flush is how a passive receiver lives with it.
+
+What the measurements showed:
+
+- Two dongles hearing the same single click sometimes report *different* stale
+  payloads for it. That was read as proof the frame was invented locally; with
+  two lamps able to answer, two different answers explain it just as well.
+  Three senders (a RotRemote, the other dongle, and `tx` bursts) all provoke it.
+- It is **not the read width**, not `R_RX_PL_WID` (modes 3 and 4), not `RX_PW_Pn`,
+  and not the dynamic-payload configuration — enabling auto-ack on the open pipe,
+  which is what the datasheet asks for, changes nothing.
+- A payload that **fills** the 32-byte slot comes out exactly once. A shorter one
+  leaves the FIFO a payload out of step, and the next arrival is announced twice.
+- Stale bytes live in the **chip's FIFO RAM** and outlive an ATmega reset, a
+  firmware upload and any number of `FLUSH_RX` calls — flushing resets pointers,
+  it does not clear RAM. A frame from ten minutes ago can surface at any time, so
+  a duplicate hunt has to start from a known state or it measures history.
+- The flush after **every single payload** is the only measure that works, and it
+  is close to free. Measured over four `x8 gap=0` bursts each: mode `2` delivers
+  4 of 8 copies every time, mode `1` without any flush delivers 4–5 (and pays for
+  it in phantoms). So a back-to-back burst loses copies **in the chip**, not in
+  the flush — about one copy in eight is down to flushing. From `gap=5` ms upward
+  mode `2` delivers every copy.
+- Collecting the whole FIFO before flushing once, instead of flushing per
+  payload, was built and measured: **no gain at all**, 4 of 8 like mode `2`. The
+  copies do not queue up, because they arrive while the previous frame is still
+  being printed, and by then the flush has already happened. Not worth a second
+  code path, so it is not in the firmware — recorded here so it is not
+  re-invented.
+
+Reproducing it takes no user and no remote: point one dongle at another, set the
+listener to `rxmode 1`, and send single 16-byte payloads a second apart. Every
+one of them is reported twice, the second time as the payload before it.
+
+An ESP32 with its own driver, listening to the same frames, reports each of them
+exactly once — which is what makes this a property of these dongles rather than
+of the traffic.
+
+#### Where it probably comes from
+
+The modules may be **Si24R1** rather than genuine nRF24L01+ — a clone that is
+routinely sold under the Nordic part number. The one software test on offer for
+this (writing bit 0 of `RF_SETUP`, which genuine silicon is said to ignore;
+[nRF24/RF24#603](https://github.com/nRF24/RF24/issues/603)) calls **every** module
+here a clone, including the ESP32's — and that one never duplicates a frame. So
+the test does not discriminate, and the chip identity is still open; only the
+marking or a current measurement will settle it. Its known defect fits, though: it
+"got the ACK bit inverted (following an error in the datasheet), so it's
+incompatible with the real nRF24L01+ (and good clones) in ESB mode"
+([MySensors forum](https://forum.mysensors.org/topic/1153/we-are-mostly-using-fake-nrf24l01-s-but-worse-fakes-are-emerging)),
+and the bit in question sits in the packet control field right next to the
+payload-length field that dynamic payloads depend on. Libraries carry
+accommodations specifically for it — CircuitPython's `allow_ask_no_ack` exists
+"only for the Si24R1 chinese clone". This has **not** been confirmed against the
+chip marking here; it is the best available explanation, not a verified fact.
+
+Everything the chip's configuration space offers was tried against it, with the
+listener on `rxmode 1` so any stale frame shows. None of it is a fix:
+
+| Change | Result |
+|---|---|
+| auto-ack on the open pipe (`EN_AA`), `DYNPD` narrowed to it | stale frame unchanged |
+| `EN_ACK_PAY` added, i.e. Nordic's own recipe for dynamic payloads without ack (`DYNPD` + `EN_DPL` + `EN_ACK_PAY` + `EN_DYN_ACK`, [DevZone](https://devzone.nordicsemi.com/f/nordic-q-a/1575/nrf24l01-dynamic-payload-configuration-without-ack)) | stale frame unchanged |
+| `EN_DPL` alone, without `EN_DYN_ACK` | stale frame unchanged |
+| `RX_PW_Pn` set to the true payload length | stale frame unchanged |
+| sender transmits **without** the NO_ACK bit | stale frames gone — but half the frames go missing, and the rest arrive with flipped bytes |
+| same, plus auto-ack on the receiving pipe | stale frames gone — link acknowledges, yet payload bytes still arrive corrupted |
+| receiver without dynamic payloads (`dpl=0 plsize=16`) | nothing is received at all: dynamic payloads have to match on both sides |
+
+The two variants that do stop the stale frames break reception instead, and both
+need the *sender* changed — which is not on offer when the sender is somebody's
+remote control. That leaves the flush.
 
 ### The CE self-test
 

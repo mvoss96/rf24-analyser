@@ -13,5 +13,7 @@
 // it leaves the RX FIFO. Not additive: a host that does not know the field
 // would try to read it as payload hex and drop the frame, so the version has
 // to move with it.
-#define FW_VERSION "3.3.0"
+// 3.4.0 adds rxmode/rxdbg/regs for the RX-FIFO diagnosis. Additive, and the
+// default rxmode is what 3.3.0 did unconditionally, so api stayed at 4.
+#define FW_VERSION "3.4.0"
 #define API_VERSION 4
