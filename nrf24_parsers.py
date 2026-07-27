@@ -397,42 +397,75 @@ class BTHomeParser(Parser):
     # -- internals --
 
     @staticmethod
-    def _split(data):
+    def _data_end(objects):
+        """Where the sender's own object data ends.
+
+        A sender on a fixed payload size has to fill the slot to the configured
+        length, and 0xFF is the byte it fills with - BTHome defines no object
+        with that id, so where an object id is expected it is unambiguously
+        padding. Without recognising it every padded frame would be flagged as
+        malformed, which would make the flag useless for the frames that really
+        are.
+
+        Found by walking the objects forward, not by trimming 0xFF off the end.
+        The difference is not cosmetic: BTHome is little endian, so a signed
+        16-bit measurement between -0.01 and -2.56 ends in 0xFF. A temperature
+        of -1.00 C is `02 9C FF`, and trimming from the end eats its high byte
+        and leaves a truncated object - so the sniffer showed a malformed frame
+        for a reading that was perfectly fine, and did so precisely for the
+        values around freezing that one looks at a sensor for. 0xFF is padding
+        in the id position and data everywhere else.
+
+        Object lengths come from bthome-ble's own table, for the same reason the
+        objects themselves are parsed by bthome-ble: a hand-maintained copy
+        drifts from the spec.
+        """
+        from bthome_ble.const import MEAS_TYPES
+
+        pos = 0
+        while pos < len(objects):
+            meas = MEAS_TYPES.get(objects[pos])
+            if meas is None:
+                break  # padding, or an id no standard receiver knows either
+            following = objects[pos + 1] if pos + 1 < len(objects) else 0
+            if meas.data_format in ("string", "raw"):
+                size = 1 + following  # [length][bytes...]
+            elif meas.data_format == "command":
+                size = 2 + following  # [argument count][opcode][arguments...]
+            else:
+                size = meas.data_length
+            if pos + 1 + size > len(objects):
+                break  # announces more bytes than the frame holds
+            pos += 1 + size
+        return pos
+
+    @classmethod
+    def _split(cls, data):
         """Returns (sender, device_info, objects) or None if not a BTHome frame.
 
-        Trailing 0xFF is dropped from the objects. A sender on a fixed payload
-        size has to fill the slot to the configured length, and 0xFF is the byte
-        it fills with - BTHome defines no object with that id, so it cannot be
-        confused with data the sender meant to send. Without this every padded
-        frame would be flagged as malformed, which would make the flag useless
-        for the frames that really are.
-
-        The count is kept rather than swallowed: padding is a property of the
-        transport, and a sniffer that quietly hides bytes it decided were
-        uninteresting is not doing its job. It appears in detail() and, when it
-        looks wrong, in the flag.
+        The objects stop where the sender's data stops; what follows is left to
+        _trailing(). Padding is a property of the transport, and a sniffer that
+        quietly hides bytes it decided were uninteresting is not doing its job.
         """
         if len(data) < 7:
             return None
         if (data[4], data[5]) != BTHOME_UUID:
             return None
         objects = data[7:]
-        end = len(objects)
-        while end > 0 and objects[end - 1] == 0xFF:
-            end -= 1
-        return data[0:4], data[6], objects[:end]
+        return data[0:4], data[6], objects[:cls._data_end(objects)]
 
-    @staticmethod
-    def _padding(data):
-        """How many trailing 0xFF bytes were stripped, 0 if none."""
+    @classmethod
+    def _trailing(cls, data):
+        """The bytes after the last object, empty if the frame ends with it.
+
+        All 0xFF means a fixed-size slot was filled up. Anything else is a frame
+        that was read too long, or an object the walk could not get past - both
+        worth saying out loud rather than folding into a padding count.
+        """
         if len(data) < 7:
-            return 0
-        count = 0
-        for byte in reversed(data[7:]):
-            if byte != 0xFF:
-                break
-            count += 1
-        return count
+            return b""
+        objects = data[7:]
+        return bytes(objects[cls._data_end(objects):])
 
     @staticmethod
     def _parse_objects(payload):
@@ -614,12 +647,18 @@ class BTHomeParser(Parser):
             shown = [r for r in records
                      if r[0] >= logging.WARNING
                      or any(m in r[1].lower() for m in self._MALFORMED)]
-        padding = self._padding(data)
-        if padding:
+        trailing = self._trailing(data)
+        if trailing:
             # Said out loud rather than silently dropped: on a fixed-size pipe
             # this is the sender filling the slot, but the same bytes on a
             # dynamic pipe would mean the frame was read too long.
-            lines.append(f"  padding   : {padding} byte{'s' if padding != 1 else ''} of FF")
+            count = len(trailing)
+            plural = "s" if count != 1 else ""
+            if all(byte == 0xFF for byte in trailing):
+                lines.append(f"  padding   : {count} byte{plural} of FF")
+            else:
+                lines.append(f"  !! {count} byte{plural} after the last object are not "
+                             f"padding: {' '.join(f'{b:02X}' for b in trailing)}")
         note = self._malformed(records)
         if note is not None:
             lines.append(f"  !! {note}")
