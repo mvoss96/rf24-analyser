@@ -15,6 +15,11 @@
   <button id="connect" class="btn primary">Connect</button>
 
   <span id="state" class="pill idle"><i class="dot"></i><span id="state-text">not connected</span></span>
+
+  <span class="spacer"></span>
+  <!-- Which build is answering. Turns into a warning when the source on disk is
+       newer than the process serving it, because Python will not reload it. -->
+  <span id="build" class="build dim" title="running build"></span>
 </header>
 
 <section class="toolbar">
