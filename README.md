@@ -620,6 +620,13 @@ decoder objected to are drawn in red. The log and the free-text command line sha
 their own tab. A tab opened later is brought up to date: the server replays the
 greeting, the current state and the retained frames.
 
+In the **scan chart** each of the 126 bars is a couple of pixels wide, so
+pointing at one reads out which channel it is — `ch 30 · 2430 MHz · 6/64` — in
+the header beside the summary, immediately and without covering the chart. The
+native tooltip says the same, but only after a second's hesitation and only
+until the pointer moves, which is no use for sweeping along the band looking for
+the busy one.
+
 ### The stream is resumable, and that is not decoration
 
 Commands go up over HTTP and answers come down over Server-Sent Events. The

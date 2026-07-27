@@ -441,7 +441,22 @@ pre.log { padding-bottom: 4px; }
   border-radius: 1px 1px 0 0;
 }
 .scan-bar.here { background: var(--warn); opacity: 1; }
-.scan-bar:hover { opacity: 1; }
+/* A bar is two pixels wide, so hovering has to be unmistakable about which one
+   it caught - the readout in the header names a channel, and this says which
+   bar that number belongs to. */
+.scan-bar:hover { opacity: 1; outline: 1px solid var(--text); outline-offset: 1px; }
+
+/* What the pointer is over. Fixed width so 126 bars' worth of movement does not
+   shove the rest of the header around; monospaced so the digits do not dance. */
+.scan-hover {
+  flex: 0 0 auto;
+  min-width: 25ch;   /* "ch 125 · 2525 MHz · 64/64" - the widest common reading */
+  text-align: right;
+  font-family: var(--mono);
+  font-size: 11px;
+  color: var(--text);
+  white-space: nowrap;
+}
 
 .check { display: inline-flex; align-items: center; gap: 5px; font-size: 12px; color: var(--text-dim); }
 
