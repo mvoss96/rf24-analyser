@@ -614,6 +614,33 @@ as a second decoder that shares nothing with BTHome, with no edit anywhere else.
 It was reconstructed from `archive/smart-home-nrf` (`RFcomm/*.h` and
 `nrf24Smart/message.py`) and is checked against those classes.
 
+### Watching a fixed-payload sender
+
+A sender on a fixed payload size fills the unused tail of every frame, and the
+BTHome senders here fill it with `0xFF` — an object id BTHome does not define, so
+it cannot be mistaken for data. The decoder drops that tail and says how much it
+dropped, rather than hiding it:
+
+```
+  Button    : press
+  padding   : 16 bytes of FF
+```
+
+Without that, every padded frame would trip the "objects and payload length
+disagree" flag, which would make the flag useless for the frames that really are
+malformed. It is reported rather than swallowed because the same bytes on a
+*dynamic* sender would mean something quite different — that the frame was read
+too long.
+
+To receive such a sender at all, the radio has to be configured for it: `dpl=0
+plsize=32`. Both ends must agree — a receiver on a fixed size hears **nothing**
+from a sender using dynamic length, and the other way round.
+
+**Limitation**: `dpl` and `plsize` are per-radio here, while the chip has them
+per pipe (`DYNPD`, `RX_PW_Pn`). A receiver can therefore serve dynamic and fixed
+senders at once — the ESPHome receiver in this ecosystem does — but this sniffer
+watches one or the other, not both in one session.
+
 ### NRF24Smart, and what the frame does not say
 
 Three packet shapes share one `id, uuid[4], msg_type` header:
