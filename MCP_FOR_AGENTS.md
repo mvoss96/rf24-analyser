@@ -8,14 +8,14 @@ capture, configure and transmit through the same dongle.
 
 ## Prerequisite
 
-The web UI must be running: `C:\Repos\tools\nrf24-sniffer\start.cmd`. If any tool
+The web UI must be running: `C:\Repos\tools\nrf24-analyser\start.cmd`. If any tool
 returns `cannot reach the analyser web UI`, it is not running — ask the human to
 start it. `nrf24_state()` is the cheapest way to check.
 
 ## Register the MCP server (once, in the consuming project)
 
 ```bash
-claude mcp add-json nrf24 "{\"command\":\"C:/Repos/tools/nrf24-sniffer/.venv/Scripts/python.exe\",\"args\":[\"C:/Repos/tools/nrf24-sniffer/nrf24_mcp.py\"]}"
+claude mcp add-json nrf24 "{\"command\":\"C:/Repos/tools/nrf24-analyser/.venv/Scripts/python.exe\",\"args\":[\"C:/Repos/tools/nrf24-analyser/nrf24_mcp.py\"]}"
 ```
 
 Or copy the `mcpServers` entry from

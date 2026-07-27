@@ -647,7 +647,7 @@ Start the web UI (`start.cmd`), then register the MCP server in the *consuming*
 session — the copy in [`mcp.example.json`](mcp.example.json), or:
 
 ```bash
-claude mcp add-json nrf24 "{\"command\":\"C:/Repos/tools/nrf24-sniffer/.venv/Scripts/python.exe\",\"args\":[\"C:/Repos/tools/nrf24-sniffer/nrf24_mcp.py\"]}"
+claude mcp add-json nrf24 "{\"command\":\"C:/Repos/tools/nrf24-analyser/.venv/Scripts/python.exe\",\"args\":[\"C:/Repos/tools/nrf24-analyser/nrf24_mcp.py\"]}"
 ```
 
 | Tool | What it does |

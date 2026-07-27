@@ -23,8 +23,8 @@ Tools:
 Register it in the consuming session's MCP config, e.g.:
 
     {"mcpServers": {"nrf24": {
-        "command": "C:/Repos/tools/nrf24-sniffer/.venv/Scripts/python.exe",
-        "args": ["C:/Repos/tools/nrf24-sniffer/nrf24_mcp.py"]}}}
+        "command": "C:/Repos/tools/nrf24-analyser/.venv/Scripts/python.exe",
+        "args": ["C:/Repos/tools/nrf24-analyser/nrf24_mcp.py"]}}}
 
 Point it elsewhere with NRF24_WEB_URL (default http://127.0.0.1:8724).
 """
