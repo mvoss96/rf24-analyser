@@ -77,11 +77,13 @@ GREETING_ASK = 2.0
 GREETING_TIMEOUT = 4.5
 
 # How often to ask the dongle what it is doing while it is connected. Every
-# command this process sends already triggers one, so the heartbeat only exists
-# for the configurations that never came through here at all - the MCP tools,
-# bench/*.py, a curl on /api/command from another shell. Without it the display
-# would keep showing the last thing this process happened to witness, which is
-# exactly how a page ended up claiming ch100 while the dongle sat on 90.
+# command sent from here already triggers one, and the MCP tools and any curl go
+# through /api/command, so this is not the main path - it is the bound on how
+# wrong the display can be when the assumption behind that sentence does not
+# hold. It puts a ceiling of ten seconds on any divergence whose cause nobody
+# anticipated, which is the only kind that has ever actually bitten: what made a
+# page claim ch100 against a dongle on 90 was precisely a state nothing thought
+# to publish.
 INFO_HEARTBEAT = 10.0
 
 # Everything else this process sends may change what the dongle is doing, so it
