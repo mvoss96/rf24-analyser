@@ -3,18 +3,29 @@
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
-<title>nrf24-sniffer</title>
+<title>nRF24 Analyser</title>
 <link rel="stylesheet" href="/app.css">
 </head>
 <body>
 
 <header class="topbar">
-  <span class="brand">nrf24<span class="dim">-sniffer</span></span>
+  <span class="brand">nRF24<span class="dim"> Analyser</span></span>
 
+  <!-- One of the two is shown at a time: the dropdown chooses a port to open,
+       the text says which one is open. A dropdown cannot do the second job -
+       its value is whatever was last selected in this tab. -->
   <select id="port" class="control" aria-label="Serial port"></select>
+  <span id="port-text" class="port" hidden></span>
   <button id="connect" class="btn primary">Connect</button>
 
   <span id="state" class="pill idle"><i class="dot"></i><span id="state-text">not connected</span></span>
+
+  <span class="spacer"></span>
+  <!-- Which build is answering, at both ends of the serial link: the dongle's
+       firmware and this server's. Both turn into warnings on their own terms -
+       an api the ui does not speak, and a source file newer than the process. -->
+  <span id="fw" class="build dim" hidden></span>
+  <span id="build" class="build dim" title="running build"></span>
 </header>
 
 <section class="toolbar">
@@ -147,7 +158,11 @@
     <footer class="dialog-foot">
       <button class="btn ghost small needs-link" data-cmd="hwclear" type="button">Forget stored wiring</button>
       <span class="spacer"></span>
+      <!-- Closing discards: these fields show the dongle's configuration, and
+           the only way to change them is to change the dongle. -->
       <button class="btn">Close</button>
+      <button id="apply" class="btn primary needs-link" type="button"
+              title="Write this to the dongle: stop, hwset, listen">Apply</button>
     </footer>
   </form>
 </dialog>

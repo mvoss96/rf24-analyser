@@ -15,5 +15,19 @@
 // to move with it.
 // 3.4.0 adds rxmode/rxdbg/regs for the RX-FIFO diagnosis. Additive, and the
 // default rxmode is what 3.3.0 did unconditionally, so api stayed at 4.
-#define FW_VERSION "3.4.0"
-#define API_VERSION 4
+//
+// 3.5.0 makes `listen` and `hwset` acknowledge with the state they left behind
+// instead of a bare OK, in the same key=value grammar `info` uses - so a host
+// parses one thing, and a setting the firmware quietly changed (an irq pin that
+// cannot interrupt, a chip that did not take a value) is visible in the very
+// line that reports success. Additive: the tokens come after the OK, and a host
+// that checks for OK and stops reading sees the old behaviour, so api stayed at
+// 4 and a dongle on older firmware still works with a newer host.
+// api=5 renames the greeting from NRF24SNIFFER to NRF24ANALYSER, the project
+// having been renamed. It is the one break this field cannot announce: a host
+// that does not know the new identity never recognises the line, so it never
+// reads the api= in it either. The version moves anyway, because it is the
+// record of what is and is not interchangeable - but what a host actually sees
+// against older firmware is no greeting at all, and the answer is to reflash.
+#define FW_VERSION "3.6.0"
+#define API_VERSION 5

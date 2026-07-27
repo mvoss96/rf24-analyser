@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""nrf24term - serial terminal / REPL for the nrf24-sniffer dongle.
+"""nrf24term - serial terminal / REPL for the nRF24 Analyser dongle.
 
 A reader thread prints everything the dongle emits (command replies, live RX
 lines, scan results); the main thread forwards typed lines to the dongle. Local
@@ -118,7 +118,7 @@ def reader_loop(ser, state):
             raw, buf = buf.split(b"\n", 1)
             line = raw.decode("ascii", errors="replace").rstrip("\r")
 
-            if line.startswith("NRF24SNIFFER"):
+            if line.startswith("NRF24ANALYSER"):
                 _emit(state, line)
                 api = None
                 for field in line.split():
@@ -174,7 +174,7 @@ parameters. Both are mandatory before anything is received.
 
 
 def main():
-    ap = argparse.ArgumentParser(description="Serial terminal for the nrf24-sniffer dongle.")
+    ap = argparse.ArgumentParser(description="Serial terminal for the nRF24 Analyser dongle.")
     ap.add_argument("port", help="serial port, e.g. COM18 or /dev/ttyUSB0")
     ap.add_argument("--baud", type=int, default=500000, help="baud rate (default 500000)")
     ap.add_argument("--pretty", action="store_true", help="decode RX frames as BTHome v2")

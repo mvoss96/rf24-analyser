@@ -1,4 +1,4 @@
-"""Pluggable frame decoders for the nrf24-sniffer.
+"""Pluggable frame decoders for the nRF24 Analyser.
 
 A parser turns the raw bytes of one received frame into a short summary (one
 table row) and a detailed field list. Adding a protocol means adding a Parser

@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""nrf24_mcp - an MCP server that lets another agent drive the sniffer dongle.
+"""nrf24_mcp - an MCP server that lets another agent drive the analyser dongle.
 
 It is a thin proxy over the running nrf24web.py: every tool is an HTTP call to
 that server, which is the sole owner of the serial port. That indirection is the
@@ -23,8 +23,8 @@ Tools:
 Register it in the consuming session's MCP config, e.g.:
 
     {"mcpServers": {"nrf24": {
-        "command": "C:/Repos/tools/nrf24-sniffer/.venv/Scripts/python.exe",
-        "args": ["C:/Repos/tools/nrf24-sniffer/nrf24_mcp.py"]}}}
+        "command": "C:/Repos/tools/nrf24-analyser/.venv/Scripts/python.exe",
+        "args": ["C:/Repos/tools/nrf24-analyser/nrf24_mcp.py"]}}}
 
 Point it elsewhere with NRF24_WEB_URL (default http://127.0.0.1:8724).
 """
@@ -38,7 +38,7 @@ import urllib.request
 from mcp.server.fastmcp import FastMCP
 
 BASE = os.environ.get("NRF24_WEB_URL", "http://127.0.0.1:8724").rstrip("/")
-mcp = FastMCP("nrf24-sniffer")
+mcp = FastMCP("nrf24-analyser")
 
 
 class DongleError(RuntimeError):
@@ -56,7 +56,7 @@ def _request(method, path, body=None, timeout=None):
     except urllib.error.URLError as exc:
         # The single failure that matters: the web UI is not running.
         raise DongleError(
-            f"cannot reach the sniffer web UI at {BASE} ({exc.reason}). "
+            f"cannot reach the analyser web UI at {BASE} ({exc.reason}). "
             f"Start it first with start.cmd (or python nrf24web.py)."
         ) from None
 
@@ -82,9 +82,14 @@ def _command(line, timeout=15):
 
 @mcp.tool()
 def nrf24_state() -> dict:
-    """Report what the dongle is doing: connected, listening/idle/scanning, the
-    active decoder, and the wiring it came up on. Call this first to check the
-    web UI is up and the dongle is listening before capturing."""
+    """Report what the dongle is doing: connected, on which port, which
+    firmware and command-protocol version it runs (`firmware`),
+    listening/idle/scanning, the active decoder, and `radio` - the dongle's own
+    answer about its channel, rate, crc, address width, pa level and pipe
+    addresses, with `radioAge` saying how many seconds ago it said so. Call this
+    first to check the web UI is up and the dongle is listening before capturing,
+    and again after configuring: `radio` is what the radio reports, not what was
+    asked of it, so it is the one place a silently rejected setting shows up."""
     return _request("GET", "/api/state", timeout=5)
 
 
@@ -105,7 +110,10 @@ def nrf24_configure(
     a BTHome-over-nRF24 sender (250 kbps, CRC16, 5-byte address, dynamic
     payloads). Reconfiguring affects anyone watching in the browser too.
 
-    Returns the dongle state afterwards; check that state == "listening"."""
+    Returns the dongle state afterwards; check that state == "listening" and
+    that `radio` holds the values you asked for. From firmware 3.5.0 the radio
+    reports those back off its own registers rather than echoing the request,
+    so a setting the chip did not take shows up as a difference here."""
     if not _request("GET", "/api/state", timeout=5).get("connected"):
         raise DongleError("the dongle is not connected in the web UI - connect "
                           "it there first (the port is chosen in the browser).")
@@ -220,7 +228,7 @@ def nrf24_command(line: str) -> dict:
 
 @mcp.tool()
 def nrf24_history(limit: int = 50) -> dict:
-    """Return frames the sniffer already captured, newest last.
+    """Return frames the analyser already captured, newest last.
 
     nrf24_capture only sees the window it was asked for, so a frame that
     arrived a minute ago was out of reach. This reads the retained history

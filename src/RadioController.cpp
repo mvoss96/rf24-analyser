@@ -65,6 +65,19 @@ uint8_t RadioController::regRead(uint8_t reg) {
   return value;
 }
 
+// Multi-byte read, for the address registers. The bytes come back in the order
+// they were written - RF24 writes buf[0] first and the chip returns it first -
+// so a readback prints identically to the address that was configured, without
+// anyone having to reason about which end is the LSByte.
+void RadioController::regReadBuf(uint8_t reg, uint8_t *buf, uint8_t len) {
+  SPI.beginTransaction(NRF_SPI);
+  digitalWrite(hw_.csn, LOW);
+  SPI.transfer(CMD_R_REGISTER | reg);
+  for (uint8_t i = 0; i < len; i++) buf[i] = SPI.transfer(0xFF);
+  digitalWrite(hw_.csn, HIGH);
+  SPI.endTransaction();
+}
+
 void RadioController::regWrite(uint8_t reg, uint8_t value) {
   SPI.beginTransaction(NRF_SPI);
   digitalWrite(hw_.csn, LOW);
@@ -593,6 +606,98 @@ void RadioController::printRegs() {
   Serial.println(F("OK"));
 }
 
+// The configuration the chip is holding, when that question has an answer.
+//
+// Only while listening: outside that window the registers describe the
+// library's plumbing rather than the configuration (see ConfigSource), and a
+// pipe 0 nobody asked for is exactly the kind of plausible-looking wrong value
+// that costs an afternoon. `out` starts as the firmware's own copy, so a
+// SRC_FIRMWARE answer is complete rather than empty.
+RadioController::ConfigSource RadioController::readConfig(RadioConfig &out) {
+  out = cfg_;
+  if (!hwReady_ || !configured_ || !listening_) return SRC_FIRMWARE;
+
+  const uint8_t config = regRead(0x00);          // CONFIG
+  out.crcBits = !(config & 0x08) ? 0 : ((config & 0x04) ? 16 : 8);
+  out.autoAck = regRead(0x01) != 0;              // EN_AA, all pipes together
+  const uint8_t enRx = regRead(0x02);            // EN_RXADDR
+  out.addrWidth = (uint8_t)((regRead(0x03) & 0x03) + 2);   // SETUP_AW
+  out.channel = regRead(0x05) & 0x7F;            // RF_CH
+
+  const uint8_t rf = regRead(0x06);              // RF_SETUP
+  out.rateKbps = (rf & 0x20) ? 250 : ((rf & 0x08) ? 2000 : 1000);
+  out.paLevel = (uint8_t)((rf >> 1) & 0x03);
+
+  out.dpl = (regRead(0x1D) & 0x04) && regRead(0x1C) != 0;  // FEATURE, DYNPD
+  out.plSize = regRead(0x12) & 0x3F;             // RX_PW_P1
+
+  for (uint8_t p = 0; p < 6; p++) {
+    out.pipeEn[p] = (enRx >> p) & 1;
+    // Pipes 2-5 own one byte in their register; the rest of their address is
+    // pipe 1's, which is read back here too.
+    if (out.pipeEn[p]) regReadBuf((uint8_t)(0x0A + p), out.pipeAddr[p],
+                                  p < 2 ? out.addrWidth : 1);
+  }
+  return SRC_CHIP;
+}
+
+void RadioController::printConfig(const RadioConfig &c, ConfigSource src, bool block) {
+  // The only difference between the two layouts. Same tokens, same order, so a
+  // host parses the acknowledgement and the info block with one function.
+  auto sep = [block]() { block ? Serial.print(F("\n  ")) : Serial.print(' '); };
+
+  sep(); Serial.print(F("channel=")); Serial.print(c.channel);
+  sep(); Serial.print(F("rate="));    Serial.print(c.rateKbps); Serial.print(F("kbps"));
+  sep(); Serial.print(F("crc="));     Serial.print(c.crcBits);
+  sep(); Serial.print(F("aw="));      Serial.print(c.addrWidth);
+  // Printed by name so the output matches what `listen pa=` accepts.
+  sep(); Serial.print(F("pa="));
+  switch (c.paLevel) {
+    case 0:  Serial.print(F("min"));  break;
+    case 1:  Serial.print(F("low"));  break;
+    case 2:  Serial.print(F("high")); break;
+    default: Serial.print(F("max"));  break;
+  }
+  sep(); Serial.print(F("ack="));    Serial.print(c.autoAck ? 1 : 0);
+  sep(); Serial.print(F("dpl="));    Serial.print(c.dpl ? 1 : 0);
+  sep(); Serial.print(F("plsize=")); Serial.print(c.plSize);
+  for (uint8_t p = 0; p < 6; p++) {
+    if (!c.pipeEn[p]) continue;
+    sep();
+    Serial.print(F("pipe"));
+    Serial.print(p);
+    Serial.print('=');
+    // Pipes 2-5 are configured with one byte but listen on a full address, the
+    // rest of it borrowed from pipe 1. Print what they actually listen on.
+    if (p >= 2) {
+      uint8_t effective[MAX_ADDR_WIDTH];
+      memcpy(effective, c.pipeAddr[1], c.addrWidth);
+      effective[0] = c.pipeAddr[p][0];
+      printAddr(effective, c.addrWidth);
+    } else {
+      printAddr(c.pipeAddr[p], c.addrWidth);
+    }
+  }
+  // Whether the above was measured or merely intended. A reader who cannot tell
+  // the two apart has to assume the weaker of them for both.
+  sep(); Serial.print(F("src=")); Serial.print(src == SRC_CHIP ? F("chip") : F("firmware"));
+}
+
+void RadioController::printAck() {
+  Serial.print(F(" state="));
+  Serial.print(stateName());
+  if (hwReady_) {
+    Serial.print(' ');
+    printWiring();
+  }
+  if (configured_) {
+    RadioConfig c;
+    const ConfigSource src = readConfig(c);
+    printConfig(c, src, false);
+  }
+  Serial.println();
+}
+
 void RadioController::printInfo() {
   Serial.println(F("info:"));
   Serial.print(F("  state="));   Serial.println(stateName());
@@ -607,46 +712,17 @@ void RadioController::printInfo() {
   Serial.println();
   Serial.print(F("  repeats=")); Serial.println(showRepeats_ ? 1 : 0);
   Serial.print(F("  rxmode="));  Serial.println(rxMode_);
-  Serial.print(F("  rxdbg="));   Serial.println(rxDbg_ ? 1 : 0);
+  // No newline yet: in block layout printConfig() opens each field with one, so
+  // the last line printed here is the one it continues from.
+  Serial.print(F("  rxdbg="));   Serial.print(rxDbg_ ? 1 : 0);
 
-  if (!configured_) {
-    Serial.println(F("OK"));
-    return;
+  if (configured_) {
+    RadioConfig c;
+    const ConfigSource src = readConfig(c);
+    printConfig(c, src, true);
+    Serial.print(F("\n  rx="));       Serial.print(rxCount_);
+    Serial.print(F("\n  fifofull=")); Serial.print(fifoFull_);
   }
-
-  Serial.print(F("  channel="));  Serial.println(cfg_.channel);
-  Serial.print(F("  rate="));     Serial.print(cfg_.rateKbps); Serial.println(F("kbps"));
-  Serial.print(F("  crc="));      Serial.println(cfg_.crcBits);
-  Serial.print(F("  aw="));       Serial.println(cfg_.addrWidth);
-  // Printed by name so `info` output matches what `listen pa=` accepts.
-  Serial.print(F("  pa="));
-  switch (cfg_.paLevel) {
-    case 0:  Serial.println(F("min"));  break;
-    case 1:  Serial.println(F("low"));  break;
-    case 2:  Serial.println(F("high")); break;
-    default: Serial.println(F("max"));  break;
-  }
-  Serial.print(F("  ack="));      Serial.println(cfg_.autoAck ? 1 : 0);
-  Serial.print(F("  dpl="));      Serial.println(cfg_.dpl ? 1 : 0);
-  Serial.print(F("  plsize="));   Serial.println(cfg_.plSize);
-  for (uint8_t p = 0; p < 6; p++) {
-    if (!cfg_.pipeEn[p]) continue;
-    Serial.print(F("  pipe"));
-    Serial.print(p);
-    Serial.print('=');
-    // Pipes 2-5 are configured with one byte but listen on a full address, the
-    // rest of it borrowed from pipe 1. Print what they actually listen on.
-    if (p >= 2) {
-      uint8_t effective[MAX_ADDR_WIDTH];
-      memcpy(effective, cfg_.pipeAddr[1], cfg_.addrWidth);
-      effective[0] = cfg_.pipeAddr[p][0];
-      printAddr(effective, cfg_.addrWidth);
-    } else {
-      printAddr(cfg_.pipeAddr[p], cfg_.addrWidth);
-    }
-    Serial.println();
-  }
-  Serial.print(F("  rx="));       Serial.println(rxCount_);
-  Serial.print(F("  fifofull=")); Serial.println(fifoFull_);
+  Serial.println();
   Serial.println(F("OK"));
 }

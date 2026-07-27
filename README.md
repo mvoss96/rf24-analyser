@@ -1,4 +1,4 @@
-# nrf24-sniffer
+# nRF24 Analyser
 
 A debug / sniffer tool for raw nRF24L01 traffic, built to validate and debug the
 **BTHome-over-nRF24** protocol spoken by
@@ -51,8 +51,8 @@ pio run -e nano -t upload
 ```
 
 If that ends in an avrdude sync timeout, use `-e nano_old`. Only dependency is
-`nrf24/RF24` (TMRh20), pulled automatically. Build size: **flash ~12.8 KB (42%)**,
-**RAM ~795 B (39%)**.
+`nrf24/RF24` (TMRh20) 1.6.1, pulled automatically. Build size at 3.6.0:
+**flash 17.9 KB (58%)**, **RAM 1198 B (58%)**.
 
 ## Serial protocol
 
@@ -69,7 +69,7 @@ terminal works unconfigured. Every command is answered with `OK ...` or `ERR ...
 ### Greeting and `status`
 
 ```
-NRF24SNIFFER fw=3.0.0 api=3 state=unconfigured hw=connected ce=9 csn=10 irq=2 led_rx=8 led_tx=A1 t=133 rx=0 fifofull=0
+NRF24ANALYSER fw=3.6.0 api=5 state=unconfigured hw=connected ce=9 csn=10 irq=2 led_rx=8 led_tx=A1 t=133 rx=0 fifofull=0
 ```
 
 Printed once at boot, and identically by **`status`** at any time. The greeting
@@ -96,20 +96,20 @@ than reporting them separately. When a wiring fails, the reason is stated in a
 
 ```
 WARN stored wiring: ce pin does not key the radio
-NRF24SNIFFER fw=3.0.0 api=3 state=nohw hw=failed ce=8 csn=10 irq=2 led_rx=8 led_tx=A1
+NRF24ANALYSER fw=3.6.0 api=5 state=nohw hw=failed ce=8 csn=10 irq=2 led_rx=8 led_tx=A1
 ```
 
 ### Commands
 
 | Command | Meaning |
 |---|---|
-| `hwset ce=<pin> csn=<pin> [irq=<pin\|none>] [led_rx=<pin\|none>] [led_tx=<pin\|none>]` | define the wiring, bring the radio up, store it |
+| `hwset ce=<pin> csn=<pin> [irq=<pin\|none>] [led_rx=<pin\|none>] [led_tx=<pin\|none>]` | define the wiring, bring the radio up, store it — [answers with the wiring it adopted](#acknowledgements-say-what-they-left-behind) |
 | `hwclear` | forget the stored wiring (effective on reset) |
-| `listen <k=v>...` | apply a complete radio config and start receiving |
-| `listen` | resume with the retained config |
+| `listen <k=v>...` | apply a complete radio config and start receiving — [answers with the configuration read back off the chip](#acknowledgements-say-what-they-left-behind) |
+| `listen` | resume with the retained config, and say what that was |
 | `stop` | stop receiving, keep the config |
 | `status` | the greeting line again, at any time |
-| `info` | state, wiring and configuration |
+| `info` | state, wiring and configuration, with `src=` saying whether it was read off the chip |
 | `scan [passes]` | one energy scan across all channels (default 64) |
 | `scan live [passes]` | keep scanning, one report per N sweeps (default 8) |
 | `scan off` | stop a live scan and resume whatever was running |
@@ -356,14 +356,64 @@ reconfigured for RX once after the whole burst, not between copies. A burst
 replies `OK tx sent=<k>/<n>`; the single-frame reply keeps its historic
 `sent=<0|1>` shape.
 
+### Acknowledgements say what they left behind
+
+`listen` and `hwset` do not answer with a bare `OK`. They complete it with the
+resulting state, as `key=value` tokens in the same grammar `info` uses — so a
+host parses one thing, and what the firmware *did* is in the line reporting that
+it succeeded:
+
+```
+> hwset ce=9 csn=10 irq=5 led_rx=8 led_tx=A1
+WARN irq pin 5 is not interrupt-capable, falling back to polling
+OK hw connected saved state=unconfigured ce=9 csn=10 irq=none led_rx=8 led_tx=A1
+```
+
+Two things a caller would otherwise have to know by heart are simply stated
+there: the irq pin it asked for was not taken, and `hwset` discarded the radio
+configuration. A bare `OK` made both invisible, and a host that reconstructed
+them was keeping a second copy of the firmware's rules — the copy that is right
+until someone changes the firmware.
+
+`listen` answers the same way, including the bare `listen` that resumes with the
+retained configuration, which is exactly where the caller does not know what it
+resumed with:
+
+```
+> listen
+OK listening state=listening ce=9 csn=10 irq=2 led_rx=8 led_tx=A1 channel=90 rate=250kbps crc=16 aw=5 pa=low ack=0 dpl=0 plsize=32 pipe1=43:54:48:4D:45 src=chip
+```
+
+**`src=`** says where those values came from. `chip` means they were read back
+out of the chip's registers, which is the only account that survives a value the
+chip did not take. `firmware` means they are what the firmware holds, and it is
+what you get whenever the radio is not listening — because there the registers
+describe the library's plumbing rather than the configuration. Measured, on an
+idle dongle configured for pipe 1 only:
+
+```
+listening  EN_RXADDR=0x02        (pipe 1)
+idle       EN_RXADDR=0x03        (pipe 0 too), RX_ADDR_P0 = the last TX address
+```
+
+`RF24::stopListening()` writes the TX address into `RX_ADDR_P0` and force-enables
+pipe 0, and a scan retunes channel and data rate across the band. Read
+unconditionally, `info` would report a pipe 0 nobody configured — a
+plausible-looking wrong value, which is worse than an obviously missing one.
+
+This is additive: the tokens come after the `OK`, so a host that checks for `OK`
+and stops reading sees the old behaviour. That is why `api` stayed at 4 and a
+dongle still on older firmware works with a newer host — it answers `OK
+listening`, and the host asks `info` as it always did.
+
 ### Example session
 
 ```
-NRF24SNIFFER fw=3.0.0 api=3 state=nohw hw=none t=91 rx=0 fifofull=0
+NRF24ANALYSER fw=3.6.0 api=5 state=nohw hw=none t=91 rx=0 fifofull=0
 > hwset ce=9 csn=10 irq=2 led_rx=8 led_tx=A1
-OK hw connected saved
+OK hw connected saved state=unconfigured ce=9 csn=10 irq=2 led_rx=8 led_tx=A1
 > listen ch=100 rate=250 crc=16 aw=5 pa=low ack=0 dpl=1 pipe1=42:54:48:4D:45
-OK listening
+OK listening state=listening ce=9 csn=10 irq=2 led_rx=8 led_tx=A1 channel=100 rate=250kbps crc=16 aw=5 pa=low ack=0 dpl=1 plsize=32 pipe1=42:54:48:4D:45 src=chip
 RX t=43230 p1 len=16 4D565202D2FC44004501350C8B093A01
 ```
 
@@ -530,8 +580,39 @@ Settings live in a **dialog**, with a one-line summary of the active
 configuration left in the toolbar. Settings are read and changed in bursts,
 while frames arrive continuously, so an in-flow panel spent its life either
 collapsed or shoving the frame table down the window every time it opened.
-`Start` sends `hwset` and `listen` in one go, preceded by `stop` when a capture
-is already running — the firmware refuses `hwset` while listening.
+
+**Every status display reads the dongle, never the form.** The summary line, the
+state pill, the open port, the tuned bar in the scan chart and the setup fields
+themselves all come from the dongle's own `info`, which the server parses into a
+snapshot, publishes as a `radio` event and answers `/api/state` with. It asks
+after every command it sends and every ten seconds besides — and takes the
+snapshot straight out of the
+[acknowledgements](#acknowledgements-say-what-they-left-behind) of `listen` and
+`hwset`, which carry it in the same grammar. This is not a detail
+of taste: the summary line used to be assembled from the setup fields, so a page
+that had not configured anything itself described its own form — one freshly
+loaded tab claimed `ch100 … p1=42:54:48:4D:45` while the dongle underneath it
+was listening on channel 90 with `43:…`, and the frames on screen came from a
+port the selector was not showing either. An input holds what someone typed,
+which is a wish; drawn as a fact it makes the tool lie until somebody notices.
+
+The setup dialog is therefore an **editor of the dongle's configuration**: it
+opens filled with what the radio reports, `Apply` writes it back (`stop`,
+`hwset`, `listen` — the firmware refuses `hwset` while listening — each awaiting
+its reply, so a failure stops the sequence and leaves the dialog open with the
+values still in it), and closing without applying puts the fields back. `Start`
+is then only about reception: it resumes with the configuration the dongle
+already has (a bare `listen`), and falls back to configuring from the fields
+only for a dongle that has none, fresh off a reset.
+
+Top right stands **which build is answering, at both ends of the serial link**:
+the dongle's `fw 3.5.0 · api 4` from its greeting, and this server's own
+version. Each turns into a warning on its own terms — an `api` the UI does not
+speak, and a source file whose mtime has moved past the running process, which
+Python will not reload. That second one is not hypothetical: a padding fix sat
+on disk for hours while the UI, running the older import, kept flagging correct
+frames as malformed.
+
 Frames arrive with **millisecond timestamps and a Δ column** — the
 three repeats of one event sit ~4 ms apart, which per-second resolution hides.
 Selecting a row shows **decoded fields and the hex dump side by side**; frames the
@@ -539,11 +620,47 @@ decoder objected to are drawn in red. The log and the free-text command line sha
 their own tab. A tab opened later is brought up to date: the server replays the
 greeting, the current state and the retained frames.
 
+### The stream is resumable, and that is not decoration
+
+Commands go up over HTTP and answers come down over Server-Sent Events. The
+split is not just what the standard library makes easy — it is what the traffic
+is: commands are rare and want a status code and a reply body, frames arrive in
+bursts a few milliseconds apart and want no one to have to ask.
+
+But `EventSource` reconnects on its own, and a server that replays its history
+into a table nobody cleared shows every frame twice. In a tool whose purpose is
+counting retransmissions, that is not cosmetic. So every event that passes
+through the hub is numbered, `id: <run>-<seq>`, and the browser hands the last
+one back in `Last-Event-ID` at the next connection — the field SSE has for
+exactly this, and the reason it beats a hand-rolled websocket here rather than
+merely being simpler than one.
+
+```
+reconnect with Last-Event-ID: 1785158946-13
+   │
+   ├─ same run, nothing missing   ─►  three snapshots, no frames, nothing moves
+   ├─ same run, frames since 13   ─►  only those frames
+   └─ other run, or before a clear ─► `reset` first, then the whole history
+```
+
+`<run>` identifies the process. Numbering starts over when it does, so a client
+resuming from a number this run has not reached would be sent nothing at all and
+go on showing rows from a process that no longer exists — the same class of
+fault as a stale display, one layer down. Anything that cannot be continued gets
+a `reset` event, and the browser empties its table before the replay lands.
+Clearing the history publishes the same event, so a second tab does not go on
+showing frames the server has thrown away.
+
+The snapshots replayed on connect — greeting, status, `radio` — deliberately
+carry no number. They describe now rather than a point in the stream, and a
+replayed greeting keeping the number it was first published under would drag a
+client's resume point backwards.
+
 | Endpoint | Purpose |
 |---|---|
-| `GET /api/events` | SSE stream of frames, log lines, greeting and status |
+| `GET /api/events` | SSE stream of frames, log lines, greeting, status and `radio` (the dongle's own configuration, whenever it changes). **Resumable** — see below |
 | `GET /api/ports`, `/api/parsers` | what is available |
-| `GET /api/state` | one synchronous snapshot: connected, state, wiring |
+| `GET /api/state` | one synchronous snapshot: connected, open port, state, decoder, `radio` (the parsed `info` block) with its `radioAge` in seconds, wiring, and `firmware` (the dongle's `fw`/`api` from the greeting, against the `api` this host speaks) |
 | `POST /api/connect`, `/api/disconnect`, `/api/command` | control; `command` with `"wait": true` blocks for and returns the firmware's OK/ERR reply |
 | `POST /api/burst` | transmit a frame sequence (`{"address", "frames": [{"payload", "repeat", "gap_ms", …}]}`), one awaited reply per entry |
 | `POST /api/capture` | block for `seconds`, return the window's frames + stats |
@@ -566,7 +683,7 @@ Start the web UI (`start.cmd`), then register the MCP server in the *consuming*
 session — the copy in [`mcp.example.json`](mcp.example.json), or:
 
 ```bash
-claude mcp add-json nrf24 "{\"command\":\"C:/Repos/tools/nrf24-sniffer/.venv/Scripts/python.exe\",\"args\":[\"C:/Repos/tools/nrf24-sniffer/nrf24_mcp.py\"]}"
+claude mcp add-json nrf24 "{\"command\":\"C:/Repos/tools/nrf24-analyser/.venv/Scripts/python.exe\",\"args\":[\"C:/Repos/tools/nrf24-analyser/nrf24_mcp.py\"]}"
 ```
 
 | Tool | What it does |
@@ -665,7 +782,7 @@ rather than guessed.
 ## Layout
 
 ```
-nrf24-sniffer/
+nRF24-Analyser/
   platformio.ini              build environments (nano / nano_old)
   include/RadioController.h   radio wrapper, HwConfig + RadioConfig
   include/CommandParser.h     serial command parser
