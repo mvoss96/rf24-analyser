@@ -16,6 +16,7 @@ one entity per type, named after the YAML key.
 
     python bench/validate_sensor_types.py
 """
+import re
 import sys
 import time
 from pathlib import Path
@@ -25,7 +26,7 @@ import labkit as lab  # noqa: E402
 
 COMPONENT_TESTS = Path(r"C:\Repos\libs\esphome-rf24-remote\tests")
 sys.path.insert(0, str(COMPONENT_TESTS))
-from sensor_type_vectors import all_vectors, encoded  # noqa: E402
+from sensor_type_vectors import BINARY_VECTORS, all_vectors, encoded  # noqa: E402
 
 HUB_YAML = COMPONENT_TESTS / "wt32-eth01.yaml"
 HUB_IP = "192.168.2.70"
@@ -65,13 +66,26 @@ def published(key):
     """What the entity sent on: the value as the entity formats it, and its unit.
     Returns (text, unit) so the number of decimals stays visible - it is part of
     what the table promises."""
-    import re
     rx = re.compile(rf"'P {re.escape(key)}' >> (-?[\d.]+) *(\S*)")
     for line in reversed(lab.hub_dump()):
         m = rx.search(line)
         if m:
             return m.group(1), m.group(2)
     return None, None
+
+
+def decoded_binary(object_id, instance=1):
+    hits = lab.hub_grep(rf"{PROBE_TEXT}: binary 0x{object_id:02X}#{instance}: (on|off)")
+    return hits[-1].rsplit(": ", 1)[1] if hits else None
+
+
+def published_binary(key):
+    rx = re.compile(rf"'B {re.escape(key)}' >> (ON|OFF)")
+    for line in reversed(lab.hub_dump()):
+        m = rx.search(line)
+        if m:
+            return m.group(1)
+    return None
 
 
 def decimals(text):
@@ -122,6 +136,23 @@ for key, oid, raw, value_bytes, value, unit, dec in vectors:
                 not faults,
                 "; ".join(faults) or f"decoded {got}, published {text} {want_unit}".rstrip())
 
+# --- B1..Bn: one frame per binary object --------------------------------------
+# Nothing to scale here, so what a vector proves is that the id reaches the
+# entity the table names and that both states arrive - a sensor stuck at its
+# initial state passes a one-sided check without ever having worked.
+for key, oid, value_bytes, state in BINARY_VECTORS:
+    send(encoded(oid, value_bytes))
+    want = "on" if state else "off"
+    got = decoded_binary(oid)
+    shown = published_binary(key)
+    faults = []
+    if got != want:
+        faults.append(f"decoded {got or 'nothing'}, expected {want}")
+    if shown != want.upper():
+        faults.append(f"published {shown or 'nothing'}, expected {want.upper()}")
+    lab.verdict(f"B {key} (0x{oid:02X}, {want})",
+                not faults, "; ".join(faults) or f"decoded {got}, published {shown}")
+
 # --- T+1: several types in one frame ------------------------------------------
 # A real node sends more than one measurement per broadcast, and the objects are
 # read in one pass over a shared buffer - a per-object bug that a single-object
@@ -145,12 +176,23 @@ ok = (first is not None and second is not None
 lab.verdict("T index: the second object of an id feeds the index-2 sensor",
             ok, f"index 1 got {first}, index 2 got {second} (expected 23.45 and -12.34)")
 
+# --- T+2b: a measurement and a binary object in one payload -------------------
+# They share the instance counter, so a bug there would show as one of the two
+# landing on the wrong instance and never publishing.
+send(encoded(0x02, "2909") + encoded(0x21, "01") + encoded(0x03, "0113"))
+temp, _ = published("temperature")
+motion = published_binary("motion")
+hum, _ = published("humidity")
+lab.verdict("T measurements and a binary object in one payload",
+            temp is not None and motion == "ON" and hum is not None,
+            f"temperature {temp}, motion {motion}, humidity {hum}")
+
 # --- T+3: an object nobody mapped ---------------------------------------------
-# 0x64 is a light level: the library knows it, the table does not map it. It has
-# to be read and passed over, not treated as a fault - an unmapped object is a
-# sender doing something this receiver was not configured for, and the rest of
-# the frame is still good.
-send(encoded(0x64, "07") + encoded(0x02, "2909"))
+# 0x54 is a raw blob: the library knows it, no platform maps it. It has to be
+# read and passed over, not treated as a fault - an unmapped object is a sender
+# doing something this receiver was not configured for, and the rest of the
+# frame is still good.
+send(encoded(0x54, "02AABB") + encoded(0x02, "2909"))
 noise = lab.hub_grep(r"malformed BTHome payload")
 temp, _ = published("temperature")
 lab.verdict("T an unmapped but known object is skipped, not faulted",
