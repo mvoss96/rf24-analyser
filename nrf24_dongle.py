@@ -1,4 +1,4 @@
-"""Serial client for the nrf24-sniffer dongle.
+"""Serial client for the nRF24 Analyser dongle.
 
 Speaks the line-based ASCII protocol described in README.md and is shared by the
 terminal (nrf24term.py) and the GUI (nrf24gui.py) so there is exactly one
@@ -20,7 +20,14 @@ except ImportError:  # pragma: no cover - reported by the entry points
 
 # Command-protocol version this client speaks; compared against the firmware's
 # greeting so a mismatch is reported instead of producing cryptic errors.
-EXPECTED_API = 4
+#
+# api=5 is the rename of the greeting itself, from NRF24SNIFFER to
+# NRF24ANALYSER. It is the one incompatibility this field cannot warn about: a
+# host that does not know the new identity never recognises the line at all, so
+# it never gets as far as reading api= out of it. What it sees instead is
+# silence where the greeting should be, which the ui reports as "no greeting" -
+# and the fix is to reflash the dongle.
+EXPECTED_API = 5
 
 DEFAULT_BAUD = 500000
 
@@ -33,11 +40,16 @@ def available_ports():
 
 
 def parse_greeting(line):
-    """Parses 'NRF24SNIFFER fw=.. api=.. state=.. hw=.. ce=..' into a dict.
+    """Parses 'NRF24ANALYSER fw=.. api=.. state=.. hw=.. ce=..' into a dict.
 
-    Returns None for any other line.
+    Returns None for any other line - including the NRF24SNIFFER greeting of
+    firmware older than 3.6.0, which is deliberate: the identity is what the
+    host recognises the device by, and accepting two of them would leave the
+    project answering to a name it no longer has for as long as anyone remembers
+    to keep both. A dongle that still greets with the old name is reported as
+    not greeting at all, and wants reflashing.
     """
-    if not line.startswith("NRF24SNIFFER"):
+    if not line.startswith("NRF24ANALYSER"):
         return None
     fields = {}
     for token in line.split()[1:]:
@@ -45,6 +57,86 @@ def parse_greeting(line):
             key, value = token.split("=", 1)
             fields[key] = value
     return fields
+
+
+INFO_HEADER = "info:"
+
+# `info` answers with an indented block, not one line: the state, then - as far
+# as the dongle has got - the wiring, then the radio configuration, then the
+# counters, closed by OK. Fields it cannot know yet are simply absent (a dongle
+# without wiring reports state and nothing else), so a caller has to ask what is
+# there rather than index into a fixed shape.
+INFO_INT_FIELDS = ("channel", "crc", "aw", "plsize", "ack", "dpl", "repeats",
+                   "rxmode", "rxdbg", "rx", "fifofull")
+
+
+def parse_info(lines):
+    """Parses the body of an `info:` block into a snapshot of the radio.
+
+    `lines` are the indented lines between `info:` and its `OK`. Everything in
+    them is key=value, one or more per line, so the wiring line parses like any
+    other. Numbers become numbers; `rate=250kbps` loses its unit; the pipes are
+    collected separately because their count varies with the configuration.
+
+    This is what the dongle says about itself, which is the only thing that can
+    honestly be shown as its state - a form field says what someone typed.
+    """
+    fields = {}
+    pipes = {}
+    for line in lines:
+        for token in line.split():
+            if "=" not in token:
+                continue
+            key, value = token.split("=", 1)
+            if key.startswith("pipe") and key[4:].isdigit():
+                pipes[int(key[4:])] = value
+            else:
+                fields[key] = value
+
+    info = {"pipes": pipes}
+    for key, value in fields.items():
+        if key in INFO_INT_FIELDS:
+            try:
+                info[key] = int(value)
+            except ValueError:
+                info[key] = value
+        elif key == "rate":
+            try:
+                info[key] = int(value.removesuffix("kbps"))
+            except ValueError:
+                info[key] = value
+        else:
+            info[key] = value
+
+    info["wiring"] = {key: fields[key] for key in
+                      ("ce", "csn", "irq", "led_rx", "led_tx") if key in fields}
+    # Two questions the block answers by omission: printInfo() stops after the
+    # state when there is no wiring, and after the counters-free part when the
+    # radio was never configured. Saying so explicitly keeps every consumer from
+    # rediscovering that rule.
+    info["hwReady"] = bool(info["wiring"])
+    info["configured"] = "channel" in info
+    return info
+
+
+def parse_ack(line):
+    """The state an `OK` line reports having left behind, or None.
+
+    From firmware 3.5.0 the acknowledgements of `listen` and `hwset` carry the
+    resulting state as key=value tokens in the same grammar as `info` - so this
+    is parse_info() with a different line ending. Acknowledging the outcome
+    rather than the fact of success is what makes a setting the firmware quietly
+    changed visible: an irq pin downgraded to polling, a configuration discarded
+    by hwset, a value the chip did not take.
+
+    Older firmware answers with a bare `OK listening`, which returns None here,
+    and the host falls back to asking. That is why the tokens were added after
+    the OK rather than replacing it, and why the api version did not have to
+    move: a dongle that has not been reflashed still works.
+    """
+    if not line.startswith("OK") or " state=" not in line:
+        return None
+    return parse_info([line])
 
 
 def crc8(data):

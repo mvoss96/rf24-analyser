@@ -1,5 +1,5 @@
 /*
- * nrf24-sniffer firmware
+ * nRF24 Analyser firmware
  *
  * RF24-based debug / sniffer for raw nRF24L01 traffic, running on an ATmega328P
  * USB dongle. A line-based ASCII protocol over serial (500000 baud) defines the

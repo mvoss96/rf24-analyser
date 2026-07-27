@@ -152,11 +152,24 @@ input[type="text"], input:not([type]) {
 .pill.warn { background: var(--surface-2); color: var(--warn); }
 .pill.bad { background: var(--danger-bg); color: var(--danger); }
 
+/* The open port. Takes the dropdown's place while connected, so it sits where
+   the eye already looks for the port. */
+.port {
+  font-family: var(--mono);
+  font-size: 12px;
+  color: var(--text);
+  background: var(--surface-2);
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  padding: 5px 10px;
+  white-space: nowrap;
+}
+
 /* Running build. Quiet by default - it only needs reading when something looks
    wrong - and loud when the source on disk has moved past the running process,
    because then everything else on screen is suspect. */
 .build { font-family: var(--mono); font-size: 11px; white-space: nowrap; }
-.build.stale {
+.build.stale, .build.mismatch {
   color: var(--warn);
   background: var(--surface-2);
   padding: 3px 8px;
@@ -184,6 +197,9 @@ input[type="text"], input:not([type]) {
   overflow: hidden;
   text-overflow: ellipsis;
 }
+/* Not a configuration but a sentence about why there is none. Italic so it does
+   not read as one at a glance. */
+.summary.unknown { font-style: italic; }
 
 /* --- setup dialog --- */
 

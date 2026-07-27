@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""nrf24web - browser front end for the nrf24-sniffer dongle.
+"""nrf24web - browser front end for the nRF24 Analyser dongle.
 
 Python owns the serial port and does the decoding; the browser is presentation
 only. That split is deliberate: bthome-ble is the reference BTHome parser and it
@@ -63,6 +63,11 @@ def _source_stamp():
 _STARTED_AT = time.time()
 _STAMP_AT_START = _source_stamp()
 
+# Identifies this run in the event ids handed to browsers. Event numbering
+# starts over with the process, so the number alone cannot say whether a client
+# is resuming from this run's stream or a previous one's.
+_RUN = str(int(_STARTED_AT))
+
 
 def _stale_sources():
     """Source files that changed on disk since this process loaded them."""
@@ -75,6 +80,20 @@ def _stale_sources():
 # the question goes unanswered too is the silence worth reporting.
 GREETING_ASK = 2.0
 GREETING_TIMEOUT = 4.5
+
+# How often to ask the dongle what it is doing while it is connected. Every
+# command sent from here already triggers one, and the MCP tools and any curl go
+# through /api/command, so this is not the main path - it is the bound on how
+# wrong the display can be when the assumption behind that sentence does not
+# hold. It puts a ceiling of ten seconds on any divergence whose cause nobody
+# anticipated, which is the only kind that has ever actually bitten: what made a
+# page claim ch100 against a dongle on 90 was precisely a state nothing thought
+# to publish.
+INFO_HEARTBEAT = 10.0
+
+# Everything else this process sends may change what the dongle is doing, so it
+# is followed by an `info`. A tx does not, and a burst is dozens of them.
+NO_REFRESH_AFTER = {"tx", "info"}
 
 
 def column_spec(parser):
@@ -157,6 +176,7 @@ class Hub:
     def __init__(self):
         self._subscribers = []
         self._lock = threading.Lock()
+        self._seq = 0
 
     def subscribe(self):
         q = queue.Queue()
@@ -170,10 +190,23 @@ class Hub:
                 self._subscribers.remove(q)
 
     def publish(self, event):
+        """Numbers the event, hands it to every subscriber, returns the number.
+
+        Numbered here because this is the one place every event passes through,
+        so it is the only place that can promise the numbers run in the order
+        the subscribers see them. That is what lets a browser whose connection
+        dropped ask for the rest instead of for everything again - EventSource
+        reconnects on its own, and a replayed history appended to a table that
+        was never cleared shows every frame twice. In a tool whose purpose is
+        counting retransmissions, that is not a cosmetic fault.
+        """
         with self._lock:
+            self._seq += 1
+            event["id"] = self._seq
             targets = list(self._subscribers)
         for q in targets:
             q.put(event)
+        return self._seq
 
 
 class Session:
@@ -183,7 +216,14 @@ class Session:
         self.hub = hub
         self.dongle = None
         self.parser = parsers.get("bthome")
-        self.frames = deque(maxlen=MAX_FRAMES)  # raw (stamp, pipe, data)
+        # Raw (event id, stamp, delta, device_ms, pipe, data, intact). The event
+        # id is kept with the frame so a replay hands out the same numbers the
+        # live stream did, which is what makes resuming from one possible.
+        self.frames = deque(maxlen=MAX_FRAMES)
+        # The event id at the last clear. A tab that was disconnected across one
+        # would otherwise resume from before it and keep rows the server has
+        # thrown away.
+        self.cleared_at = 0
         self.last_stamp = None
         self.last_ms = None
         # Remembered so a tab opened later still learns the current state -
@@ -192,7 +232,17 @@ class Session:
         self.state_text = "not connected"
         self.was_listening = False
         self.scan = None
+        # What the dongle last said about itself, from an `info` block. This is
+        # the only thing the browser is allowed to render as radio state: an
+        # input field holds what someone typed, which is a wish, and a wish that
+        # is drawn as a fact makes the tool lie for as long as nobody notices.
+        self.radio = None
+        self.radio_at = None
+        self._info_block = None     # lines collected since the `info:` header
+        self._info_quiet = False    # swallow this block instead of logging it
+        self._info_pending = 0      # blocks asked for by this class, not a user
         self._pump = None
+        self._beat = None
         self._stop = threading.Event()
         # Serialises command()s so each reply is matched to its own command.
         # Only API-side commands hold it; a human typing in the browser terminal
@@ -208,10 +258,13 @@ class Session:
         self._stop.clear()
         self._pump = threading.Thread(target=self._pump_loop, daemon=True)
         self._pump.start()
+        self._beat = threading.Thread(target=self._heartbeat_loop,
+                                      args=(self.dongle,), daemon=True)
+        self._beat.start()
         # Not "connected" yet: the port is open, but nothing has proved there is
         # a sniffer on the other end. The greeting is what does that.
         self.state_text = "connecting…"
-        self.hub.publish(self.status_event(port))
+        self.hub.publish(self.status_event())
         self._unless_greeted(GREETING_ASK, self._ask_status)
         self._unless_greeted(GREETING_TIMEOUT, self._greeting_overdue)
 
@@ -251,11 +304,24 @@ class Session:
         self.greeting = None
         self.was_listening = False
         self.state_text = "not connected"
+        self.radio = None
+        self.radio_at = None
+        self._info_block = None
+        self._info_pending = 0
         self.hub.publish(self.status_event())
+        self.hub.publish(self.radio_event())
 
-    def status_event(self, port=None):
+    def status_event(self):
+        # The port comes off the open dongle, never from an argument or from
+        # whatever a browser last selected: a tab that did not do the connecting
+        # showed the port from its own dropdown, which was COM9 while the
+        # capture underneath it came from COM18.
         return {"type": "status", "connected": self.dongle is not None,
-                "port": port, "state": self.state_text, "greeting": self.greeting}
+                "port": self.dongle.port if self.dongle else None,
+                "state": self.state_text, "greeting": self.greeting}
+
+    def radio_event(self):
+        return {"type": "radio", "radio": self.radio, "at": self.radio_at}
 
     def set_state(self, text):
         """Records the state and tells every tab.
@@ -269,11 +335,89 @@ class Session:
         self.state_text = text
         self.hub.publish(self.status_event())
 
-    def send(self, line):
+    def send(self, line, quiet=False):
         if self.dongle is None:
             raise RuntimeError("not connected")
         self.dongle.send(line)
+        if quiet:
+            return
         self.hub.publish({"type": "line", "text": f"> {line}", "kind": "sent"})
+        # Whatever that was, it may have changed what the dongle is doing, and
+        # only the dongle knows what it did with it. Asking straight afterwards
+        # is free: the firmware handles lines in order, so the answer describes
+        # the state the command left behind, not the one before it.
+        head = line.split()[0] if line.split() else ""
+        if head not in NO_REFRESH_AFTER:
+            self.refresh_info()
+
+    def refresh_info(self):
+        """Asks the dongle what it is doing; the answer is not printed.
+
+        Swallowing the block is what makes polling possible at all - twenty
+        lines every ten seconds would bury the terminal panel. The snapshot it
+        produces is published instead, and that is what the display reads.
+        """
+        self._info_pending += 1
+        try:
+            self.send("info", quiet=True)
+        except Exception:
+            self._info_pending = max(0, self._info_pending - 1)
+            raise
+
+    def _heartbeat_loop(self, owner):
+        while not self._stop.wait(INFO_HEARTBEAT):
+            # Reconnecting clears the stop flag again within microseconds, which
+            # this thread may sleep straight through - so it checks whose dongle
+            # the session holds now rather than trusting the flag alone.
+            if self.dongle is not owner:
+                return
+            # A sweep retunes the radio across the band and reports as it goes;
+            # asking it about itself in the middle of that interleaves with the
+            # report and tells us only that it is scanning, which we know.
+            if self.state_text == "scanning":
+                continue
+            try:
+                self.refresh_info()
+            except Exception:
+                pass   # disconnected between the check and the write
+
+    def _set_radio(self, info):
+        self.radio = info
+        self.radio_at = time.time()
+        state = info.get("state")
+        # The dongle's own word for what it is doing outranks the inference from
+        # OK lines: that one only knows about the commands this process saw.
+        if state in ("listening", "idle"):
+            self.was_listening = state == "listening"
+        if state:
+            self.set_state(state)
+        self.hub.publish(self.radio_event())
+
+    def _consume_info(self, line):
+        """Feeds one line to the `info:` collector; True if it must not be shown.
+
+        Every block is collected, whoever asked for it - the heartbeat, an agent
+        on /api/command, a human typing `info` in the terminal - so the snapshot
+        is never more than one poll behind. Only the blocks this class asked for
+        are swallowed; a typed `info` still prints its answer, as it must.
+        """
+        if line == dongle.INFO_HEADER:
+            self._info_block = []
+            self._info_quiet = self._info_pending > 0
+            self._info_pending = max(0, self._info_pending - 1)
+            return self._info_quiet
+        if line.startswith("  "):
+            self._info_block.append(line)
+            return self._info_quiet
+        if line.startswith("OK") or line.startswith("ERR"):
+            if line.startswith("OK"):
+                self._set_radio(dongle.parse_info(self._info_block))
+            quiet, self._info_quiet = self._info_quiet, False
+            self._info_block = None
+            return quiet
+        # A WARN can land in the middle of the block. It is not part of it and
+        # not ours to swallow, and it does not end the block either.
+        return False
 
     def command(self, line, timeout=5.0):
         """Sends one command and returns the firmware's OK/ERR reply line.
@@ -377,8 +521,24 @@ class Session:
                           "columns": column_spec(parser)})
 
     def decoded_history(self):
-        """Every retained frame, decoded with the current parser."""
-        return [self._decode(*frame) for frame in self.frames]
+        """Every retained frame, decoded with the current parser.
+
+        Each carries the event id it was published under, so a client can tell
+        which of them it has already seen.
+        """
+        return [dict(self._decode(*frame[1:]), id=frame[0]) for frame in self.frames]
+
+    def clear(self):
+        """Discards the retained history - for everyone, not just the caller.
+
+        Every tab is told, because the alternative is a second tab going on
+        showing frames this process no longer has: the same one-truth rule the
+        rest of the display follows.
+        """
+        self.frames.clear()
+        self.last_stamp = None
+        self.last_ms = None
+        self.cleared_at = self.hub.publish({"type": "reset"})
 
     def capture(self, seconds):
         """Collect the frames decoded over the next `seconds` and summarise them.
@@ -496,9 +656,18 @@ class Session:
             else:
                 delta = None if self.last_stamp is None else round((now - self.last_stamp) * 1000, 1)
             self.last_stamp = now
-            self.frames.append((stamp, delta, device_ms, pipe, data, intact))
-            self.hub.publish(self._decode(stamp, delta, device_ms, pipe, data, intact))
+            seq = self.hub.publish(self._decode(stamp, delta, device_ms, pipe,
+                                                data, intact))
+            self.frames.append((seq, stamp, delta, device_ms, pipe, data, intact))
             return
+
+        # `info` answers with an indented block closed by OK, and it is the one
+        # thing in this stream that describes the radio rather than reporting an
+        # event. RX lines were handled above, so a frame arriving mid-block
+        # cannot break it.
+        if line == dongle.INFO_HEADER or self._info_block is not None:
+            if self._consume_info(line):
+                return
 
         greeting = dongle.parse_greeting(line)
         if greeting is not None:
@@ -509,6 +678,11 @@ class Session:
             self.state_text = greeting.get("state", "connected")
             self.was_listening = self.state_text == "listening"
             self.hub.publish(event)
+            # The greeting proves there is a sniffer there and carries the
+            # wiring, but not the radio configuration - and after a reset it
+            # would not be the current one anyway. Ask, so the first thing the
+            # display shows is the dongle and not a page default.
+            self.refresh_info()
             return
 
         # A scan answers with one line per channel that had a hit, so a quiet
@@ -542,6 +716,17 @@ class Session:
         elif line.startswith("OK stopped"):
             self.was_listening = False
             self.set_state("idle")
+
+        # From firmware 3.5.0 the acknowledgement of a command that changed the
+        # radio carries the state it left behind. Taking it here means the
+        # snapshot is right the moment the command is answered, without waiting
+        # for the poll - and it is the firmware's account of what it did, not an
+        # echo of what was asked, so a downgraded irq pin arrives with the OK
+        # that reports success. Older firmware answers with a bare OK; then this
+        # is None and the poll below does the work as before.
+        ack = dongle.parse_ack(line)
+        if ack is not None:
+            self._set_radio(ack)
 
         kind = "info"
         if line.startswith("ERR"):
@@ -647,14 +832,34 @@ class Handler(BaseHTTPRequestHandler):
             # A synchronous snapshot for a non-browser consumer: the browser
             # learns state from the SSE stream, but an agent wants one answer to
             # one question ("is it listening, on what wiring?").
-            greeting = self.session.greeting or {}
+            session = self.session
+            greeting = session.greeting or {}
             stale = _stale_sources()
-            self._json({"connected": self.session.dongle is not None,
-                        "state": self.session.state_text,
-                        "decoder": self.session.parser.name,
-                        "wiring": {k: greeting.get("fields", {}).get(k)
-                                   for k in ("ce", "csn", "irq", "led_rx", "led_tx")}
-                                  if greeting else None,
+            radio = session.radio or {}
+            self._json({"connected": session.dongle is not None,
+                        "port": session.dongle.port if session.dongle else None,
+                        "state": session.state_text,
+                        "decoder": session.parser.name,
+                        # What the dongle last said about itself, and how long
+                        # ago it said it: a caller that has to trust this needs
+                        # to know whether it is a second or an hour old.
+                        "radio": session.radio,
+                        "radioAge": (None if session.radio_at is None
+                                     else round(time.time() - session.radio_at, 1)),
+                        # Which build the dongle is running, and whether it
+                        # speaks the command protocol this host does. Only the
+                        # greeting carries it, so it is null until one arrives.
+                        "firmware": {"fw": greeting.get("fields", {}).get("fw"),
+                                     "api": greeting.get("fields", {}).get("api"),
+                                     "expectedApi": dongle.EXPECTED_API,
+                                     "apiOk": greeting.get("apiOk")}
+                                    if greeting else None,
+                        # The wiring the dongle reports, falling back to the one
+                        # it greeted with before the first info arrived.
+                        "wiring": radio.get("wiring") or
+                                  ({k: greeting.get("fields", {}).get(k)
+                                    for k in ("ce", "csn", "irq", "led_rx", "led_tx")}
+                                   if greeting else None),
                         # The running build, so an answer from this server can be
                         # told apart from an answer from the code on disk.
                         "app": {"version": APP_VERSION,
@@ -708,9 +913,7 @@ class Handler(BaseHTTPRequestHandler):
                             "frames": self.session.decoded_history()})
                 return
             elif self.path == "/api/clear":
-                self.session.frames.clear()
-                self.session.last_stamp = None
-                self.session.last_ms = None
+                self.session.clear()
             else:
                 self.send_error(404)
                 return
@@ -726,15 +929,33 @@ class Handler(BaseHTTPRequestHandler):
         self.send_header("Connection", "keep-alive")
         self.end_headers()
         q = self.hub.subscribe()
+        resume = self._resume_from()
         try:
-            # Bring a fresh tab up to date with what was already captured.
-            # Greeting first, status second: the greeting carries the state as
-            # it was at reset, so the current status has to land after it.
+            # A tab that cannot be continued has to be replaced: whatever is on
+            # its screen came from a process that is gone, or from before a
+            # clear. Sent before the replay, so the table is empty when it lands.
+            if resume is None:
+                self._sse({"type": "reset"})
+            # Bring the tab up to date with what was already captured. Greeting
+            # first, status second: the greeting carries the state as it was at
+            # reset, so the current status has to land after it. All three are
+            # snapshots of now, not history, so they go out either way - sending
+            # the current truth twice costs nothing, omitting it costs the tab.
             if self.session.greeting is not None:
-                self._sse(self.session.greeting)
+                # Stripped of its number: it is being replayed as a snapshot,
+                # and the number it was first published under is far behind. A
+                # tab reconnecting with nothing to catch up on would otherwise
+                # adopt that old number as its resume point - EventSource takes
+                # the last id it saw - and ask for the whole history again at
+                # the next drop.
+                self._sse({k: v for k, v in self.session.greeting.items()
+                           if k != "id"})
             self._sse(self.session.status_event())
+            # Third, because it outranks both: what the dongle itself last said.
+            self._sse(self.session.radio_event())
             for frame in self.session.decoded_history():
-                self._sse(frame)
+                if resume is None or frame["id"] > resume:
+                    self._sse(frame)
             while True:
                 try:
                     event = q.get(timeout=15)
@@ -748,7 +969,30 @@ class Handler(BaseHTTPRequestHandler):
         finally:
             self.hub.unsubscribe(q)
 
+    def _resume_from(self):
+        """The last event id this client saw, if this process issued it.
+
+        EventSource sends back the last `id:` it received, by itself, on every
+        reconnect - which is exactly the field SSE has for this and the reason
+        it beats a hand-rolled websocket here rather than merely being simpler.
+        The id is scoped by a token for this process: after a restart the
+        numbering begins again, and a client resuming from a number this run has
+        not reached yet would be sent nothing at all and go on showing rows from
+        a process that no longer exists. Unparseable, foreign, or from before a
+        clear all mean the same thing - there is nothing to continue.
+        """
+        run, _, seq = self.headers.get("Last-Event-ID", "").partition("-")
+        if run != _RUN or not seq.isdigit():
+            return None
+        resume = int(seq)
+        return None if resume < self.session.cleared_at else resume
+
     def _sse(self, event):
+        # Only events that went through the hub carry a number. The snapshots
+        # replayed on connect deliberately do not: they describe now, so they
+        # must not move a client's resume point backwards or forwards.
+        if "id" in event:
+            self.wfile.write(f"id: {_RUN}-{event['id']}\n".encode())
         self.wfile.write(f"data: {json.dumps(event)}\n\n".encode())
         self.wfile.flush()
 
@@ -763,7 +1007,7 @@ def _already_serving(port):
 
 
 def main():
-    ap = argparse.ArgumentParser(description="Browser front end for the nrf24-sniffer dongle.")
+    ap = argparse.ArgumentParser(description="Browser front end for the nRF24 Analyser dongle.")
     ap.add_argument("--http", type=int, default=8724, help="http port (default 8724)")
     ap.add_argument("--no-browser", action="store_true", help="do not open a browser")
     args = ap.parse_args()
@@ -776,7 +1020,7 @@ def main():
     # second time is exactly how that happens, so check first and just point the
     # browser at the instance already running.
     if _already_serving(args.http):
-        print(f"nrf24-sniffer is already running on {url}")
+        print(f"nRF24 Analyser is already running on {url}")
         if not args.no_browser:
             webbrowser.open(url)
         return
@@ -791,7 +1035,7 @@ def main():
     except OSError as exc:
         print(f"cannot start on port {args.http}: {exc}")
         return
-    print(f"nrf24-sniffer web ui on {url}   (Ctrl-C to stop)")
+    print(f"nRF24 Analyser web ui on {url}   (Ctrl-C to stop)")
     if not args.no_browser:
         threading.Timer(0.5, lambda: webbrowser.open(url)).start()
     try:
