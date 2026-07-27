@@ -620,9 +620,45 @@ decoder objected to are drawn in red. The log and the free-text command line sha
 their own tab. A tab opened later is brought up to date: the server replays the
 greeting, the current state and the retained frames.
 
+### The stream is resumable, and that is not decoration
+
+Commands go up over HTTP and answers come down over Server-Sent Events. The
+split is not just what the standard library makes easy — it is what the traffic
+is: commands are rare and want a status code and a reply body, frames arrive in
+bursts a few milliseconds apart and want no one to have to ask.
+
+But `EventSource` reconnects on its own, and a server that replays its history
+into a table nobody cleared shows every frame twice. In a tool whose purpose is
+counting retransmissions, that is not cosmetic. So every event that passes
+through the hub is numbered, `id: <run>-<seq>`, and the browser hands the last
+one back in `Last-Event-ID` at the next connection — the field SSE has for
+exactly this, and the reason it beats a hand-rolled websocket here rather than
+merely being simpler than one.
+
+```
+reconnect with Last-Event-ID: 1785158946-13
+   │
+   ├─ same run, nothing missing   ─►  three snapshots, no frames, nothing moves
+   ├─ same run, frames since 13   ─►  only those frames
+   └─ other run, or before a clear ─► `reset` first, then the whole history
+```
+
+`<run>` identifies the process. Numbering starts over when it does, so a client
+resuming from a number this run has not reached would be sent nothing at all and
+go on showing rows from a process that no longer exists — the same class of
+fault as a stale display, one layer down. Anything that cannot be continued gets
+a `reset` event, and the browser empties its table before the replay lands.
+Clearing the history publishes the same event, so a second tab does not go on
+showing frames the server has thrown away.
+
+The snapshots replayed on connect — greeting, status, `radio` — deliberately
+carry no number. They describe now rather than a point in the stream, and a
+replayed greeting keeping the number it was first published under would drag a
+client's resume point backwards.
+
 | Endpoint | Purpose |
 |---|---|
-| `GET /api/events` | SSE stream of frames, log lines, greeting, status and `radio` (the dongle's own configuration, whenever it changes) |
+| `GET /api/events` | SSE stream of frames, log lines, greeting, status and `radio` (the dongle's own configuration, whenever it changes). **Resumable** — see below |
 | `GET /api/ports`, `/api/parsers` | what is available |
 | `GET /api/state` | one synchronous snapshot: connected, open port, state, decoder, `radio` (the parsed `info` block) with its `radioAge` in seconds, wiring, and `firmware` (the dongle's `fw`/`api` from the greeting, against the `api` this host speaks) |
 | `POST /api/connect`, `/api/disconnect`, `/api/command` | control; `command` with `"wait": true` blocks for and returns the firmware's OK/ERR reply |

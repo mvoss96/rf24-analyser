@@ -63,6 +63,11 @@ def _source_stamp():
 _STARTED_AT = time.time()
 _STAMP_AT_START = _source_stamp()
 
+# Identifies this run in the event ids handed to browsers. Event numbering
+# starts over with the process, so the number alone cannot say whether a client
+# is resuming from this run's stream or a previous one's.
+_RUN = str(int(_STARTED_AT))
+
 
 def _stale_sources():
     """Source files that changed on disk since this process loaded them."""
@@ -171,6 +176,7 @@ class Hub:
     def __init__(self):
         self._subscribers = []
         self._lock = threading.Lock()
+        self._seq = 0
 
     def subscribe(self):
         q = queue.Queue()
@@ -184,10 +190,23 @@ class Hub:
                 self._subscribers.remove(q)
 
     def publish(self, event):
+        """Numbers the event, hands it to every subscriber, returns the number.
+
+        Numbered here because this is the one place every event passes through,
+        so it is the only place that can promise the numbers run in the order
+        the subscribers see them. That is what lets a browser whose connection
+        dropped ask for the rest instead of for everything again - EventSource
+        reconnects on its own, and a replayed history appended to a table that
+        was never cleared shows every frame twice. In a tool whose purpose is
+        counting retransmissions, that is not a cosmetic fault.
+        """
         with self._lock:
+            self._seq += 1
+            event["id"] = self._seq
             targets = list(self._subscribers)
         for q in targets:
             q.put(event)
+        return self._seq
 
 
 class Session:
@@ -197,7 +216,14 @@ class Session:
         self.hub = hub
         self.dongle = None
         self.parser = parsers.get("bthome")
-        self.frames = deque(maxlen=MAX_FRAMES)  # raw (stamp, pipe, data)
+        # Raw (event id, stamp, delta, device_ms, pipe, data, intact). The event
+        # id is kept with the frame so a replay hands out the same numbers the
+        # live stream did, which is what makes resuming from one possible.
+        self.frames = deque(maxlen=MAX_FRAMES)
+        # The event id at the last clear. A tab that was disconnected across one
+        # would otherwise resume from before it and keep rows the server has
+        # thrown away.
+        self.cleared_at = 0
         self.last_stamp = None
         self.last_ms = None
         # Remembered so a tab opened later still learns the current state -
@@ -495,8 +521,24 @@ class Session:
                           "columns": column_spec(parser)})
 
     def decoded_history(self):
-        """Every retained frame, decoded with the current parser."""
-        return [self._decode(*frame) for frame in self.frames]
+        """Every retained frame, decoded with the current parser.
+
+        Each carries the event id it was published under, so a client can tell
+        which of them it has already seen.
+        """
+        return [dict(self._decode(*frame[1:]), id=frame[0]) for frame in self.frames]
+
+    def clear(self):
+        """Discards the retained history - for everyone, not just the caller.
+
+        Every tab is told, because the alternative is a second tab going on
+        showing frames this process no longer has: the same one-truth rule the
+        rest of the display follows.
+        """
+        self.frames.clear()
+        self.last_stamp = None
+        self.last_ms = None
+        self.cleared_at = self.hub.publish({"type": "reset"})
 
     def capture(self, seconds):
         """Collect the frames decoded over the next `seconds` and summarise them.
@@ -614,8 +656,9 @@ class Session:
             else:
                 delta = None if self.last_stamp is None else round((now - self.last_stamp) * 1000, 1)
             self.last_stamp = now
-            self.frames.append((stamp, delta, device_ms, pipe, data, intact))
-            self.hub.publish(self._decode(stamp, delta, device_ms, pipe, data, intact))
+            seq = self.hub.publish(self._decode(stamp, delta, device_ms, pipe,
+                                                data, intact))
+            self.frames.append((seq, stamp, delta, device_ms, pipe, data, intact))
             return
 
         # `info` answers with an indented block closed by OK, and it is the one
@@ -870,9 +913,7 @@ class Handler(BaseHTTPRequestHandler):
                             "frames": self.session.decoded_history()})
                 return
             elif self.path == "/api/clear":
-                self.session.frames.clear()
-                self.session.last_stamp = None
-                self.session.last_ms = None
+                self.session.clear()
             else:
                 self.send_error(404)
                 return
@@ -888,17 +929,33 @@ class Handler(BaseHTTPRequestHandler):
         self.send_header("Connection", "keep-alive")
         self.end_headers()
         q = self.hub.subscribe()
+        resume = self._resume_from()
         try:
-            # Bring a fresh tab up to date with what was already captured.
-            # Greeting first, status second: the greeting carries the state as
-            # it was at reset, so the current status has to land after it.
+            # A tab that cannot be continued has to be replaced: whatever is on
+            # its screen came from a process that is gone, or from before a
+            # clear. Sent before the replay, so the table is empty when it lands.
+            if resume is None:
+                self._sse({"type": "reset"})
+            # Bring the tab up to date with what was already captured. Greeting
+            # first, status second: the greeting carries the state as it was at
+            # reset, so the current status has to land after it. All three are
+            # snapshots of now, not history, so they go out either way - sending
+            # the current truth twice costs nothing, omitting it costs the tab.
             if self.session.greeting is not None:
-                self._sse(self.session.greeting)
+                # Stripped of its number: it is being replayed as a snapshot,
+                # and the number it was first published under is far behind. A
+                # tab reconnecting with nothing to catch up on would otherwise
+                # adopt that old number as its resume point - EventSource takes
+                # the last id it saw - and ask for the whole history again at
+                # the next drop.
+                self._sse({k: v for k, v in self.session.greeting.items()
+                           if k != "id"})
             self._sse(self.session.status_event())
             # Third, because it outranks both: what the dongle itself last said.
             self._sse(self.session.radio_event())
             for frame in self.session.decoded_history():
-                self._sse(frame)
+                if resume is None or frame["id"] > resume:
+                    self._sse(frame)
             while True:
                 try:
                     event = q.get(timeout=15)
@@ -912,7 +969,30 @@ class Handler(BaseHTTPRequestHandler):
         finally:
             self.hub.unsubscribe(q)
 
+    def _resume_from(self):
+        """The last event id this client saw, if this process issued it.
+
+        EventSource sends back the last `id:` it received, by itself, on every
+        reconnect - which is exactly the field SSE has for this and the reason
+        it beats a hand-rolled websocket here rather than merely being simpler.
+        The id is scoped by a token for this process: after a restart the
+        numbering begins again, and a client resuming from a number this run has
+        not reached yet would be sent nothing at all and go on showing rows from
+        a process that no longer exists. Unparseable, foreign, or from before a
+        clear all mean the same thing - there is nothing to continue.
+        """
+        run, _, seq = self.headers.get("Last-Event-ID", "").partition("-")
+        if run != _RUN or not seq.isdigit():
+            return None
+        resume = int(seq)
+        return None if resume < self.session.cleared_at else resume
+
     def _sse(self, event):
+        # Only events that went through the hub carry a number. The snapshots
+        # replayed on connect deliberately do not: they describe now, so they
+        # must not move a client's resume point backwards or forwards.
+        if "id" in event:
+            self.wfile.write(f"id: {_RUN}-{event['id']}\n".encode())
         self.wfile.write(f"data: {json.dumps(event)}\n\n".encode())
         self.wfile.flush()
 

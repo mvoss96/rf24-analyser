@@ -595,6 +595,12 @@ function handle(event) {
     deviceRadio = event.radio;
     renderSummary();
     seedSetup();
+  } else if (event.type === "reset") {
+    // Either someone cleared the history, or this connection cannot be
+    // continued from what is on screen - a different server process, or a
+    // clear we were disconnected across. What follows is a full replay, so
+    // the table has to be empty to receive it.
+    rebuild([]);
   } else if (event.type === "scan") {
     renderScan(event);
   } else if (event.type === "parser") {
@@ -758,10 +764,10 @@ function init() {
     if (line) { send(line); $("cmd").value = ""; }
   });
 
-  $("clear").addEventListener("click", async () => {
-    await post("/api/clear");
-    rebuild([]);
-  });
+  // No local rebuild: the server answers a clear with a reset event, which
+  // empties this table on the same path as every other tab's. Doing it here as
+  // well would be the one tab that clears for a different reason than the rest.
+  $("clear").addEventListener("click", () => post("/api/clear"));
 
   // Regrouping is a pure view change, so it works on what is already here.
   // The header changes with it: ungrouped, the repeat column has nothing to say.
