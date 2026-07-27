@@ -605,6 +605,14 @@ is then only about reception: it resumes with the configuration the dongle
 already has (a bare `listen`), and falls back to configuring from the fields
 only for a dongle that has none, fresh off a reset.
 
+Top right stands **which build is answering, at both ends of the serial link**:
+the dongle's `fw 3.5.0 · api 4` from its greeting, and this server's own
+version. Each turns into a warning on its own terms — an `api` the UI does not
+speak, and a source file whose mtime has moved past the running process, which
+Python will not reload. That second one is not hypothetical: a padding fix sat
+on disk for hours while the UI, running the older import, kept flagging correct
+frames as malformed.
+
 Frames arrive with **millisecond timestamps and a Δ column** — the
 three repeats of one event sit ~4 ms apart, which per-second resolution hides.
 Selecting a row shows **decoded fields and the hex dump side by side**; frames the
@@ -616,7 +624,7 @@ greeting, the current state and the retained frames.
 |---|---|
 | `GET /api/events` | SSE stream of frames, log lines, greeting, status and `radio` (the dongle's own configuration, whenever it changes) |
 | `GET /api/ports`, `/api/parsers` | what is available |
-| `GET /api/state` | one synchronous snapshot: connected, open port, state, decoder, `radio` (the parsed `info` block) with its `radioAge` in seconds, wiring |
+| `GET /api/state` | one synchronous snapshot: connected, open port, state, decoder, `radio` (the parsed `info` block) with its `radioAge` in seconds, wiring, and `firmware` (the dongle's `fw`/`api` from the greeting, against the `api` this host speaks) |
 | `POST /api/connect`, `/api/disconnect`, `/api/command` | control; `command` with `"wait": true` blocks for and returns the firmware's OK/ERR reply |
 | `POST /api/burst` | transmit a frame sequence (`{"address", "frames": [{"payload", "repeat", "gap_ms", …}]}`), one awaited reply per entry |
 | `POST /api/capture` | block for `seconds`, return the window's frames + stats |

@@ -82,7 +82,8 @@ def _command(line, timeout=15):
 
 @mcp.tool()
 def nrf24_state() -> dict:
-    """Report what the dongle is doing: connected, on which port,
+    """Report what the dongle is doing: connected, on which port, which
+    firmware and command-protocol version it runs (`firmware`),
     listening/idle/scanning, the active decoder, and `radio` - the dongle's own
     answer about its channel, rate, crc, address width, pa level and pipe
     addresses, with `radioAge` saying how many seconds ago it said so. Call this

@@ -803,6 +803,14 @@ class Handler(BaseHTTPRequestHandler):
                         "radio": session.radio,
                         "radioAge": (None if session.radio_at is None
                                      else round(time.time() - session.radio_at, 1)),
+                        # Which build the dongle is running, and whether it
+                        # speaks the command protocol this host does. Only the
+                        # greeting carries it, so it is null until one arrives.
+                        "firmware": {"fw": greeting.get("fields", {}).get("fw"),
+                                     "api": greeting.get("fields", {}).get("api"),
+                                     "expectedApi": dongle.EXPECTED_API,
+                                     "apiOk": greeting.get("apiOk")}
+                                    if greeting else None,
                         # The wiring the dongle reports, falling back to the one
                         # it greeted with before the first info arrived.
                         "wiring": radio.get("wiring") or

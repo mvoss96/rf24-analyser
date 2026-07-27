@@ -567,6 +567,7 @@ function handle(event) {
     addRow(event);
   } else if (event.type === "greeting") {
     log(event.text, "ok");
+    showFirmware(event);
     // The wiring it carries is not copied into the fields here: the `info` the
     // server asks for next reports the same wiring and the configuration with
     // it, so there is one path into those fields instead of two.
@@ -584,6 +585,9 @@ function handle(event) {
     $("connect").textContent = connected ? "Disconnect" : "Connect";
     setLinkControls(connected);
     showPort(event.port);
+    // Carried on every status event, so disconnecting clears it without a rule
+    // of its own: the server drops the greeting with the port.
+    showFirmware(event.greeting);
     const text = event.state || (connected ? "connected" : "not connected");
     setState(text, stateClass(text, connected));
     renderSummary();
@@ -784,6 +788,24 @@ function init() {
   // the server has no event for. A minute is soon enough to catch an edit
   // before it wastes an hour of debugging.
   setInterval(showBuild, 60000);
+}
+
+// The dongle's own build, from the greeting - the only line that carries it,
+// and one the server replays to every tab that opens later. Shown beside this
+// server's version because it answers the same question about the other end of
+// the serial link: which build am I actually talking to?
+function showFirmware(greeting) {
+  const el = $("fw");
+  el.hidden = !greeting;
+  if (!greeting) return;
+  const fields = greeting.fields || {};
+  el.textContent = `fw ${fields.fw || "?"} · api ${fields.api || "?"}`;
+  el.classList.toggle("mismatch", !greeting.apiOk);
+  el.classList.toggle("dim", Boolean(greeting.apiOk));
+  el.title = greeting.apiOk
+    ? `Dongle firmware ${fields.fw}, speaking command protocol api=${fields.api}`
+    : `Dongle speaks api=${fields.api}, this ui expects api=${greeting.expectedApi} — `
+      + "commands may be understood differently at each end";
 }
 
 // --- which build is answering ----------------------------------------------

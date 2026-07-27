@@ -21,8 +21,10 @@
   <span id="state" class="pill idle"><i class="dot"></i><span id="state-text">not connected</span></span>
 
   <span class="spacer"></span>
-  <!-- Which build is answering. Turns into a warning when the source on disk is
-       newer than the process serving it, because Python will not reload it. -->
+  <!-- Which build is answering, at both ends of the serial link: the dongle's
+       firmware and this server's. Both turn into warnings on their own terms -
+       an api the ui does not speak, and a source file newer than the process. -->
+  <span id="fw" class="build dim" hidden></span>
   <span id="build" class="build dim" title="running build"></span>
 </header>
 
