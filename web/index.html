@@ -85,6 +85,9 @@
         <label class="check" title="Keep sweeping and update the chart as it goes">
           <input type="checkbox" id="scan-live" checked> live</label>
         <span id="scan-note" class="dim">All 126 channels, swept at 2 Mbps. Reception pauses while it runs.</span>
+        <!-- Which bar the pointer is over. Its own element rather than the note
+             above, so a live scan rewriting the summary cannot erase it. -->
+        <span id="scan-hover" class="scan-hover"></span>
       </div>
       <div class="scan-chart" id="scan-chart"></div>
     </div>

@@ -510,6 +510,28 @@ function showTab(name) {
 
 const CHANNELS = 126;   // 0..125 = 2400..2525 MHz
 
+// A bar is a couple of pixels wide and the number it stands for is the whole
+// reason to look at it. The native tooltip carries that number too, but it
+// waits a second and gives up at the first movement - useless for sweeping
+// along the band to find which one is busy. This reads out immediately, in the
+// header, where it does not cover the chart it describes.
+let hoveredBar = null;
+
+function showScanHover(bar) {
+  if (bar !== undefined) hoveredBar = bar;
+  const el = $("scan-hover");
+  // isConnected: starting a new scan replaces every bar, and the one under the
+  // pointer is then a detached element describing nothing.
+  if (!hoveredBar || !hoveredBar.isConnected) {
+    el.textContent = "";
+    return;
+  }
+  const ch = Number(hoveredBar.dataset.ch);
+  el.textContent = `ch ${ch} · ${2400 + ch} MHz · `
+                 + `${hoveredBar.dataset.count}/${hoveredBar.dataset.passes}`
+                 + (hoveredBar.classList.contains("here") ? " · tuned" : "");
+}
+
 function renderScan(event) {
   const note = $("scan-note");
   if (event.state === "running") {
@@ -545,7 +567,15 @@ function renderScan(event) {
     bar.style.setProperty("--h", `${Math.round((count / event.passes) * 100)}%`);
     bar.title = `ch ${ch} — ${2400 + ch} MHz — ${count}/${event.passes} passes`
                 + (ch === tuned ? " (tuned here)" : "");
+    // Read back by the hover readout. Kept on the element rather than looked up
+    // from `hits` at hover time, so the readout describes the bar that is drawn
+    // even if a live report has moved on since.
+    bar.dataset.ch = ch;
+    bar.dataset.count = count;
+    bar.dataset.passes = event.passes;
   }
+  // The pointer may already be resting on a bar whose numbers just changed.
+  showScanHover();
 
   const found = Object.keys(hits).length;
   const live = scanning() ? " · live" : "";
@@ -739,6 +769,16 @@ function init() {
   for (const btn of document.querySelectorAll("[data-cmd]")) {
     btn.addEventListener("click", () => send(btn.dataset.cmd));
   }
+
+  // Delegated, because every report may replace the bars. A move that lands
+  // between two bars keeps the last reading rather than blanking it: the gaps
+  // are one pixel wide, and clearing there would make the readout flicker all
+  // the way across the band.
+  $("scan-chart").addEventListener("pointermove", (e) => {
+    const bar = e.target.closest(".scan-bar");
+    if (bar) showScanHover(bar);
+  });
+  $("scan-chart").addEventListener("pointerleave", () => showScanHover(null));
 
   $("scan-run").addEventListener("click", () => {
     if (scanning()) return void send("scan off");
