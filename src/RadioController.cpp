@@ -42,7 +42,22 @@ constexpr uint8_t FIFO_RX_EMPTY = 0x01;
 constexpr uint8_t STATUS_RX_DR = 0x40;
 
 // The dongle's SPI is shared with nothing else, so one setting object is fine.
-const SPISettings NRF_SPI(4000000, MSBFIRST, SPI_MODE0);
+//
+// 8 MHz is the ATmega's ceiling as a master (F_CPU/2) and well inside the
+// nRF24L01+'s 10. It halves the time a payload spends on the bus: the drain
+// loop's own measurement, `us_in` in `info`, fell from 190 to 143 us a frame,
+// and 360 frames of mixed lengths came through with nothing corrupted,
+// duplicated or invented.
+//
+// Worth knowing what that did and did not buy. It changed a transfer's speed
+// by nothing at all - 1.28 ms a frame before and after - because the sending
+// path is bound by the serial line and the air, not by SPI. And of the 143 us
+// that remain, only about 41 are the bus clocking 41 bytes. The other hundred
+// are Arduino: a digitalWrite on CSN costs some 4 us and there are two per
+// transaction, plus beginTransaction, endTransaction and a polling loop per
+// byte. Direct port writes would take most of it back, and would still not be
+// on the critical path of anything measured here.
+const SPISettings NRF_SPI(8000000, MSBFIRST, SPI_MODE0);
 }  // namespace
 
 uint8_t RadioController::regRead(uint8_t reg) {

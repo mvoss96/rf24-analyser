@@ -428,6 +428,39 @@ byte-for-byte identical). Unacknowledged and binary reaches 0.79 ms and
 39.7 kB/s, which is the sending dongle's serial line and nothing else - but
 at that rate the receiving dongle sees about a seventh of it.
 
+#### How much of it is Arduino
+
+The SPI clock was at 4 MHz where the chip allows 10 and the ATmega can drive 8.
+Raising it is one line, and it is also the cleanest way to separate bus time
+from library overhead - halving the clock rate halves the former and leaves the
+latter alone.
+
+`us_in`, the drain loop's own measure of everything up to the flush, fell from
+**190 to 143 us** a frame. Of those 143, about 41 are the bus actually clocking
+41 bytes. **The other hundred are Arduino**: `digitalWrite` on CSN costs some
+4 us and there are two per transaction, plus `beginTransaction`,
+`endTransaction`, and a polling loop per byte. Direct port writes would take
+most of that back.
+
+But it is not on the critical path of anything measured here. A transfer ran at
+1.28 ms a frame before the change and 1.28 ms after - the sending side is bound
+by the serial line and by air that does not overlap it, and 47 us against
+1290 does not show. The receive path gained the 47 us against a per-frame cost
+of some 830, most of which is serial output.
+
+So the honest ranking of what is left, by measured headroom rather than by how
+interesting it is:
+
+| | worth | blocked on |
+|---|---|---|
+| overlap air with wire on the acknowledged path | 1.29 → ~0.85 ms | the exactness of `sent` |
+| drop the per-payload flush on the receive path | 2.4 → 0.83 ms received | reproducing the duplicate fault |
+| direct port writes instead of `digitalWrite` | ~60 us a frame | nothing, but it is not binding |
+| a bigger payload | – | 32 bytes is the chip's maximum |
+| a faster serial rate | negative | measured: 1 MBaud costs more than it saves |
+
+The clock stays at 8 MHz because it is free and correct, not because it helped.
+
 #### Picking up where a broken run stopped
 
 An acknowledged run reports how many frames the radio confirmed, and a
