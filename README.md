@@ -636,10 +636,97 @@ person watching to agree to, not for a file watcher to decide. The setup fields
 keep what the dongle last reported, so `Start` puts the radio back where it was
 rather than on the page's defaults.
 
+**What never arrived is counted in Python**, and the browser only draws it. It
+used to be worked out twice by two different methods — which, in a tool built to
+measure frame loss, is the worst kind of bug: two believable numbers about the
+same traffic. They are still two numbers, deliberately, because they answer
+different questions and are shown in different places:
+
+- the **`−n` on a row** is local and immediate: how far that frame's id was
+  ahead of the furthest one seen from its sender. It can overstate, because ids
+  arrive out of order and a straggler may fill the gap a moment later.
+- the **total in the header** is the honest one and needs the whole set: the
+  counter values that never appeared at all, over the smallest arc containing
+  every id seen. That one takes the straggler back.
+
+They are never added together, and both come from `Loss` in `nrf24web.py` — the
+same class that answers `/api/capture`, so the table and an agent's capture
+summary cannot disagree about the same traffic any more.
+
+**Columns** switch off individually, from a menu next to the filters, and the
+choice is remembered. They are hidden by a stylesheet rule rather than by
+leaving the cells out: the row is addressed by position in several places —
+which cell carries the pipe, which one the sender — and a table whose column
+count depended on what was switched on would have every one of those doing
+arithmetic about it. The last visible column cannot be switched off, because a
+table with no columns is not a view of anything and finding the way back out
+means guessing which invisible thing to click.
+
+The list **filters by pipe, and by sender where the decoder names one**. Both
+pickers offer only values this capture has actually shown — six pipes where one
+is in use is a list of five wrong answers — and the sender picker stays away
+entirely under a decoder that has no notion of one, like the raw view. It is a
+filter on the view and not on the capture: everything received is kept, so
+widening it again brings the frames back, and the count says `3 of 128 frames`
+rather than `3`, because a filtered count that looks like a total is a quiet lie
+about how much traffic there was. When nothing matches, the table says that
+instead of looking like a dead radio.
+
+Pipes and senders are also **coloured apart**, each on the cell that names it,
+and on **different channels**: the sender as the colour of its own text, the
+pipe as a tint behind its number. One palette for both made blue mean "pipe 1"
+and "this sender" in the same row, which reads as a relation between two things
+that have nothing to do with each other. The two lists are also ordered to start
+far apart, because both are handed out in order of appearance and the common
+case — one or two of each — is the one that must not collide. Which column holds
+the sender, the decoder declares, the same way it declares which one holds the
+packet number, so the table never has to guess from the contents. A three-pixel stripe down the left edge came first and was
+removed: it was correct and unreadable, and it marked the whole row without
+saying which of the row's two colourable things it meant. Two things worth
+telling apart need two places to say it, not one place and a stripe. Only once
+there are two of them, though: a colour every row shares
+says nothing and still costs the eye something. Six colours are defined and a
+seventh value goes uncoloured rather than repeating one, because a repeated
+colour asserts a sameness that is not there. A frame the decoder objected to
+stays red throughout — that it is broken outranks whose it was.
+
+> Following the tail is one scroll per batch of rows, not one per row. Reading
+> `scrollHeight` forces the browser to lay the table out on the spot, so doing
+> it per row made every redraw quadratic: 800 frames took 3.9 seconds instead of
+> 11 ms, and a full 5000-frame history would have taken minutes. It cost that on
+> every filter change and on every tab that opened against a server with history
+> to replay.
+
 Frames arrive with **millisecond timestamps and a Δ column** — the
 three repeats of one event sit ~4 ms apart, which per-second resolution hides.
-Selecting a row shows **decoded fields and the hex dump side by side**; frames the
-decoder objected to are drawn in red. The log and the free-text command line share
+Selecting a row shows its **decoded fields** and its **hex dump**, one tab each
+rather than side by side: the strip is a few lines tall, and halving its width
+left neither half wide enough to read. Frames the decoder objected to are drawn
+in red.
+
+**Ctrl-click or right-click a second row and those same two tabs compare two
+frames instead of showing one.** Decoded stacks each differing field's two
+values one under the other and colours the part that moved rather than the whole
+line - a decoder's value is a list, and marking all of "Battery 73; Temperature
+24.59; Humidity 50.74" because one reading changed says only "this line
+differs", which the reader already knows from it being listed at all — never side by side, which put them a field width
+apart and left the eye to travel — and names the fields that match on a single
+`identical` line, because the question a comparison is asked is what differs and
+eight lines of "the same" is where that answer goes to hide. Raw lists the differing bytes as
+`byte 8  0C → 0E`, four to a line, then both frames whole, one line each, so the
+columns stand under one another and the differences sit in their context. Two
+bytes written that way are three characters apart, which is why they are not
+stacked the way the fields are: there the two values sat a field width apart and
+the eye had to travel. Thirty-two bytes is ninety-six characters and fits the width this pane
+has — the eight-byte blocks with a marker row under them predated the tabs, and
+spread four differences over a dozen lines. Both tabs carry the same headline
+saying how far apart the two are. Comparing two receptions is what this tool exists for — invented frames
+showed up because two receivers disagreed — and it belongs in the same place and
+the same reading order as everything else. It was a modal dialog for one
+afternoon; a window is a second home for one half of the same question, and this
+way the byte view and the decoded view are one tab apart rather than one window
+apart. A length difference pads rather than stops the comparison, because that
+is a finding too. The log and the free-text command line share
 their own tab. A tab opened later is brought up to date: the server replays the
 greeting, the current state and the retained frames.
 

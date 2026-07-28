@@ -38,6 +38,11 @@ class Parser:
     # counter values there rather than in a row of its own.
     packet_column = None
 
+    # Which of `columns` shows source(), if any. The table colours that cell per
+    # sender, which is only legible where the sender is actually written - a
+    # marker at the edge of the row is a colour looking for its subject.
+    source_column = None
+
     def available(self):
         """Returns None if usable, otherwise a reason string."""
         return None
@@ -209,6 +214,7 @@ class NRF24SmartParser(Parser):
     columns = (("id", "Msg#", 64), ("uuid", "UUID", 116),
                ("kind", "Kind", 130), ("data", "Content", None))
     packet_column = "id"
+    source_column = "uuid"
 
     # -- identification --
 
@@ -386,6 +392,7 @@ class BTHomeParser(Parser):
 
     columns = (("id", "Pkt#", 64), ("sender", "Sender", 116), ("data", "Measurements", None))
     packet_column = "id"
+    source_column = "sender"
 
     def available(self):
         try:

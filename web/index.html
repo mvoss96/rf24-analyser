@@ -5,6 +5,9 @@
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <title>nRF24 Analyser</title>
 <link rel="stylesheet" href="/app.css">
+<!-- Written by app.js: one rule per hidden column. Cheaper and steadier than
+     touching every cell, and it survives rows being rebuilt underneath it. -->
+<style id="colstyle"></style>
 </head>
 <body>
 
@@ -40,11 +43,27 @@
     <div class="frames-head">
       <label class="inline-label" for="decoder">Decoder</label>
       <select id="decoder" class="control"></select>
+      <!-- Filled from what has actually arrived, so the choices are the pipes
+           and senders in this capture rather than every pipe a radio has. The
+           sender picker only appears when the decoder names one. -->
+      <select id="f-pipe" class="control" aria-label="Filter by pipe"></select>
+      <select id="f-source" class="control" aria-label="Filter by sender" hidden></select>
+      <!-- A native details element: it opens, closes on Esc and takes keyboard
+           focus without a line of script. The checkboxes are built in app.js,
+           because which columns exist is the decoder's answer. -->
+      <details id="colmenu" class="colmenu">
+        <summary class="control">Columns</summary>
+        <div id="colmenu-list" class="colmenu-list"></div>
+      </details>
       <span class="spacer"></span>
       <span id="count" class="dim">0 frames</span>
       <label class="check" title="Fold a sender's retransmissions of one event into a single row">
         <input type="checkbox" id="group" checked> Group repeats</label>
       <label class="check"><input type="checkbox" id="follow" checked> Follow</label>
+      <!-- Holds the table still without touching the radio: frames keep
+           arriving and keep being kept, they just wait their turn. -->
+      <button id="pause" class="btn ghost small"
+              title="Stop the table moving. Reception carries on and nothing is lost.">Pause</button>
       <button id="clear" class="btn ghost small">Clear</button>
     </div>
 
@@ -55,28 +74,33 @@
       <thead><tr id="head"></tr></thead>
       <tbody id="rows"></tbody>
     </table>
-    <p id="empty" class="empty">No frames yet — connect, then <b>Start</b>.</p>
+    <p id="empty" class="empty">
+      <span id="empty-none">No frames yet — connect, then <b>Start</b>.</span>
+      <span id="empty-filtered" hidden>Nothing matches the filter — frames are
+      arriving, they are just not these.</span>
+    </p>
     </div>
   </section>
 
   <div class="bottom">
+    <!-- Tabs rather than two panes side by side: this strip is a few lines
+         tall, and halving its width made both halves too narrow to read a
+         hexdump or a decoded line without wrapping. With a second row marked
+         these same two show two frames instead of one - Decoded compares the
+         fields, Raw compares the bytes. -->
     <div class="tabs">
-      <button class="tab active" data-tab="detail">Detail</button>
+      <button class="tab active" data-tab="decoded">Decoded</button>
+      <button class="tab" data-tab="raw">Raw</button>
       <button class="tab" data-tab="scan">Scan</button>
       <button class="tab" data-tab="terminal">Terminal</button>
     </div>
 
-    <div class="panel" id="panel-detail">
-      <div class="split">
-        <div class="pane">
-          <div class="pane-title">decoded</div>
-          <pre id="detail" class="mono"></pre>
-        </div>
-        <div class="pane">
-          <div class="pane-title">raw</div>
-          <pre id="raw" class="mono"></pre>
-        </div>
-      </div>
+    <div class="panel" id="panel-decoded">
+      <pre id="detail" class="mono"></pre>
+    </div>
+
+    <div class="panel" id="panel-raw" hidden>
+      <pre id="raw" class="mono"></pre>
     </div>
 
     <div class="panel" id="panel-scan" hidden>

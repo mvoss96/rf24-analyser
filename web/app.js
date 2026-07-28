@@ -4,8 +4,42 @@ const $ = (id) => document.getElementById(id);
 const MAX_ROWS = 5000;
 
 let connected = false;
-let frames = [];      // every decoded frame, in arrival order
+// Everything that arrived, and the part of it currently on screen. The two are
+// separate because a filter has to be able to give back what it hid: keeping
+// only the visible frames would make every filter a one-way discard.
+let allFrames = [];
+let frames = [];      // the frames the filter lets through, in arrival order
 let groups = [];      // table rows: frames folded by event identity
+
+// How far into allFrames the table has been drawn. It stops advancing while
+// paused, which is the whole of what pausing is: frames keep arriving and keep
+// being kept, they just wait their turn. Nothing is dropped and the radio is
+// not touched - stopping reception to read a row would change what you are
+// reading about.
+let shownUpTo = 0;
+let paused = false;
+
+// The pipes and senders this capture has actually shown, each mapped to the
+// order it first appeared in. The pickers offer these rather than every pipe a
+// radio has - six choices where one is in use is a list of five wrong answers -
+// and the order doubles as the colour each one is drawn in.
+const seenPipes = new Map();
+const seenSources = new Map();
+
+// Six slots each for pipes and senders; a seventh value goes uncoloured rather
+// than reusing one, because a repeated colour asserts a sameness that is not
+// there. The two are drawn on different channels - the sender as the colour of
+// its own text, the pipe as a tint behind its number - so that one row carrying
+// both does not read as a relation between them.
+const TAGS = 6;
+
+// The colour slot for a value, or null when there is nothing to tell apart.
+// One pipe on screen needs no colour to distinguish it from the others.
+function tagOf(seen, value) {
+  if (seen.size < 2 || value === null || value === undefined) return null;
+  const index = seen.get(value);
+  return index === undefined || index >= TAGS ? null : String(index);
+}
 let selected = -1;
 
 // What the dongle last said about itself, from the server's `info` snapshot -
@@ -298,19 +332,79 @@ function setColumns(columns) {
   if (columns) decoderColumns = columns;
   const head = $("head");
   head.replaceChildren();
-  for (const { label, cls, title } of radioColumns()) {
+  for (const { key, label, cls, title } of radioColumns()) {
     const th = document.createElement("th");
     th.className = cls;
+    th.dataset.col = key;
     th.textContent = label;
     if (title) th.title = title;
     head.appendChild(th);
   }
   for (const column of decoderColumns) {
     const th = document.createElement("th");
+    th.dataset.col = column.key;
     th.textContent = column.label;
     if (column.width) th.style.width = `${column.width}px`;
     head.appendChild(th);
   }
+  paintColumnMenu();
+  applyHiddenColumns();
+}
+
+// --- showing and hiding columns ---------------------------------------------
+
+// Hidden by CSS rather than by leaving the cells out. The row is addressed by
+// position in several places - which cell carries the pipe, which one the
+// sender - and a table whose column count depends on what is switched on would
+// have every one of those doing arithmetic about it.
+const HIDDEN_COLUMNS = "nrf24.hiddenColumns";
+const hiddenColumns = new Set(JSON.parse(localStorage.getItem(HIDDEN_COLUMNS) || "[]"));
+
+function applyHiddenColumns() {
+  const rules = [...hiddenColumns].map((key) =>
+    `#frame-table [data-col="${CSS.escape(key)}"] { display: none; }`);
+  $("colstyle").textContent = rules.join("\n");
+  localStorage.setItem(HIDDEN_COLUMNS, JSON.stringify([...hiddenColumns]));
+}
+
+function allColumns() {
+  return [...radioColumns().map(({ key, label }) => ({ key, label })),
+          ...decoderColumns.map(({ key, label }) => ({ key, label }))];
+}
+
+function paintColumnMenu() {
+  const list = $("colmenu-list");
+  list.replaceChildren();
+  for (const { key, label } of allColumns()) {
+    const wrap = document.createElement("label");
+    wrap.className = "check";
+    const box = document.createElement("input");
+    box.type = "checkbox";
+    box.dataset.col = key;
+    box.checked = !hiddenColumns.has(key);
+    box.addEventListener("change", () => {
+      if (box.checked) hiddenColumns.delete(key);
+      else hiddenColumns.add(key);
+      applyHiddenColumns();
+      lockLastColumn();
+    });
+    wrap.append(box, " " + label);
+    list.appendChild(wrap);
+  }
+  lockLastColumn();
+}
+
+// The last column standing cannot be switched off: a table with no columns is
+// not a view of anything, and finding the way back out means guessing which
+// invisible thing to click.
+//
+// Only the disabled flags are touched, never the boxes themselves. Rebuilding
+// the menu on every toggle replaces the very checkbox that was just clicked,
+// which loses keyboard focus and swaps elements out from under the pointer.
+function lockLastColumn() {
+  const boxes = [...$("colmenu-list").querySelectorAll("input")];
+  const shown = boxes.filter((box) => box.checked);
+  for (const box of boxes) box.disabled = box.checked && shown.length === 1;
 }
 
 // A row is one event, not one frame. A sender repeating an event three times
@@ -365,22 +459,39 @@ function paintRow(group) {
     len: head.len,
     repeats: count > 1 ? `×${count}` + (ms !== null ? `  ${ms} ms` : "") : "",
   };
-  const cells = radioColumns().map(({ key, cls }) => [values[key], cls, null]);
+  const pipeTag = tagOf(seenPipes, head.pipe);
+  const cells = radioColumns().map(({ key, cls }) =>
+    ({ key, text: values[key], cls, marker: key === "pipe" ? ["pipe", pipeTag] : null }));
+  const senderTag = tagOf(seenSources, head.source);
   for (const column of decoderColumns) {
-    // Skipped counter values are marked on the packet number itself: a row of
-    // its own said the same thing in far more space, and pushed the frames
-    // apart to say it.
-    const lost = column.packet && group.missing ? group.missing : null;
-    cells.push([head.cells[column.key] ?? "", "", lost]);
+    cells.push({
+      key: column.key,
+      text: head.cells[column.key] ?? "",
+      cls: "",
+      // Skipped counter values are marked on the packet number itself: a row of
+      // its own said the same thing in far more space, and pushed the frames
+      // apart to say it.
+      lost: column.packet && group.missing ? group.missing : null,
+      // The sender's colour goes on the cell that names the sender. The decoder
+      // says which column that is, the same way it says which one holds the
+      // packet number - the table has no business guessing from the contents.
+      marker: column.source ? ["source", senderTag] : null,
+    });
   }
 
   const tds = group.tr.children;
   while (tds.length > cells.length) group.tr.removeChild(group.tr.lastChild);
-  cells.forEach(([text, cls, lost], i) => {
+  cells.forEach(({ key, text, cls, lost, marker }, i) => {
     const td = tds[i] || group.tr.appendChild(document.createElement("td"));
     td.className = cls;
+    td.dataset.col = key;      // what the column menu hides it by
     td.textContent = text;
     td.title = "";
+    // Both cleared first: a cell is reused when the decoder changes, and the
+    // column it becomes may not be the one it was.
+    setTag(td, "pipe", null);
+    setTag(td, "source", null);
+    if (marker) setTag(td, marker[0], marker[1]);
     if (lost) {
       const mark = document.createElement("span");
       mark.className = "lost";
@@ -393,51 +504,156 @@ function paintRow(group) {
   group.tr.classList.toggle("repeated", count > 1);
 }
 
-// Packet counters run in sequence per sender, so a jump in one is the only
-// direct evidence a sniffer has that something never arrived. The counter is a
-// byte, hence the wrap.
-const lastPacket = new Map();   // source -> furthest packet id seen
-let missingTotal = 0;
+// What never arrived is counted in Python and only drawn here. It used to be
+// worked out twice, by two different methods, which in a tool built to measure
+// frame loss is the worst kind of bug: two believable numbers about the same
+// traffic. See the Loss class in nrf24web.py.
+//
+// The two numbers say different things and are shown in different places.
+// `frame.jumped` is local: how far this frame's id is ahead of the furthest
+// seen from that sender, marked on its row. It can overstate, because ids
+// arrive out of order and a gap may be filled a moment later. The total below
+// is the honest one - the counter values that never appeared at all - and comes
+// from the server as a `stats` event.
+let lossTotal = 0;
 
-// Ids do not arrive in order. A sender repeats each event, and a frame left
-// over from an earlier transmission can arrive in the middle of the current
-// burst carrying the id before it. Read frame to frame, every such step back
-// counts as a jump forward of 255 and reports 254 packets lost - the mistake
-// the capture summary was fixed for, still living here until now. Only a step
-// FORWARD from the furthest id seen means something never arrived; anything
-// behind it is a repeat or a straggler and says nothing about loss.
-const BEHIND_TOLERANCE = 64;
-
-function missingBefore(frame) {
-  if (frame.packetId === null || frame.packetId === undefined || !frame.source) return 0;
-  const furthest = lastPacket.get(frame.source);
-  if (furthest === undefined) {
-    lastPacket.set(frame.source, frame.packetId);
-    return 0;
-  }
-  const ahead = (frame.packetId - furthest) & 0xFF;
-  // Equal means a retransmission of the event we just saw, not a new one.
-  if (ahead === 0) return 0;
-  if (ahead > 0xFF - BEHIND_TOLERANCE) return 0;   // behind: a repeat or a stale frame
-  lastPacket.set(frame.source, frame.packetId);
-  return ahead - 1;
-}
-
-function missingNote(frame, missing) {
-  const from = (frame.packetId - missing) & 0xFF;
-  const range = missing === 1 ? `#${from}` : `#${from} to #${(frame.packetId - 1) & 0xFF}`;
+function missingNote(frame, jumped) {
+  const from = (frame.packetId - jumped) & 0xFF;
+  const range = jumped === 1 ? `#${from}` : `#${from} to #${(frame.packetId - 1) & 0xFF}`;
   // The counter is a byte, so a gap of n is really n, n+256, n+512... For small
   // gaps that is pedantry; past half a cycle a wrap is plausible enough to say.
-  const floor = missing >= 128 ? "at least " : "";
-  return `${floor}${missing} packet${missing === 1 ? "" : "s"} never arrived before this `
-       + `one — ${range} from ${frame.source}`;
+  const floor = jumped >= 128 ? "at least " : "";
+  return `${floor}${jumped} packet${jumped === 1 ? "" : "s"} had not arrived when this `
+       + `one did — ${range} from ${frame.source}. A straggler can still fill a `
+       + `gap; the total in the header is the count that takes that back.`;
 }
 
 function addRow(frame) {
-  frames.push(frame);
+  allFrames.push(frame);
+  if (noteSeen(frame)) {
+    paintFilters();
+    // The rows already drawn were drawn when there was nothing to tell apart.
+    // The second sender is exactly the moment the first one needs its colour.
+    repaintTags();
+  }
+  if (paused) {
+    updateCount();        // it arrived and is kept; it is only not drawn yet
+    paintPause();
+    return;
+  }
+  shownUpTo = allFrames.length;
+  if (passesFilter(frame)) renderFrame(frame);
+  else updateCount();     // the total moved even though the screen did not
+}
 
-  const missing = missingBefore(frame);
-  if (missing) missingTotal += missing;
+// --- pausing ----------------------------------------------------------------
+
+function setPaused(on) {
+  paused = on;
+  if (!paused) {
+    // Everything held back, in arrival order, so grouping and the packet-loss
+    // accounting see the same sequence they would have seen live.
+    for (const frame of allFrames.slice(shownUpTo)) {
+      if (passesFilter(frame)) renderFrame(frame);
+    }
+    shownUpTo = allFrames.length;
+  }
+  paintPause();
+  updateCount();
+  if (!paused) scrollToEnd();
+}
+
+function paintPause() {
+  const waiting = allFrames.length - shownUpTo;
+  const button = $("pause");
+  button.classList.toggle("primary", paused);
+  button.textContent = !paused ? "Pause"
+                     : waiting ? `Resume · ${waiting} waiting`
+                               : "Resume";
+}
+
+// --- filtering --------------------------------------------------------------
+
+// Which values this frame contributes to the pickers; true when it brought one
+// that was not there before.
+function noteSeen(frame) {
+  let fresh = false;
+  if (frame.pipe !== null && frame.pipe !== undefined && !seenPipes.has(frame.pipe)) {
+    seenPipes.set(frame.pipe, seenPipes.size);
+    fresh = true;
+  }
+  if (frame.source && !seenSources.has(frame.source)) {
+    seenSources.set(frame.source, seenSources.size);
+    fresh = true;
+  }
+  return fresh;
+}
+
+// Read straight off the pickers rather than mirrored into state of its own:
+// one place to be wrong is better than two places to disagree.
+function passesFilter(frame) {
+  const pipe = $("f-pipe").value;
+  const source = $("f-source").value;
+  if (pipe !== "" && String(frame.pipe) !== pipe) return false;
+  if (source !== "" && (frame.source || "") !== source) return false;
+  return true;
+}
+
+// Only the two colour attributes, on rows that already exist. Cheap enough to
+// run whenever a new pipe or sender turns up, which is rare - and far cheaper
+// than redrawing every cell to change an outline.
+function repaintTags() {
+  const radio = radioColumns();
+  const pipeCell = radio.findIndex((column) => column.key === "pipe");
+  const sourceCell = decoderColumns.findIndex((column) => column.source);
+  for (const group of groups) {
+    const [head] = group.frames;
+    if (pipeCell >= 0) setTag(group.tr.children[pipeCell], "pipe", tagOf(seenPipes, head.pipe));
+    if (sourceCell >= 0) {
+      setTag(group.tr.children[radio.length + sourceCell], "source",
+             tagOf(seenSources, head.source));
+    }
+  }
+}
+
+function setTag(el, name, tag) {
+  if (!el) return;
+  if (tag === null) delete el.dataset[name];
+  else el.dataset[name] = tag;
+}
+
+function paintFilters() {
+  fillPicker($("f-pipe"), "all pipes",
+             [...seenPipes.keys()].sort((a, b) => a - b).map((p) => [String(p), `pipe ${p}`]));
+  fillPicker($("f-source"), "all senders",
+             [...seenSources.keys()].sort().map((s) => [s, s]));
+  // A decoder that does not name a sender has nothing to offer here - the raw
+  // one does not, and an empty picker would only invite a click that does
+  // nothing.
+  $("f-source").hidden = seenSources.size === 0;
+}
+
+function fillPicker(select, allLabel, entries) {
+  const chosen = select.value;
+  const all = document.createElement("option");
+  all.value = "";
+  all.textContent = allLabel;
+  select.replaceChildren(all);
+  for (const [value, label] of entries) {
+    const option = document.createElement("option");
+    option.value = value;
+    option.textContent = label;
+    select.appendChild(option);
+  }
+  // If what was selected is no longer among the choices - after a Clear, or a
+  // decoder that names senders differently - fall back to showing everything.
+  // A filter kept on a value that cannot occur shows an empty table and blames
+  // the radio for it.
+  select.value = [...select.options].some((o) => o.value === chosen) ? chosen : "";
+}
+
+function renderFrame(frame) {
+  frames.push(frame);
 
   const existing = groupable(frame);
   if (existing) {
@@ -453,43 +669,103 @@ function addRow(frame) {
     if (previous && frame.deviceMs !== null && previous.frames[0].deviceMs !== null) {
       gap = frame.deviceMs - previous.frames[0].deviceMs;
     }
-    const group = { identity: frame.identity, frames: [frame], gap, missing,
-                    tr: document.createElement("tr") };
+    const group = { identity: frame.identity, frames: [frame], gap,
+                    missing: frame.jumped || 0, tr: document.createElement("tr") };
     const index = groups.length;
     groups.push(group);
-    group.tr.addEventListener("click", () => select(index));
+    // Ctrl or Cmd marks a second row; right-click opens the comparison of the
+    // two. Marking and opening are separate on purpose - a window that appears
+    // on the same click that picks a row takes the table away from you just as
+    // you were choosing in it.
+    group.tr.addEventListener("click", (e) => {
+      if (e.ctrlKey || e.metaKey) markCompare(index);
+      else select(index);
+    });
+    group.tr.addEventListener("contextmenu", (e) => {
+      e.preventDefault();
+      markCompare(index);
+    });
     paintRow(group);
     tbody.appendChild(group.tr);
     while (tbody.children.length > MAX_ROWS) tbody.removeChild(tbody.firstChild);
   }
 
-  $("empty").hidden = true;
   updateCount();
-  if ($("follow").checked) {
+  scrollToEnd();
+}
+
+// Following the tail is one scroll per batch of work, not one per row.
+//
+// Reading scrollHeight forces the browser to lay the table out there and then,
+// so doing it per row makes the whole rebuild quadratic: measured over 800
+// frames it went from 11 ms to 3.9 seconds, and a full 5000-frame history would
+// have taken minutes. It cost that on every filter change and on every tab that
+// opened against a server with history to replay. requestAnimationFrame folds
+// any number of requests in one paint into a single scroll, which is all the
+// screen could show anyway.
+let scrollPending = false;
+
+function scrollToEnd() {
+  if (scrollPending || !$("follow").checked) return;
+  scrollPending = true;
+  requestAnimationFrame(() => {
+    scrollPending = false;
+    if (!$("follow").checked) return;
     const wrap = document.querySelector(".table-wrap");
     wrap.scrollTop = wrap.scrollHeight;
-  }
+  });
 }
 
 function updateCount() {
-  const total = frames.length;
+  const shown = frames.length;
+  const total = allFrames.length;
   const parts = [];
-  if (groups.length && groups.length !== total) parts.push(`${groups.length} events`);
-  parts.push(`${total} frame${total === 1 ? "" : "s"}`);
-  if (missingTotal) parts.push(`${missingTotal} missing`);
+  if (groups.length && groups.length !== shown) parts.push(`${groups.length} events`);
+  // "3 of 128" rather than "3": a filtered count that looks like a total is a
+  // quiet lie about how much traffic there was.
+  parts.push(shown === total ? `${total} frame${total === 1 ? "" : "s"}`
+                             : `${shown} of ${total} frames`);
+  // Counted over what is shown. With a sender filter that is exactly right -
+  // every frame of that sender is on screen - and with a pipe filter it is the
+  // loss within that pipe, which is the question the filter was asking.
+  if (lossTotal) parts.push(`${lossTotal} missing`);
   $("count").textContent = parts.join(" · ");
-  $("count").classList.toggle("has-loss", missingTotal > 0);
+  $("count").classList.toggle("has-loss", lossTotal > 0);
+
+  // Nothing on screen has three very different reasons, and telling them apart
+  // is the whole value of saying anything: nothing has arrived, nothing here
+  // matches, or everything that arrived is waiting behind a pause.
+  const waiting = allFrames.length - shownUpTo;
+  $("empty").hidden = shown > 0 || (paused && waiting > 0);
+  $("empty-none").hidden = total > 0;
+  $("empty-filtered").hidden = total === 0;
 }
 
 function select(index) {
-  const group = groups[index];
-  if (!group) return;
+  if (!groups[index]) return;
   selected = index;
-  // The row is held on the group rather than found by index: gap rows sit in
-  // the same tbody, so the two no longer line up.
-  for (const tr of $("rows").children) tr.classList.remove("sel");
-  group.tr.classList.add("sel");
+  compared = -1;          // a plain click starts a new comparison, not a third row
+  paintSelection();
+  renderDetail();
+  showFrameTab();
+}
 
+// Drawing the two panes, separately from choosing what goes in them. Marking a
+// second row has to redraw this without also being a new selection, which is
+// what happened when it went through select().
+//
+// With a second row marked the same two tabs show two frames instead of one:
+// Decoded compares the fields, Raw compares the bytes. That is what the tabs
+// were already for, and it means the comparison is read the same way and in the
+// same place as everything else - a dialog for it was a second home for one
+// half of the same question.
+function renderDetail() {
+  const group = groups[selected];
+  if (!group) return;
+  if (groups[compared]) {
+    renderCompare(group.frames[0], groups[compared].frames[0]);
+    return;
+  }
   const [head] = group.frames;
   const lines = [...head.detail];
   if (group.frames.length > 1) {
@@ -498,22 +774,179 @@ function select(index) {
         ? `${f.deviceMs - group.frames[i].deviceMs} ms` : "?");
     lines.push("", `  repeats   : ${group.frames.length} frames, ${gaps.join(" + ")} apart`);
   }
+  lines.push("", "  ctrl-click or right-click another row to compare it with this one");
   $("detail").textContent = lines.join("\n");
   $("raw").textContent = head.hex.join("\n");
-  showTab("detail");
+}
+
+// --- comparing two frames ---------------------------------------------------
+
+let compared = -1;
+
+function paintSelection() {
+  for (const tr of $("rows").children) tr.classList.remove("sel", "cmp");
+  if (groups[selected]) groups[selected].tr.classList.add("sel");
+  if (groups[compared]) groups[compared].tr.classList.add("cmp");
+}
+
+// Ctrl-click or right-click: mark the other row, or unmark it. Both gestures do
+// the same thing now that there is nothing to open - the panes below change the
+// moment the mark does.
+function markCompare(index) {
+  if (index === selected) return;          // a frame is not different from itself
+  if (!groups[index] || !groups[selected]) return;
+  compared = compared === index ? -1 : index;
+  paintSelection();
+  renderDetail();
+  showFrameTab();
+}
+
+function endCompare() {
+  compared = -1;
+  paintSelection();
+  renderDetail();
+}
+
+// One field's value, with the part that differs marked rather than the whole
+// of it. A decoder's line is a list - "Battery 73; Temperature 25.49; Humidity
+// 58.63" - and colouring all of it because one reading moved says only "this
+// line changed", which the reader already knows from it being listed at all.
+// Falls back to the whole value when the two do not line up part for part.
+function markDifference(out, value, other, line) {
+  const parts = String(value).split("; ");
+  const others = String(other).split("; ");
+  if (parts.length < 2 || parts.length !== others.length) {
+    out.append(line(String(value) + "\n", "diff"));
+    return;
+  }
+  parts.forEach((part, i) => {
+    if (i) out.append(line("; "));
+    out.append(line(part, part === others[i] ? null : "diff"));
+  });
+  out.append(line("\n"));
+}
+
+// Bytes of the two frames, side by side, with the ones that differ marked.
+// Padded with -- where one frame is shorter: a length difference is a finding,
+// not a reason to stop comparing.
+function renderCompare(a, b) {
+  const bytes = (frame) => (frame.raw.match(/../g) || []);
+  const A = bytes(a);
+  const B = bytes(b);
+  const width = Math.max(A.length, B.length);
+  const differs = (i) => A[i] !== B[i];
+
+  const out = document.createDocumentFragment();
+  const line = (text, cls) => {
+    const span = document.createElement("span");
+    if (cls) span.className = cls;
+    span.textContent = text;
+    return span;
+  };
+
+  // The differing bytes first, one line's worth at a time. Stacking each pair
+  // cost two lines apiece and pushed the frames themselves off the bottom of a
+  // pane that is a dozen lines tall; two bytes written `E8 → EA` are three
+  // characters apart, which is the distance that made stacking worth it for the
+  // fields one tab over and does not apply here.
+  const offsets = [];
+  for (let i = 0; i < width; i++) if (differs(i)) offsets.push(i);
+  const PER_LINE = 4;
+  for (let n = 0; n < offsets.length; n += PER_LINE) {
+    out.append(line("  "));
+    for (const i of offsets.slice(n, n + PER_LINE)) {
+      out.append(line(`byte ${String(i).padEnd(4)}`),
+                 line(A[i] ?? "--", "diff"),
+                 line(" → "),
+                 line((B[i] ?? "--").padEnd(6), "diff"));
+    }
+    out.append(line("\n"));
+  }
+
+  // Then both frames whole, one line each, so the columns line up under one
+  // another and the differences sit in their context. 32 bytes is 96 characters
+  // - it fits the width this pane now has, which the block layout predated.
+  out.append(line("\n"));
+  for (const [label, list] of [["A", A], ["B", B]]) {
+    out.append(line(`  ${label}  `));
+    for (let i = 0; i < width; i++) {
+      out.append(line((list[i] ?? "--") + " ", differs(i) ? "diff" : null));
+    }
+    out.append(line("\n"));
+  }
+  const rows = [
+    ["time", a.time, b.time],
+    ["pipe", a.pipe, b.pipe],
+    ["len", a.len, b.len],
+    ["sender", a.source ?? "—", b.source ?? "—"],
+    ["packet", a.packetId ?? "—", b.packetId ?? "—"],
+    // The decoder's own columns, minus the two it shares with the lines above:
+    // the sender and the packet number are already there, and saying them twice
+    // makes the reader check whether the second pair is a different fact.
+    ...decoderColumns.filter((c) => !c.packet && !c.source)
+      .map((c) => [c.label.toLowerCase(), a.cells[c.key] ?? "", b.cells[c.key] ?? ""]),
+  ];
+  // One under the other, never side by side. Two columns put the values a
+  // whole field width apart and left the eye to travel between them; stacked,
+  // the digit that changed sits directly above the one it changed from.
+  //
+  // Fields that match are named on one line instead of costing two: the
+  // question a comparison is asked is what differs, and eight lines of "the
+  // same" is where that answer goes to hide.
+  const differing = rows.filter(([, left, right]) => String(left) !== String(right));
+  const same = rows.filter(([, left, right]) => String(left) === String(right));
+  const label = Math.max(12, ...differing.map(([name]) => name.length + 2));
+
+  // The same headline over both panes, so whichever tab is open says how far
+  // apart the two are. It no longer names the two times: they are a field like
+  // any other and appear below, and saying them twice made the reader check
+  // whether the second pair meant something else.
+  const headline = `  ${offsets.length} of ${width} bytes differ`
+    + (offsets.length ? ` — at ${offsets.join(", ")}` : ", the two are identical");
+
+  const fields = document.createDocumentFragment();
+  fields.append(line(headline + "\n\n"));
+  if (same.length) {
+    fields.append(line(`  ${"identical".padEnd(label)}`
+                       + same.map(([name, value]) => `${name} ${value}`).join(" · ")
+                       + "\n\n"));
+  }
+  for (const [name, left, right] of differing) {
+    fields.append(line(`  ${name.padEnd(label)}A  `));
+    markDifference(fields, left, right, line);
+    fields.append(line(`  ${"".padEnd(label)}B  `));
+    markDifference(fields, right, left, line);
+  }
+  if (!differing.length) fields.append(line("  every field is the same in both\n"));
+  $("detail").replaceChildren(fields);
+  out.prepend(document.createTextNode(headline + "\n\n"));
+  $("raw").replaceChildren(out);
 }
 
 function rebuild(list) {
   $("rows").replaceChildren();
+  allFrames = list.slice();
   frames = [];
   groups = [];
-  lastPacket.clear();
-  missingTotal = 0;
-  for (const frame of list) addRow(frame);
-  if (!list.length) {
-    $("empty").hidden = false;
-    $("count").textContent = "0 frames";
+  seenPipes.clear();
+  seenSources.clear();
+  // Every value first, then the pickers once. Repainting them frame by frame
+  // would reset the current selection the moment a rebuild reaches its first
+  // frame, because at that point the chosen value has not been seen yet.
+  for (const frame of allFrames) noteSeen(frame);
+  paintFilters();
+  // A pause survives a rebuild: changing the filter must not smuggle in the
+  // frames the pause is holding back.
+  shownUpTo = paused ? Math.min(shownUpTo, allFrames.length) : allFrames.length;
+  for (const frame of allFrames.slice(0, shownUpTo)) {
+    if (passesFilter(frame)) renderFrame(frame);
   }
+  updateCount();
+  paintPause();
+  scrollToEnd();
+  // The rows are new objects, so the two indices point at nothing meaningful.
+  selected = -1;
+  endCompare();   // clears the second index, unmarks the rows, shuts the dialog
   $("detail").textContent = "";
   $("raw").textContent = "";
 }
@@ -522,9 +955,17 @@ function showTab(name) {
   for (const tab of document.querySelectorAll(".tab")) {
     tab.classList.toggle("active", tab.dataset.tab === name);
   }
-  $("panel-detail").hidden = name !== "detail";
-  $("panel-scan").hidden = name !== "scan";
-  $("panel-terminal").hidden = name !== "terminal";
+  // By the id, so adding a tab means adding a panel and nothing else.
+  for (const panel of document.querySelectorAll(".panel")) {
+    panel.hidden = panel.id !== `panel-${name}`;
+  }
+}
+
+// Selecting a row brings the frame's own tabs forward, but does not choose
+// between them: someone reading hex down a list of rows means to stay in hex.
+function showFrameTab() {
+  const active = document.querySelector(".tab.active");
+  if (!["decoded", "raw"].includes(active?.dataset.tab)) showTab("decoded");
 }
 
 // --- channel scan ----------------------------------------------------------
@@ -647,6 +1088,11 @@ function handle(event) {
     deviceRadio = event.radio;
     renderSummary();
     seedSetup();
+  } else if (event.type === "stats") {
+    // What never arrived, as the server counts it. The table draws the number;
+    // it does not have an opinion about it.
+    lossTotal = event.missing || 0;
+    updateCount();
   } else if (event.type === "reset") {
     // Either someone cleared the history, or this connection cannot be
     // continued from what is on screen - a different server process, or a
@@ -665,7 +1111,13 @@ function handle(event) {
     if ($("decoder").value !== event.name) {
       $("decoder").value = event.name;
       setColumns(event.columns);
-      post("/api/parser", { name: event.name }).then((d) => d.frames && rebuild(d.frames));
+      post("/api/parser", { name: event.name }).then((d) => {
+        // The totals come with the frames: who the sender is is the decoder's
+        // answer, so switching decoder is a different question about the same
+        // bytes and gets a different count.
+        if (d.loss) lossTotal = d.loss.missing || 0;
+        if (d.frames) rebuild(d.frames);
+      });
     }
   } else if (event.type === "line") {
     // Log only. The state comes from status events - reading it out of log text
@@ -729,6 +1181,7 @@ async function loadParsers() {
 function init() {
   loadPorts();
   loadParsers();
+  paintFilters();     // so the pickers say "all pipes" before anything arrives
   renderSummary();
   setLinkControls(false);   // until the first status event says otherwise
 
@@ -781,6 +1234,10 @@ function init() {
   // describing the dongle. An edit that was not applied changed nothing, and a
   // field left showing it would be the old lie in a smaller box.
   $("setup").addEventListener("close", seedSetup);
+
+  // Closing the dialog ends the comparison - Esc, the ✕ or the backdrop are
+  // all the same statement, and leaving the second row marked afterwards would
+  // be a selection with nothing to show for it.
   $("apply").addEventListener("click", applySetup);
 
   // Start is about reception, not about configuration: the dongle keeps what it
@@ -817,6 +1274,7 @@ function init() {
     const data = await post("/api/parser", { name: $("decoder").value });
     // Header before rows: the rows are laid out against the columns.
     if (data.columns) setColumns(data.columns);
+    if (data.loss) lossTotal = data.loss.missing || 0;
     if (data.frames) rebuild(data.frames);
   });
 
@@ -834,13 +1292,25 @@ function init() {
   // empties this table on the same path as every other tab's. Doing it here as
   // well would be the one tab that clears for a different reason than the rest.
   $("clear").addEventListener("click", () => post("/api/clear"));
+  $("pause").addEventListener("click", () => setPaused(!paused));
 
-  // Regrouping is a pure view change, so it works on what is already here.
-  // The header changes with it: ungrouped, the repeat column has nothing to say.
+  // Regrouping and filtering are both pure view changes, so they work on what
+  // is already here - on everything that arrived, not on what the last filter
+  // happened to let through. The header changes with grouping: ungrouped, the
+  // repeat column has nothing to say.
   $("group").addEventListener("change", () => {
-    const list = frames.slice();
+    const list = allFrames.slice();
     setColumns();
     rebuild(list);
+  });
+  for (const id of ["f-pipe", "f-source"]) {
+    $(id).addEventListener("change", () => rebuild(allFrames.slice()));
+  }
+
+  // Esc and the summary itself come free with <details>; clicking past it does
+  // not, and a menu that stays open over the table it is about is in the way.
+  document.addEventListener("click", (e) => {
+    if (!$("colmenu").contains(e.target)) $("colmenu").open = false;
   });
 
   document.addEventListener("keydown", (e) => {

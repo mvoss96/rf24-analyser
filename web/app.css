@@ -14,6 +14,31 @@
   --ok: #3b6d11;
   --warn: #854f0b;
   --row-alt: #faf9f7;
+  /* Telling one sender from another at a glance, as the colour of the text
+     naming it. Six, because a seventh would have to repeat one, and a repeated
+     colour is worse than no colour. Red is left out: a flagged row owns it. */
+  --sender-0: #1f6fb2;
+  --sender-1: #3f7d2f;
+  --sender-2: #7a4bbd;
+  --sender-3: #0f7d80;
+  --sender-4: #a5651a;
+  --sender-5: #a33a86;
+  /* Pipes are told apart on a different channel, not just in different colours:
+     a tint behind the cell rather than the colour of a glyph. Sharing one
+     palette made blue mean "pipe 1" and "this sender" in the same row, which
+     reads as a relation between two things that have nothing to do with each
+     other. As a tint the hue is barely nameable anyway - what carries is that
+     two pipes look unlike, and unlike a sender. */
+  /* Ordered to start furthest from the senders' first colours: both lists are
+     handed out in order of appearance, so the common case - one or two of each
+     - is the one that must not collide. First pipe amber against first sender
+     blue, second pipe pink against second sender green. */
+  --pipe-0: 234 179 8;
+  --pipe-1: 236 72 153;
+  --pipe-2: 20 184 166;
+  --pipe-3: 168 85 247;
+  --pipe-4: 60 130 246;
+  --pipe-5: 34 197 94;
   --mono: ui-monospace, "Cascadia Mono", Consolas, "SF Mono", monospace;
 }
 
@@ -34,6 +59,12 @@
     --ok: #97c459;
     --warn: #efa93f;
     --row-alt: #1f1f1e;
+    --sender-0: #7fb6e8;
+    --sender-1: #96c96f;
+    --sender-2: #b79bea;
+    --sender-3: #62c4c2;
+    --sender-4: #e0a95f;
+    --sender-5: #e28fc4;
   }
 }
 
@@ -343,6 +374,12 @@ tbody td {
 tbody tr:nth-child(even) { background: var(--row-alt); }
 tbody tr:hover { background: var(--accent-bg); cursor: default; }
 tbody tr.sel { background: var(--accent-bg); box-shadow: inset 2px 0 0 var(--accent); }
+/* The row being compared against the selected one. Same shape, other colour:
+   the two are a pair, and which is which has to stay obvious. */
+tbody tr.cmp { background: var(--surface-2); box-shadow: inset 2px 0 0 var(--warn); }
+/* Bytes and fields that differ between the two. Amber rather than red: a
+   difference is the thing being looked for, not a fault. */
+.diff { color: var(--warn); font-weight: 600; }
 tbody tr.flagged td { color: var(--danger); }
 /* The one piece of metadata worth reading at full contrast: it says this row
    stands for more than one frame. */
@@ -364,6 +401,36 @@ tbody tr.repeated td.c-rep { color: var(--text); }
 .c-rep  { width: 92px; }
 td.c-delta { text-align: right; color: var(--text-dim); }
 td.c-pipe, td.c-len, td.c-rep { color: var(--text-dim); }
+
+/* Which pipe, and which sender, without reading either - each on the cell that
+   names it. Only set once there is a second one to tell apart: a colour that
+   every row shares says nothing and costs the eye something.
+
+   A three-pixel stripe down the left edge of the row came first and was
+   removed. It was correct and unreadable: on the outer edge of a scrolling
+   table, with most rows sharing one colour, it marked the row without saying
+   which of the row's two colourable things it meant. */
+td[data-source="0"] { color: var(--sender-0); }
+td[data-source="1"] { color: var(--sender-1); }
+td[data-source="2"] { color: var(--sender-2); }
+td[data-source="3"] { color: var(--sender-3); }
+td[data-source="4"] { color: var(--sender-4); }
+td[data-source="5"] { color: var(--sender-5); }
+tbody tr.flagged td[data-source] { color: var(--danger); }
+
+/* The pipe as a tint behind its number, so the two never read as the same kind
+   of statement. Kept weak: it sits under alternating row backgrounds and a
+   selection highlight, and it is a label, not a warning. */
+td.c-pipe[data-pipe] { color: var(--text); border-radius: 3px; }
+td.c-pipe[data-pipe="0"] { background: rgb(var(--pipe-0) / 22%); }
+td.c-pipe[data-pipe="1"] { background: rgb(var(--pipe-1) / 22%); }
+td.c-pipe[data-pipe="2"] { background: rgb(var(--pipe-2) / 22%); }
+td.c-pipe[data-pipe="3"] { background: rgb(var(--pipe-3) / 22%); }
+td.c-pipe[data-pipe="4"] { background: rgb(var(--pipe-4) / 22%); }
+td.c-pipe[data-pipe="5"] { background: rgb(var(--pipe-5) / 22%); }
+/* A flagged row is about the frame being wrong, which outranks which pipe
+   heard it. */
+tbody tr.flagged td.c-pipe { color: var(--danger); }
 
 .empty { padding: 24px; color: var(--text-faint); text-align: center; }
 
@@ -396,9 +463,10 @@ td.c-pipe, td.c-len, td.c-rep { color: var(--text-dim); }
 .tab.active { color: var(--text); border-bottom-color: var(--accent); }
 .panel { flex: 1; min-height: 0; display: flex; flex-direction: column; }
 
-.split { flex: 1; min-height: 0; display: flex; }
+/* Only the compare dialog puts two of these side by side now; the bottom strip
+   gives each its own tab, because half of a few lines is not a view of a
+   hexdump. */
 .pane { flex: 1; min-width: 0; display: flex; flex-direction: column; }
-.pane + .pane { border-left: 1px solid var(--border); flex: 0 0 46%; }
 .pane-title {
   font-size: 11px;
   color: var(--text-faint);
@@ -467,18 +535,45 @@ pre.log { padding-bottom: 4px; }
 
 .check { display: inline-flex; align-items: center; gap: 5px; font-size: 12px; color: var(--text-dim); }
 
+/* Which columns to show. A native details element, so it opens, closes on Esc
+   and takes keyboard focus without a line of script. */
+.colmenu { position: relative; }
+.colmenu > summary {
+  cursor: pointer;
+  list-style: none;
+  user-select: none;
+  padding: 5px 10px;
+}
+.colmenu > summary::-webkit-details-marker { display: none; }
+.colmenu > summary::after { content: " ▾"; color: var(--text-dim); }
+.colmenu[open] > summary { border-color: var(--border-strong); }
+.colmenu-list {
+  position: absolute;
+  z-index: 5;
+  top: calc(100% + 4px);
+  left: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  padding: 10px 12px;
+  background: var(--surface);
+  border: 1px solid var(--border-strong);
+  border-radius: 8px;
+  box-shadow: 0 6px 20px rgb(0 0 0 / 18%);
+  white-space: nowrap;
+}
+/* The last visible column cannot be switched off; say so rather than let the
+   click do nothing. */
+.colmenu-list input:disabled + * , .colmenu-list label:has(input:disabled) {
+  color: var(--text-faint);
+  cursor: not-allowed;
+}
+
 /* --- narrow windows --- */
 
 @media (max-width: 760px) {
   main { padding: 8px; gap: 8px; }
   .topbar, .toolbar { padding-left: 10px; padding-right: 10px; }
-  /* decoded next to raw stops being readable long before this width */
-  .split { flex-direction: column; }
-  .pane + .pane {
-    border-left: 0;
-    border-top: 1px solid var(--border);
-    flex: 1 1 0;
-  }
 }
 @media (max-width: 560px) {
   .brand { display: none; }
