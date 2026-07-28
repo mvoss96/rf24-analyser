@@ -853,26 +853,33 @@ function renderCompare(a, b) {
     ...decoderColumns.filter((c) => !c.packet && !c.source)
       .map((c) => [c.label.toLowerCase(), a.cells[c.key] ?? "", b.cells[c.key] ?? ""]),
   ];
-  // Side by side while both fit, stacked when they do not. One long field -
-  // measurements, usually - would otherwise push every short one so far apart
-  // that the pair is no longer read as a pair.
-  const SIDE_BY_SIDE = 34;
-  const wide = Math.min(SIDE_BY_SIDE,
-                        Math.max(...rows.map(([, left]) => String(left).length)));
-  const text = [`  ${"".padEnd(9)}${"A".padEnd(wide + 2)}B`, ""];
-  for (const [label, left, right] of rows) {
-    const mark = String(left) === String(right) ? "" : "   ←";
-    if (String(left).length <= SIDE_BY_SIDE && String(right).length <= SIDE_BY_SIDE) {
-      text.push(`  ${label.padEnd(9)}${String(left).padEnd(wide + 2)}${right}${mark}`);
-    } else {
-      text.push(`  ${label}${mark}`, `    A  ${left}`, `    B  ${right}`);
-    }
+  // One under the other, never side by side. Two columns put the values a
+  // whole field width apart and left the eye to travel between them; stacked,
+  // the digit that changed sits directly above the one it changed from.
+  //
+  // Fields that match are named on one line instead of costing two: the
+  // question a comparison is asked is what differs, and eight lines of "the
+  // same" is where that answer goes to hide.
+  const differing = rows.filter(([, left, right]) => String(left) !== String(right));
+  const same = rows.filter(([, left, right]) => String(left) === String(right));
+  const label = Math.max(12, ...differing.map(([name]) => name.length + 2));
+
+  const text = [];
+  if (same.length) {
+    text.push(`  ${"identical".padEnd(label)}`
+              + same.map(([name, value]) => `${name} ${value}`).join(" · "), "");
   }
-  // The same headline over both panes, so whichever tab is open says what is
-  // being compared and how far apart the two are.
-  const headline = `  A ${a.time}   B ${b.time}   ·   `
-    + `${offsets.length} of ${width} bytes differ`
-    + (offsets.length ? ` at ${offsets.join(", ")}` : " — the two are identical");
+  for (const [name, left, right] of differing) {
+    text.push(`  ${name.padEnd(label)}A  ${left}`,
+              `  ${"".padEnd(label)}B  ${right}`);
+  }
+  if (!differing.length) text.push("  every field is the same in both");
+  // The same headline over both panes, so whichever tab is open says how far
+  // apart the two are. It no longer names the two times: they are a field like
+  // any other and appear below, and saying them twice made the reader check
+  // whether the second pair meant something else.
+  const headline = `  ${offsets.length} of ${width} bytes differ`
+    + (offsets.length ? ` — at ${offsets.join(", ")}` : ", the two are identical");
   $("detail").textContent = [headline, "", ...text, "",
     "  ctrl-click or right-click the marked row again to stop comparing"].join("\n");
   out.prepend(document.createTextNode(headline + "\n\n"));

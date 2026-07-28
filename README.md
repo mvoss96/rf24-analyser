@@ -705,10 +705,13 @@ left neither half wide enough to read. Frames the decoder objected to are drawn
 in red.
 
 **Ctrl-click or right-click a second row and those same two tabs compare two
-frames instead of showing one**: Decoded lines the fields up and marks the ones
-that differ, Raw puts the bytes over each other with `^^` under every pair that
-does not match, and both carry the same headline saying how far apart the two
-are. Comparing two receptions is what this tool exists for — invented frames
+frames instead of showing one.** Decoded stacks each differing field's two
+values one under the other — never side by side, which put them a field width
+apart and left the eye to travel — and names the fields that match on a single
+`identical` line, because the question a comparison is asked is what differs and
+eight lines of "the same" is where that answer goes to hide. Raw puts the bytes
+over each other with `^^` under every pair that does not match. Both carry the
+same headline saying how far apart the two are. Comparing two receptions is what this tool exists for — invented frames
 showed up because two receivers disagreed — and it belongs in the same place and
 the same reading order as everything else. It was a modal dialog for one
 afternoon; a window is a second home for one half of the same question, and this
