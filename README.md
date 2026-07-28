@@ -114,7 +114,10 @@ NRF24ANALYSER fw=3.6.0 api=5 state=nohw hw=failed ce=8 csn=10 irq=2 led_rx=8 led
 | `scan live [passes]` | keep scanning, one report per N sweeps (default 8) |
 | `scan off` | stop a live scan and resume whatever was running |
 | `repeats <0\|1>` | `0` suppresses identical back-to-back frames |
+| `format <bin\|text>` | how received frames leave: readable lines (default) or [binary records](#format-bin-the-same-frames-in-half-the-time) |
+| `baud <rate>` | raise the serial rate for this session; a reset restores 500000 — [and it buys nothing yet](#baud-and-why-it-buys-nothing-yet) |
 | `tx <addr> <hex...> [ack\|noack] [x<n>] [gap=<ms>]` | transmit a payload (default `noack`), optionally `n` copies `gap` ms apart |
+| `txseq <addr> <count> [ack\|noack]` | read the next `count` lines as payloads and transmit them in order — [see below](#sending-more-than-one-frame-txseq) |
 | `rxmode <0..4>` | how a payload is taken out of the RX FIFO — diagnosis only, see below |
 | `rxdbg <0\|1>` | one `DBG` line per drain pass with the FIFO registers |
 | `regs` | dump the chip's registers by name |
@@ -258,6 +261,101 @@ listener on `rxmode 1` so any stale frame shows. None of it is a fix:
 The two variants that do stop the stale frames break reception instead, and both
 need the *sender* changed — which is not on offer when the sender is somebody's
 remote control. That leaves the flush.
+
+### Sending more than one frame: `txseq`
+
+`tx` costs a command and a reply per frame — about 7.8 ms, most of it serial
+round trip. `txseq` pays that once for a whole run:
+
+```
+> txseq 4354484D45 128 noack
+OK txseq ready count=128
+> <64 hex characters>          <- 128 lines, no command word, no reply
+...
+OK txseq sent=128/128 ack=no
+```
+
+Between `ready` and the closing line the dongle reads **payloads, not
+commands** — anything else typed there is transmitted, or ends the run with
+`stopped=bad payload`. Half a second of silence ends it too, so an abandoned
+run cannot swallow the commands that follow it. Unacknowledged runs report
+progress every 32 frames (`OK txseq at=<n>`).
+
+Nothing is added to the payloads. No sequence number, no length, no checksum:
+only the caller knows what its receiver expects, and framing invented here
+would describe a transfer this tool does not control.
+
+**`ack` changes both the speed and the meaning.** Acknowledged, the dongle
+confirms every frame and the host waits for that confirmation before writing
+the next payload — it has to, because a frame being retried keeps the dongle
+out of its serial port for longer than its input buffer can cover. That costs
+speed and buys certainty:
+
+| | per frame | of 4096 bytes, at a second dongle |
+|---|---|---|
+| `noack`, full rate | 1.6 ms | ~40 % |
+| `ack` | 5.7 ms | 100 %, byte-for-byte |
+| one `tx` per frame | 20 ms | 100 % |
+
+Read that right: it was measured **dongle to dongle**, so the receiving side is
+the analyser itself. The loss in the fast case is neither the radio nor the
+host — it is the *receiving dongle*, which writes about 85 characters per frame
+to its own serial port. At 500 kBaud that is roughly 1.7 ms, exactly what the
+fast sender leaves it. Send faster than the receiver can talk and the surplus
+is gone before anything can retry it, which is also why `fifofull` stays at
+zero: the overflow was never in the radio's FIFO.
+
+So the 40 % is a property of **this instrument**, not of the link. A receiver
+that does not have to narrate every frame over a serial line — a real product,
+an embedded node — may well take the full rate; that has not been measured
+here. What generalises is the shape of it: `noack` throws a frame once and
+never learns whether it landed, so the fast figure is whatever the slowest
+stage downstream can absorb. `ack` sidesteps the question, both by pacing the
+sender to a rate the receiver holds and by retrying what still does not land.
+
+With `dpl=0` every frame is padded to `plsize`, so a transfer's last frame
+carries filler and the receiver has to know the real length. With `dpl=1` the
+lengths are exact and a file comes back out at its original size.
+
+### The duplicate fault, re-measured — and not reproduced
+
+The flush in `rxmode 2` costs half the reception rate (see
+[`format bin`](#and-after-that-the-flush)), so whether it is still needed is
+worth money. It was re-measured on **both dongles**, each as receiver with the
+other sending, classifying every received payload as correct, a duplicate of
+one already seen, one from an *earlier* run (the FIFO-RAM signature), or
+foreign:
+
+| varied | values |
+|---|---|
+| receiver | COM18, COM25 |
+| `rxmode` | 0, 1, 2 |
+| payloads | static 8/16/32, dynamic mixed 4..32 |
+| timing | 20 ms apart, back to back (1.5 ms), 3 copies 5 ms apart |
+| auto-ack | off, on |
+
+**Every one of those returned zero duplicates and zero stale payloads.**
+
+That is not permission to remove the flush. `rxmode 0` returned zero too — and
+`rxmode 0` is the mode documented above as producing duplicates *and*
+misalignment, so a bench on which it comes out clean is a bench that cannot
+currently reproduce the fault at all. The negative result says the test is
+blind, not that the fault is gone.
+
+What is missing is the sender it was found with: a real
+[`RotRemote_BTHome`](../../active/RotRemote_BTHome), not a second analyser
+dongle. Until it has been reproduced there, the flush stays.
+
+**Beware of a third device.** Frames arriving on channel 90 at address
+`43:54:48:4D:45` that nobody on the bench sent are not necessarily invented -
+listening for 60 seconds with both dongles silent produced 36 of them, in
+groups of three, decoding as ordinary BTHome sensor readings. An earlier
+"515 frames for 512 sent" here was three of those, and was wrongly read as the
+duplicate fault. Any measurement of invented frames has to identify payloads,
+not count them.
+
+Both boards measured the same throughout, within one or two frames of each
+other on every run.
 
 ### The CE self-test
 
@@ -434,6 +532,156 @@ chars. A sender that repeats each event emits several identical frames;
 > timing how fast it drained three lines the OS had already buffered, not the
 > air. Anything that reasons about repeat spacing or burst timing has to use
 > `t=`.
+
+### `format bin`: the same frames, in half the time
+
+A readable frame line costs about **4.3 ms**, which caps a dongle at some 230
+frames a second — measured as the closest spacing at which nothing is lost, by
+sending firmware-timed bursts at a decreasing gap. Only about 1.7 ms of that is
+the serial line at 500 kBaud; the rest is a 32-byte payload becoming 64 hex
+characters, one `Serial.print` per byte.
+
+`format bin` sends each frame as a record instead:
+
+| offset | | |
+|---|---|---|
+| 0 | 1 byte | `0x01`, which begins a record |
+| 1 | 1 byte | payload length, 1..32 |
+| 2 | 1 byte | pipe |
+| 3 | 4 bytes | `millis()`, little-endian |
+| 7 | *len* bytes | the payload |
+| 7+*len* | 1 byte | CRC-8 over the payload |
+| 8+*len* | 1 byte | `
+` |
+
+Forty bytes against ninety-odd characters, assembled once and handed over in a
+single `Serial.write`. The checksum covers **exactly** the bytes that `crc=`
+covers in the readable line, so `intact` means the same thing either way.
+
+`0x01` can introduce a record unambiguously because nothing else this firmware
+prints lies outside printable ASCII — replies, warnings and the greeting stay
+readable in binary mode, and only frames change shape. The length says where a
+record ends, so a payload byte that happens to be `0x01` or a newline is data
+like any other. A reader that mis-syncs takes a wrong length, fails the
+checksum, and hunts for the next `0x01`.
+
+Measured, same 320-frame bursts at a decreasing gap:
+
+| spacing | `text` | `bin` |
+|---|---|---|
+| 1.3 ms | 43 % | 50 % |
+| 2.3 ms | 62 % | 99 % |
+| 3.3 ms | 82 % | **100 %** |
+| 4.3 ms | **100 %** | 100 % |
+
+So the ceiling moves from ~230 to ~400 frames a second — a real 1.7×, and less
+than halving the bytes might suggest. What is left is no longer the protocol:
+about 1.7 ms per frame goes on work that does not depend on the output shape at
+all (the SPI read at 4 MHz, the per-payload `FLUSH_RX` that `rxmode 2`
+performs, the repeat check, the LED writes).
+
+**A record is not a line.** It carries no terminator that means anything - the
+length is what says where it ends - and a payload byte may be `0x0A` or `0x01`
+like any other. In a serial console the frames are noise, and that is inherent:
+this mode exists to stop spending nine tenths of a millisecond per frame making
+them readable.
+
+The trailing `
+` is therefore not a terminator, and a reader must not treat it
+as one. It buys one thing, for one byte in ninety: whatever the firmware prints
+next starts on its own line. Without it a reply lands glued to the tail of a
+record -
+
+```
+...Èð«NRF24ANALYSER fw=3.8.0 api=5 state=listening ...
+```
+
+- which is exactly the state somebody is in when they have opened a terminal to
+find out why a binary session is misbehaving. Commands, replies, `WARN` lines
+and the greeting are all still ordinary ASCII lines; only frames change shape.
+
+#### And after that, the flush
+
+With the readable line gone the ceiling moves again, and the next thing in the
+way is not the protocol at all. `info` reports what a frame costs the firmware,
+averaged since the last `listen`:
+
+| | `us_in` (SPI, registers) | `us_out` (onto the wire) |
+|---|---|---|
+| `text` | 189 us | 3991 us |
+| `bin` | 190 us | 642 us |
+
+189 microseconds of SPI against four milliseconds of printing: the readable
+line was never held up by the radio. But 832 us a frame would allow 1200 a
+second, and `bin` was measured at 400. The difference is `rxmode 2`, which
+**flushes the RX FIFO after every payload** — so whatever arrived while the
+firmware was busy is discarded rather than queued, and the dongle can absorb
+exactly one frame per pass. Against `rxmode 1`, which does not flush:
+
+| spacing | `bin` + `rxmode 2` | `bin` + `rxmode 1` |
+|---|---|---|
+| 1.3 ms | 50 % | **100 %** |
+| 2.3 ms | 100 % | 100 % |
+
+1.3 ms is as fast as a 32-byte frame can be sent at 250 kbps, so without the
+flush the receiver keeps up with everything the air can carry.
+
+The flush is not gratuitous — it is the one measure that fixes the
+[duplicate-frame fault](#duplicate-frames-and-the-rxmode-switch), and `rxmode 1`
+is not a setting to run. But that fault was only ever observed for payloads
+**shorter than the 32-byte slot**; one that fills the slot comes out exactly
+once. Flushing only after a short payload would therefore cost nothing in
+correctness and lift the full-slot case to the air rate. That is a change to
+the one behaviour in this firmware arrived at purely empirically, so it is
+written down here rather than made quietly.
+
+#### `baud`, and why it buys nothing yet
+
+`baud 250000|500000|1000000|2000000` raises the serial rate for a session; a
+reset returns to 500000, so a host that does not know the command - or a
+checkout that predates it - can always open the port. The reply goes out at the
+old rate and is flushed before the switch, so the host knows exactly when to
+follow, and the port is reconfigured rather than reopened (reopening pulls DTR,
+which resets the dongle and loses its configuration).
+
+Measured against the greeting, 100 exchanges each:
+
+| rate | intact |
+|---|---|
+| 500000 | 100/100 |
+| 1000000 | 99/100 |
+| 2000000 | **0/100** |
+
+2 MBaud does not work on this hardware at all. 1 MBaud does, at about one
+corrupted byte in a hundred lines - and **it changes nothing end to end**: a
+512-frame transfer arrived 51 % at 500000 and 50 % at 1000000. That is not a
+disappointment, it is the earlier finding restated. Once `format bin` removed
+the printing, the serial line stopped being what binds; the flush did. Doubling
+a rate that is not the constraint buys exactly nothing, and here it costs 0.8 %
+of frames to their checksum.
+
+The command stays because it is the instrument that established this, and
+because the moment the flush is addressed the line becomes the constraint again
+- 0.66 ms of the remaining 0.83 ms per frame is wire time.
+
+| 512 frames, sender at 1.5 ms/frame | received |
+|---|---|
+| `text`, `rxmode 2` | 35 % |
+| `text`, `rxmode 1` | 35 % |
+| `bin`, `rxmode 2` | 50 % |
+| `bin`, `rxmode 1` | **100 %** |
+
+Both halves have to go for the ceiling to move: the readable line is line-bound
+whether or not it flushes, and the binary record is flush-bound until the flush
+goes. (`rxmode 1` also returned 515 frames for 512 sent - the duplicate fault,
+on full 32-byte slots, where it was not expected. Not a setting to run.)
+
+**It is off after every reset, and it is not hidden**: `info` reports
+`format=bin|text`. The default stays readable because that is what makes this
+dongle debuggable with nothing but a terminal — turn it on when throughput
+matters, and `nrf24_dongle.py` turns the records back into the very lines the
+firmware would have printed, so nothing above the driver can tell the
+difference.
 
 If the RX FIFO was already full, frames were dropped by the chip:
 
@@ -780,9 +1028,35 @@ client's resume point backwards.
 | `GET /api/state` | one synchronous snapshot: connected, open port, state, decoder, `radio` (the parsed `info` block) with its `radioAge` in seconds, wiring, and `firmware` (the dongle's `fw`/`api` from the greeting, against the `api` this host speaks) |
 | `POST /api/connect`, `/api/disconnect`, `/api/command` | control; `command` with `"wait": true` blocks for and returns the firmware's OK/ERR reply |
 | `POST /api/burst` | transmit a frame sequence (`{"address", "frames": [{"payload", "repeat", "gap_ms", …}]}`), one awaited reply per entry |
+| `POST /api/send` | transmit a whole run through one [`txseq`](#sending-more-than-one-frame-txseq): `{"address", "payloads": [hex, …]}` or `{"address", "data": base64, "size": 1..32}`, plus `"ack"`. Answers `{"sent", "of", "bytes", "reply", "means"}` — `means` spells out what `sent` is worth, because without `ack` nothing confirms arrival. Progress arrives on the event stream as `{"type":"send"}`; `POST /api/send/cancel` stops a run |
 | `POST /api/restart` | answer, then replace this process with one running the code on disk, handing it the open port. Resets the dongle |
 | `POST /api/capture` | block for `seconds`, return the window's frames + stats |
 | `POST /api/parser` | switch decoder, returns the history re-decoded |
+
+### What a capture is, exactly
+
+Anyone reassembling a transfer out of captured frames needs to know what the
+capture is and is not:
+
+- **`raw` is the whole payload**, every byte the radio handed over, in hex. The
+  decoder's reading sits beside it and never replaces it — a frame no decoder
+  understands still carries its bytes.
+- **Frames are in arrival order**, as the dongle handed them out.
+- **Nothing is deduplicated** while `repeats 1` is set (the default). `repeats
+  0` suppresses identical back-to-back frames, which is a display convenience
+  and destroys exactly the information a transfer needs — leave it at `1`.
+- **`/api/frames` is capped at 5000** frames and drops the oldest beyond that.
+  `/api/capture` returns its whole window uncapped: for a long transfer, use
+  the capture window rather than reading back history.
+- **A frame whose checksum fails is kept but not decoded.** It arrives with
+  `flagged: true` and a `cells.data` saying it was corrupted between radio and
+  host, and its `raw` is still there — so it is visible and countable, but
+  never quietly reassembled into a file as if it were the bytes that were
+  sent. Check `flagged` before concatenating.
+
+What is *not* guaranteed is that everything transmitted was captured. Nothing
+in a passive receiver can promise that; see the loss table under
+[`txseq`](#sending-more-than-one-frame-txseq).
 
 ## Letting another agent drive the dongle (MCP)
 

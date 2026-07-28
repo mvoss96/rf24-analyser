@@ -67,7 +67,8 @@ INFO_HEADER = "info:"
 # without wiring reports state and nothing else), so a caller has to ask what is
 # there rather than index into a fixed shape.
 INFO_INT_FIELDS = ("channel", "crc", "aw", "plsize", "ack", "dpl", "repeats",
-                   "rxmode", "rxdbg", "rx", "fifofull")
+                   "rxmode", "rxdbg", "rx", "fifofull", "baud", "us_in",
+                   "us_out", "us_n")
 
 
 def parse_info(lines):
@@ -147,6 +148,27 @@ def crc8(data):
         for _ in range(8):
             crc = ((crc << 1) ^ 0x07) & 0xFF if crc & 0x80 else (crc << 1) & 0xFF
     return crc
+
+
+# A frame under `format bin`: sync, length, pipe, four bytes of millis, the
+# payload, and the same checksum over the same bytes the readable line carries.
+RX_BIN_SYNC = b"\x01"
+RX_BIN_HEADER = 7
+
+
+def _rx_line(record):
+    """Writes a binary frame record out as the line the firmware would print.
+
+    The saving is on the wire - 40 bytes against about 95 characters, and no
+    number formatted a byte at a time - so it belongs on the wire. Above this,
+    one shape: everything that reads frames goes on reading `RX ...` lines and
+    never learns which way they arrived.
+    """
+    length = record[1]
+    payload = record[RX_BIN_HEADER:RX_BIN_HEADER + length]
+    return (f"RX t={int.from_bytes(record[3:7], 'little')} p{record[2]} "
+            f"len={length} crc={record[RX_BIN_HEADER + length]:02X} "
+            f"{payload.hex().upper()}")
 
 
 def parse_rx(line):
@@ -250,6 +272,10 @@ class Dongle:
         self._serial = None
         self._thread = None
         self._stop = threading.Event()
+        self._write_lock = threading.Lock()   # one writer at a time - see send()
+        # A binary record's trailing newline can arrive in the next read, so
+        # whether one is still owed outlives a single pass over the buffer.
+        self._pending_lf = False
 
     @property
     def is_open(self):
@@ -286,21 +312,121 @@ class Dongle:
                 self._serial = None
 
     def send(self, line):
+        """Writes one line. Whole, and never braided with another thread's.
+
+        Four threads reach this: the HTTP handler answering a command, the
+        heartbeat asking `info`, the timers that chase a missing greeting, and
+        the pump thread when a greeting arrives. Without the lock two writes can
+        interleave inside the driver, and what the firmware then reads is one
+        line spliced into another - which it reports as whatever the splice
+        happened to break: `ERR bad payload byte` for an intact payload, `ERR
+        expected key=value` for a correct listen. Both were seen, both were
+        sporadic, and both were blamed on the line that was sent rather than on
+        the one that arrived.
+        """
         if self._serial is None:
             raise RuntimeError("not connected")
-        self._serial.write((line.rstrip("\r\n") + "\n").encode("ascii", errors="replace"))
+        data = (line.rstrip("\r\n") + "\n").encode("ascii", errors="replace")
+        with self._write_lock:
+            self._serial.write(data)
+
+    def set_baud(self, baud):
+        """Follows the dongle to a rate it has just switched to.
+
+        Only ever called after `OK baud=` has been read, which the firmware
+        sends and flushes before switching, so the change happens on an idle
+        line. The port is reconfigured rather than reopened: reopening pulls
+        DTR, which resets the dongle - and a dongle that reset is back at
+        BOOT_BAUD with its radio configuration gone, which is the one outcome
+        this must not produce.
+        """
+        if self._serial is None:
+            raise RuntimeError("not connected")
+        self._serial.baudrate = baud
+        self.baud = baud
 
     def _read_loop(self):
         buffer = b""
         while not self._stop.is_set():
             try:
-                chunk = self._serial.read(512)
+                # One byte, blocking, then whatever else is already buffered.
+                #
+                # read(512) does not mean "up to 512": pyserial waits for 512
+                # bytes or the port timeout, whichever comes first. A reply is
+                # twenty bytes, so every single one of them sat in the driver
+                # for the whole 100 ms timeout before this loop saw it. That was
+                # the cost of a command: measured at 129 ms for a `tx` that the
+                # radio finishes in under two, and it was paid by every awaited
+                # command in the program - each frame of a burst, each Apply in
+                # the browser, each MCP call.
+                chunk = self._serial.read(1)
+                if chunk:
+                    waiting = self._serial.in_waiting
+                    if waiting:
+                        chunk += self._serial.read(waiting)
             except Exception as exc:
                 self.lines.put(f"[serial error: {exc}]")
                 break
             if not chunk:
                 continue
             buffer += chunk
-            while b"\n" in buffer:
-                raw, buffer = buffer.split(b"\n", 1)
+            buffer = self._drain(buffer)
+
+    def _drain(self, buffer):
+        """Pulls whole lines and whole binary records out, leaves the remainder.
+
+        Two shapes share this stream. Replies, warnings and - unless `format
+        bin` was asked for - frames arrive as newline-terminated ASCII. A frame
+        under `format bin` arrives as a record introduced by RX_BIN_SYNC, which
+        is outside printable ASCII and so cannot begin a line.
+
+        A record is turned into the very line the firmware would have printed
+        for it. That is the whole trick: the binary shape is a transport saving
+        on the wire and nothing above this method can tell which one arrived.
+        """
+        while buffer:
+            # The firmware writes a newline after each record so that a reply
+            # printed mid-stream starts on its own line in a terminal. It
+            # terminates nothing - the length already said where the record
+            # ended - so swallow it rather than reporting a blank line. It may
+            # arrive in the read after the record it belongs to.
+            if self._pending_lf:
+                self._pending_lf = False
+                if buffer[:1] == b"\n":
+                    buffer = buffer[1:]
+                    continue
+
+            start = buffer.find(RX_BIN_SYNC)
+            end = buffer.find(b"\n")
+
+            if start < 0 or (0 <= end < start):
+                # Nothing binary before the next line end: ordinary line.
+                if end < 0:
+                    return buffer
+                raw, buffer = buffer[:end], buffer[end + 1:]
                 self.lines.put(raw.decode("ascii", errors="replace").rstrip("\r"))
+                continue
+
+            if start:
+                # ASCII ahead of the record with no newline of its own. The
+                # firmware does not emit that, so it is a fragment of something
+                # already broken; hand it up rather than dropping it silently.
+                raw, buffer = buffer[:start], buffer[start:]
+                text = raw.decode("ascii", errors="replace").strip()
+                if text:
+                    self.lines.put(text)
+                continue
+
+            if len(buffer) < RX_BIN_HEADER:
+                return buffer                      # header still in flight
+            length = buffer[1]
+            if not 1 <= length <= 32:
+                buffer = buffer[1:]                # not a header; resync
+                continue
+            size = RX_BIN_HEADER + length + 1
+            if len(buffer) < size:
+                return buffer                      # payload still in flight
+            record, buffer = buffer[:size], buffer[size:]
+            self._pending_lf = True     # swallowed at the top, this pass or next
+            self.lines.put(_rx_line(record))
+        return buffer

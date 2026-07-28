@@ -32,6 +32,7 @@ Point it at a non-default host with the `NRF24_WEB_URL` env var
 | `nrf24_capture(seconds=10)` | listen for `seconds`, return every frame decoded plus a per-sender summary |
 | `nrf24_transmit(address, payload, ack=False, repeat=1, gap_ms=0)` | send one frame — a stimulus to provoke a response. `repeat`/`gap_ms` send up to 16 copies genuinely milliseconds apart (firmware-side), like a real sender's event repeats |
 | `nrf24_burst(frames, address="", ack=False)` | send a sequence of frames: each entry a payload hex string or `{"payload", "repeat", "gap_ms", "address", "pause_ms"}`. Per-entry firmware replies; ~5-10 ms serial round trip between entries |
+| `nrf24_send_file(address, path="", data="", size=32, ack=False)` | send a file from disk (`path`) or a block of base64 (`data`) as a run of frames through a single serial handover. Nothing is added to the payloads |
 | `nrf24_history(limit=50)` | frames already captured, newest last, each with compact `raw` hex |
 | `nrf24_command(line)` | any raw firmware command — `status`, `info`, `scan`, `repeats 0\|1`, `help`. `listen` and `hwset` answer with the state they left behind, not a bare `OK` |
 | `nrf24_clear()` | discard the retained history, for a clean measurement zero |
@@ -43,6 +44,40 @@ counts the copies the radio confirmed on air, and a rejected command (bad hex,
 unconfigured radio) raises instead of pretending success. The dongle cannot
 receive its own transmissions — a capture never contains them; point a second
 receiver at the channel to see them land.
+
+A dongle receiving faster than about 230 frames a second starts dropping them,
+because writing each frame out as a readable line costs it ~4.3 ms. If you are
+capturing a burst that dense, `nrf24_command("format bin")` switches the frames
+to a binary record and lifts that to ~400/s. Nothing you see changes — the
+frames still arrive as ordinary decoded records — and a reset puts it back.
+
+`nrf24_send_file` is for a transfer rather than a stimulus. It cuts the bytes
+into `size`-byte frames and sends them in order, and it adds nothing: no
+sequence number, no length, no checksum. Only you know what your receiver
+expects, so build the framing into the bytes before sending them.
+
+**Use `ack=True` for anything that has to arrive.** Measured dongle to dongle,
+4096 bytes:
+
+| | per frame | received at a second dongle |
+|---|---|---|
+| `ack=False`, full rate | 1.6 ms | ~40 % |
+| `ack=True` | 5.7 ms | 100 %, byte-for-byte |
+
+The fast case does not lose frames to the radio. It loses them at the
+*receiver*, which needs about 1.7 ms to write each frame out over its own
+serial port and misses what arrives faster than that — so the 40 % measures
+the analyser, not the link, and a receiver that does not narrate every frame
+over serial may do better. Do not carry that number over to your device
+without measuring it.
+
+What holds regardless: `ack=False` throws each frame once and never learns
+whether it landed, so `sent` counts frames transmitted, not frames received.
+The reply's `means` field says which of the two you are looking at.
+
+Note that with `dpl=0` every frame is padded to `plsize`, so the last frame of
+a transfer carries filler. Configure `dpl=1` if the byte count has to come back
+out exactly.
 
 `nrf24_capture` returns, per sender: `frames`, `events`, `first_id`/`last_id`,
 `distinct_ids`, `missing` (skipped counter values), and `missing_uncertain`

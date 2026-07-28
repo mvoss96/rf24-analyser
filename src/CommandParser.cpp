@@ -99,14 +99,116 @@ void CommandParser::feed(char c) {
   // unconfigured (PuTTY sends CR on Enter, miniterm CRLF). The trailing empty
   // line a CRLF produces is dispatched too, but dispatch() ignores it.
   if (c == '\n' || c == '\r') {
-    buf_[len_] = '\0';
-    dispatch(buf_);
+    // An overlong line is reported, not quietly repaired. Resetting the buffer
+    // mid-line used to turn the tail into a line of its own, which was then
+    // dispatched as a command nobody sent - and the answer described that
+    // wreckage rather than the length that caused it.
+    if (overlong_) {
+      err(F("line too long"));
+      overlong_ = false;
+      if (seqLeft_ != SEQ_IDLE) endSeq(F("line too long"));
+    } else {
+      buf_[len_] = '\0';
+      if (seqLeft_ != SEQ_IDLE) feedSeqPayload(buf_);
+      else dispatch(buf_);
+    }
     len_ = 0;
   } else if (len_ < BUF_SIZE - 1) {
     buf_[len_++] = c;
   } else {
-    len_ = 0; // overlong line: reset to stay in sync
+    overlong_ = true;   // keep reading to the terminator, then say so
   }
+}
+
+void CommandParser::poll() {
+  if (seqLeft_ == SEQ_IDLE) return;
+  if (millis() - seqLastMs_ > SEQ_QUIET_MS) endSeq(F("truncated"));
+}
+
+// --- Sending a run of payloads ---------------------------------------------
+
+void CommandParser::handleTxSeq(char *args) {
+  if (!radio_.configured()) { err(F("unconfigured - run listen first")); return; }
+  if (args == nullptr) { err(F("usage: txseq <addr> <count> [ack|noack]")); return; }
+
+  const RadioConfig &cfg = radio_.config();
+  char *save = nullptr;
+  char *addrTok = strtok_r(args, " \t", &save);
+  if (addrTok == nullptr) { err(F("missing addr")); return; }
+  uint8_t addr[MAX_ADDR_WIDTH];
+  if (parseHexList(addrTok, addr, 0, MAX_ADDR_WIDTH) != cfg.addrWidth) {
+    err(F("addr length must match aw")); return;
+  }
+  char *countTok = strtok_r(nullptr, " \t", &save);
+  if (countTok == nullptr) { err(F("missing count")); return; }
+  long count = atol(countTok);
+  if (count < 1 || count > 60000) { err(F("count 1..60000")); return; }
+
+  bool noack = true;
+  for (char *tok = strtok_r(nullptr, " \t", &save); tok != nullptr;
+       tok = strtok_r(nullptr, " \t", &save)) {
+    if (strcmp(tok, "ack") == 0)        noack = false;
+    else if (strcmp(tok, "noack") == 0) noack = true;
+    else { err(F("unknown key")); return; }
+  }
+
+  seqLeft_ = (uint16_t)count;
+  seqAcking_ = !noack;
+  seqTaken_ = 0;
+  seqLastMs_ = millis();
+  radio_.beginSequence(addr, noack);
+  // Said before the payloads, so a host knows the dongle is listening for them
+  // rather than for commands - and so a human who typed it by hand sees why
+  // the next thing they type is not answered.
+  Serial.print(F("OK txseq ready count="));
+  Serial.println(count);
+}
+
+void CommandParser::feedSeqPayload(char *line) {
+  seqLastMs_ = millis();
+  if (line[0] == '\0') return;              // a CRLF's second terminator
+  uint8_t payload[32];
+  int n = parseHexList(line, payload, 0, 32);
+  if (n < 1) { endSeq(F("bad payload")); return; }
+
+  const bool more = radio_.sequenceWrite(payload, (uint8_t)n);
+  seqTaken_++;
+  seqLeft_--;
+  if (!more) { endSeq(F("gave up")); return; }
+  if (seqLeft_ == SEQ_IDLE) { endSeq(nullptr); return; }
+  // A progress line every so often: a run of three thousand frames is nearly a
+  // minute of silence otherwise, and silence is what a hung dongle looks like.
+  if (seqTaken_ % (seqAcking_ ? 1 : SEQ_PROGRESS_EVERY) == 0) {
+    Serial.print(F("OK txseq at="));
+    Serial.println(seqTaken_);
+  }
+}
+
+void CommandParser::endSeq(const __FlashStringHelper *why) {
+  const uint16_t asked = seqTaken_ + seqLeft_;
+  seqLeft_ = SEQ_IDLE;
+  const RadioController::TxResult r = radio_.endSequence();
+  Serial.print(F("OK txseq sent="));
+  Serial.print(r.sent);
+  Serial.print('/');
+  Serial.print(asked);
+  Serial.print(F(" ack="));
+  if (!r.acking) {
+    // The same distinction `tx` makes: `no` is a receiver that stayed silent,
+    // `off` is a radio that was never going to wait for one. Reporting the
+    // second as the first invites a hunt for a receiver that is fine.
+    Serial.print(r.asked ? F("off") : F("no"));
+  } else {
+    Serial.print(F("yes failed="));
+    Serial.print(r.failed);
+    Serial.print(F(" retries="));
+    Serial.print(r.retries);
+  }
+  if (why != nullptr) {
+    Serial.print(F(" stopped="));
+    Serial.print(why);
+  }
+  Serial.println();
 }
 
 // --- Command handlers ------------------------------------------------------
@@ -258,6 +360,16 @@ void CommandParser::handleListen(char *args) {
     } else if (strcmp(tok, "dpl") == 0) {
       int x = atoi(v); if (x != 0 && x != 1) { err(F("dpl 0|1")); return; }
       c.dpl = (x == 1); have |= K_DPL;
+    } else if (strcmp(tok, "retries") == 0) {
+      // retries=<ard_us>,<arc> - optional, so a listen line that never mentions
+      // it keeps the values the radio already had.
+      char *comma = strchr(v, ',');
+      if (comma == nullptr) { err(F("retries=<ard_us>,<count>")); return; }
+      *comma = '\0';
+      int ard = atoi(v), arc = atoi(comma + 1);
+      if (ard < 250 || ard > 4000 || ard % 250) { err(F("ard 250..4000 in steps of 250")); return; }
+      if (arc < 0 || arc > 15) { err(F("retry count 0..15")); return; }
+      c.ardUs = (uint16_t)ard; c.arc = (uint8_t)arc;
     } else if (strcmp(tok, "plsize") == 0) {
       int x = atoi(v); if (x < 1 || x > 32) { err(F("plsize 1..32")); return; }
       c.plSize = (uint8_t)x; havePlsize = true;
@@ -353,17 +465,34 @@ void CommandParser::handleTx(char *args) {
   }
   if (plen == 0) { err(F("empty payload")); return; }
 
-  uint8_t sent = radio_.transmit(addr, payload, plen, noack, count, gapMs);
+  const RadioController::TxResult r =
+      radio_.transmit(addr, payload, plen, noack, count, gapMs);
   Serial.print(F("OK tx sent="));
-  Serial.print(sent);
+  Serial.print(r.sent);
   // The single-frame reply keeps its exact historic shape; only a burst gets
   // the /n suffix, so an old host parsing "sent=1" never sees anything new.
   if (count > 1) {
     Serial.print('/');
     Serial.print(count);
   }
+  // Three states, not two. `yes` means the receiver acknowledged; `no` means
+  // none was asked for; `off` means one was asked for and the radio was never
+  // going to wait for it, because auto-ack is disabled in the configuration.
+  // That last case used to report `yes` and read as proof of delivery to an
+  // address nobody was listening on.
   Serial.print(F(" ack="));
-  Serial.println(noack ? F("no") : F("yes"));
+  if (noack) {
+    Serial.print(F("no"));
+  } else if (!r.acking) {
+    Serial.print(F("off"));
+  } else {
+    Serial.print(F("yes"));
+    Serial.print(F(" failed="));
+    Serial.print(r.failed);
+    Serial.print(F(" retries="));
+    Serial.print(r.retries);
+  }
+  Serial.println();
 }
 
 void CommandParser::dispatch(char *line) {
@@ -388,7 +517,7 @@ void CommandParser::dispatch(char *line) {
   } else if (strcmp(cmd, "status") == 0) {
     printStatus();
   } else if (strcmp(cmd, "info") == 0) {
-    radio_.printInfo();
+    radio_.printInfo(baud_);
   } else if (strcmp(cmd, "scan") == 0) {
     // Deliberately does not require a radio configuration: which channels are
     // busy is exactly what you want to know *before* choosing one.
@@ -407,6 +536,8 @@ void CommandParser::dispatch(char *line) {
     }
   } else if (strcmp(cmd, "tx") == 0) {
     handleTx(rest);
+  } else if (strcmp(cmd, "txseq") == 0) {
+    handleTxSeq(rest);
   } else if (strcmp(cmd, "repeats") == 0) {
     int v = rest ? atoi(rest) : -1;
     if (v != 0 && v != 1) { err(F("repeats 0|1")); return; }
@@ -420,6 +551,30 @@ void CommandParser::dispatch(char *line) {
     }
     radio_.setRxMode((uint8_t)v);
     ok();
+  } else if (strcmp(cmd, "baud") == 0) {
+    // Raised for a session, never stored. The reply goes out at the old rate
+    // and is flushed before the switch, so the host knows exactly when to
+    // follow - and a reset, or simply unplugging it, returns the dongle to a
+    // rate anything can open.
+    long v = rest ? atol(rest) : 0;
+    if (v != 250000L && v != 500000L && v != 1000000L && v != 2000000L) {
+      err(F("baud 250000|500000|1000000|2000000")); return;
+    }
+    Serial.print(F("OK baud="));
+    Serial.println(v);
+    Serial.flush();
+    Serial.end();
+    Serial.begin(v);
+    baud_ = v;
+  } else if (strcmp(cmd, "format") == 0) {
+    // Answered in ASCII either way, including the one that switches to binary:
+    // the reply belongs to the command stream, which stays readable.
+    if (rest == nullptr) { err(F("format bin|text")); return; }
+    if (strcmp(rest, "bin") == 0)       radio_.setBinaryOut(true);
+    else if (strcmp(rest, "text") == 0) radio_.setBinaryOut(false);
+    else { err(F("format bin|text")); return; }
+    Serial.print(F("OK format="));
+    Serial.println(radio_.binaryOut() ? F("bin") : F("text"));
   } else if (strcmp(cmd, "rxdbg") == 0) {
     int v = rest ? atoi(rest) : -1;
     if (v != 0 && v != 1) { err(F("rxdbg 0|1")); return; }
@@ -452,7 +607,10 @@ void CommandParser::dispatch(char *line) {
     Serial.println(F("hwset ce=<pin> csn=<pin> [irq=<pin|none>] [led_rx=<pin|none>] [led_tx=<pin|none>]"));
     Serial.println(F("listen ch= rate= crc= aw= pa= ack= dpl= [plsize=] pipeN=<addr>"));
     Serial.println(F("hwclear | listen | stop | info | scan [passes] | repeats <0|1>"));
+    Serial.println(F("txseq <addr> <count> [ack|noack] then <count> hex lines"));
     Serial.println(F("tx <addr> <hex...> [ack|noack] [x<n>] [gap=<ms>]"));
+    Serial.println(F("format bin|text  (bin: frames as binary records, faster, unreadable)"));
+    Serial.println(F("baud 250000|500000|1000000|2000000  (for this session; reset restores)"));
     Serial.println(F("rxmode <0|1|2> | rxdbg <0|1> | regs | reg <addr> [val]  (diagnosis)"));
     ok();
   } else {

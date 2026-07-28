@@ -41,6 +41,13 @@ struct RadioConfig {
   bool     dpl       = false; // dynamic payloads
   uint8_t  plSize    = 32;    // static payload size when dpl == false
   uint8_t  paLevel   = 0;     // 0=min 1=low 2=high 3=max
+  // Auto-retransmit: how long the chip waits for an acknowledgement and how
+  // often it tries again. Only in play when autoAck is on. The defaults are
+  // what RF24::begin() writes, not the chip's own reset values (250 us / 3) -
+  // worth saying, because a report of "no acknowledgement" reads differently
+  // depending on how long the radio was willing to wait for one.
+  uint16_t ardUs     = 1500;  // 250..4000, in steps of 250
+  uint8_t  arc       = 15;    // 0..15; 0 disables retransmission entirely
   bool     pipeEn[6] = {false, false, false, false, false, false};
   uint8_t  pipeAddr[6][MAX_ADDR_WIDTH] = {{0}, {0}, {0}, {0}, {0}, {0}};
 };
@@ -118,6 +125,19 @@ public:
   void setRxMode(uint8_t mode) { rxMode_ = mode; }
   uint8_t rxMode() const { return rxMode_; }
 
+  // How a received frame leaves: as the readable `RX t=... ` line, or as a
+  // binary record. Measured, the readable line costs about 4 ms a frame and
+  // caps reception at some 250 frames a second - and only 1.7 ms of that is
+  // the serial line. The rest is printing 32 bytes as 64 hex characters one
+  // Serial.print at a time, about a thousand clock cycles per byte. A binary
+  // record removes both halves at once, so this is worth a switch rather than
+  // a compile-time choice. Readable is the default and a reset returns to it:
+  // whoever opens a terminal expecting to read along is not surprised, and
+  // only a host that asked for throughput gets bytes it has to decode.
+  void resetTiming() { usIn_ = usOut_ = usFrames_ = 0; }
+  void setBinaryOut(bool on) { binaryOut_ = on; }
+  bool binaryOut() const { return binaryOut_; }
+
   // Per-pass FIFO trace. Off by default and deliberately so: it adds SPI reads
   // and a serial line to every drain pass, which is milliseconds in exactly the
   // window being measured.
@@ -140,13 +160,50 @@ public:
   // Drains any pending RX frames to serial. Cheap to call every loop.
   void poll();
 
+  // What a transmission actually did, as opposed to what it was asked to do.
+  //
+  // `sent` used to be the whole answer and it could not tell "the receiver
+  // acknowledged" from "the radio was never expecting one to". Asking for `ack`
+  // while the configuration has auto-ack off reports success for every frame,
+  // with nobody listening on the address - true, and read as the opposite.
+  struct TxResult {
+    // Sixteen bits, not eight: `tx` sends at most sixteen copies, but `txseq`
+    // takes up to sixty thousand frames. As bytes these wrapped, and silently -
+    // a 300-frame run reported `sent=44`, a 512-frame run `sent=0`, both after
+    // transmitting every frame. A count that lies about a completed transfer is
+    // worse than no count, because it reads exactly like a truncated one.
+    uint16_t attempted = 0;  // frames handed to the radio
+    uint16_t sent = 0;       // left the FIFO: acknowledged, or emitted if no ack
+    uint16_t failed = 0;     // gave up after the configured retransmissions
+    uint16_t retries = 0;    // summed ARC_CNT, the retransmissions it did make
+    bool acking = false;     // was an acknowledgement actually going to be waited for
+    bool asked = false;      // ...and was one asked for, which is a different question
+  };
+
   // Transmits `count` copies of one payload to `addr`, `gapMs` apart. noack=true
   // sends with the NO_ACK flag (per-packet), matching a broadcast sender - which
   // repeats each event a few ms apart, exactly what count/gap emulate. The radio
   // stays in TX between the copies, so gap=0 spaces them only by the air time.
   // Returns how many copies the radio reported as sent.
-  uint8_t transmit(const uint8_t *addr, const uint8_t *data, uint8_t len,
-                   bool noack, uint8_t count = 1, uint16_t gapMs = 0);
+  TxResult transmit(const uint8_t *addr, const uint8_t *data, uint8_t len,
+                    bool noack, uint8_t count = 1, uint16_t gapMs = 0);
+
+  // A run of different payloads, sent back to back.
+  //
+  // The radio is set up once and the FIFO kept fed: three packets deep, so a
+  // free slot is written the moment there is one rather than after waiting for
+  // the previous packet to be confirmed. That is what keeps the air busy - one
+  // command per frame spent about seven milliseconds on serial and setup for
+  // every one millisecond of transmission.
+  //
+  // Without acknowledgements the writes are never waited on at all, and `sent`
+  // means emitted. With them each frame is confirmed before the next is written
+  // - slower, but the count then means what it says - and the first frame the
+  // receiver does not acknowledge ends the run, because in a transfer the
+  // frames after a lost one are worth nothing until it is resent.
+  void beginSequence(const uint8_t *addr, bool noack);
+  bool sequenceWrite(const uint8_t *data, uint8_t len);   // false: gave up here
+  TxResult endSequence();
 
   // Energy scan across all 126 channels, `passes` sweeps. Prints hits.
   void scan(uint16_t passes);
@@ -160,7 +217,10 @@ public:
   bool scanning() const { return scanning_; }
 
   // Prints the current state and configuration.
-  void printInfo();
+  // `baud` is passed in rather than held here: the serial port is not the
+  // radio's business, but a session that raised its rate needs that visible in
+  // the one block that claims to describe the whole dongle.
+  void printInfo(long baud);
 
   // Where a reported configuration came from.
   //
@@ -204,12 +264,18 @@ private:
   bool configured_ = false;
   bool listening_ = false;
   bool showRepeats_ = true;
+  bool binaryOut_ = false;
+  uint32_t usIn_ = 0, usOut_ = 0, usFrames_ = 0;
   uint8_t rxMode_ = RX_FLUSH;
   bool rxDbg_ = false;
   uint32_t rxPass_ = 0;   // drain passes since boot, to line traces up
   HwState hwState_ = HW_NONE;
   uint32_t rxCount_ = 0;
   uint16_t fifoFull_ = 0;
+
+  // Running totals of the sequence in progress; see beginSequence().
+  TxResult seq_;
+  bool seqNoack_ = true;
 
   static constexpr uint8_t CHANNELS = 126;
   bool scanning_ = false;
@@ -224,6 +290,7 @@ private:
   void scanReport();             // print and clear the accumulated counts
 
   void led(uint8_t pin, bool on);
+  void accrue(uint32_t usEnter, uint32_t usRead);
 
   // Last frame seen, for the repeat filter.
   uint8_t lastFrame_[32] = {0};

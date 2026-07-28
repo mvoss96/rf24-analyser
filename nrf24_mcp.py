@@ -15,6 +15,7 @@ Tools:
   nrf24_history     read back frames already captured
   nrf24_transmit    send one frame, optionally repeated ms apart (x<n>/gap)
   nrf24_burst       send a sequence of frames, one firmware reply each
+  nrf24_send_file   send a file or a block of bytes as a run of frames
   nrf24_command     any raw firmware command (status, info, scan, ...)
   nrf24_clear       discard the retained history
   nrf24_reset       reset the dongle, emptying its FIFO
@@ -29,6 +30,7 @@ Register it in the consuming session's MCP config, e.g.:
 Point it elsewhere with NRF24_WEB_URL (default http://127.0.0.1:8724).
 """
 
+import base64
 import json
 import os
 import re
@@ -191,6 +193,50 @@ def nrf24_burst(frames: list, address: str = "", ack: bool = False) -> dict:
                 for f in frames) if isinstance(frames, list) else 0
     result = _request("POST", "/api/burst", body,
                       timeout=30 + len(frames or []) * 5 + total / 1000.0)
+    if result.get("ok") is False and "error" in result:
+        raise DongleError(result["error"])
+    return result
+
+
+@mcp.tool()
+def nrf24_send_file(address: str, path: str = "", data: str = "",
+                    size: int = 32, ack: bool = False) -> dict:
+    """Send a file, or a block of bytes, as a run of frames.
+
+    `address` is the receiver's, hex, compact or separated, and its length must
+    match the configured aw. Give either `path` - read from disk, text or binary
+    alike, nothing is interpreted - or `data` as base64. The bytes are cut into frames of `size`
+    (1..32) and transmitted in order through a single serial handover, so a
+    transfer does not pay a round trip per frame.
+
+    Nothing is added to the payloads: no sequence number, no length, no
+    checksum. Only the caller knows what its receiver expects, so framing is
+    the caller's to build - put it in the bytes before sending them.
+
+    ack=True has the receiver confirm every frame and the sender wait for it.
+    That is the setting to use for a transfer that must arrive: measured, 4096
+    bytes went across byte-for-byte at 5.7 ms a frame. Without ack a frame is
+    thrown once and never repeated, and at the ~1.7 ms a frame that reaches,
+    a dongle on the other end recovers only about 40% - it cannot write its
+    received frames out over serial that fast. Fast is only useful when losing
+    most of it is acceptable.
+
+    The reply says how many frames the sender confirmed, and `means` says what
+    that confirmation is worth."""
+    if bool(path) == bool(data):
+        raise DongleError("give either path or data")
+    if not 1 <= size <= 32:
+        raise DongleError("size must be 1..32")
+    if path:
+        with open(path, "rb") as handle:
+            blob = handle.read()
+        if not blob:
+            raise DongleError(f"{path} is empty")
+        data = base64.b64encode(blob).decode()
+    frames = (len(base64.b64decode(data)) + size - 1) // size
+    body = {"address": address, "data": data, "size": size, "ack": ack}
+    result = _request("POST", "/api/send", body,
+                      timeout=60 + frames * (0.05 if ack else 0.02))
     if result.get("ok") is False and "error" in result:
         raise DongleError(result["error"])
     return result
