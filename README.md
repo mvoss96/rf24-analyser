@@ -442,35 +442,40 @@ that stops the same idea being tried a second time.
 serial line's own limit is a 34-byte record at 20 us a byte, so 0.68 ms a frame
 - **47 kB/s whatever the radio does**.
 
-Now at **fw 3.10.0 / app 1.7.0**, against **fw 3.9.1 / app 1.6.1**:
+Now at **fw 3.11.0 / app 1.7.0**, against **fw 3.10.0 / app 1.7.0**:
 
-| air rate | | measured | Δ | air allows | air used | wire used | seen by observer | Δ |
-|---|---|---|---|---|---|---|---|---|
-| 250 kbps | acknowledged | 2.77 ms, 11.3 kB/s | −0.01 | 1.74 ms, 18.0 kB/s | 63 % | 25 % | 512/512 | — |
-| 250 kbps | not | 1.31 ms, 23.9 kB/s | −0.03 | 1.32 ms, 23.7 kB/s | **at the limit** | 52 % | 512/512 | — |
-| 1 Mbps | acknowledged | 1.48 ms, 21.1 kB/s | −0.02 | 0.53 ms, 58.7 kB/s | 36 % | 46 % | 512/512 | — |
-| 1 Mbps | not | 0.85 ms, 36.6 kB/s | 0.00 | 0.33 ms, 95.0 kB/s | 39 % | **80 %** | 421/512 | — |
-| 2 Mbps | acknowledged | 1.28 ms, 24.5 kB/s | −0.02 | 0.33 ms, 94.4 kB/s | 26 % | 53 % | 512/512 | — |
-| 2 Mbps | not | 0.83 ms, 37.5 kB/s | 0.00 | 0.16 ms, 190 kB/s | 20 % | **82 %** | 413/512 | — |
+| air rate | | measured | Δ ms | air used | wire used | seen by observer | Δ |
+|---|---|---|---|---|---|---|---|
+| 250 kbps | acknowledged | 2.00 ms, 15.6 kB/s | **−0.77** | 87 % | 34 % | 512/512 | +0 |
+| 250 kbps | not | 1.31 ms, 23.9 kB/s | −0.00 | at the limit | 52 % | 511/512 | −1 |
+| 1 Mbps | acknowledged | 1.00 ms, 31.3 kB/s | **−0.48** | 53 % | **68 %** | 512/512 | +0 |
+| 1 Mbps | not | 0.84 ms, 37.4 kB/s | −0.01 | 39 % | 81 % | 426/512 | +5 |
+| 2 Mbps | acknowledged | 1.05 ms, 29.8 kB/s | **−0.23** | 32 % | 65 % | 512/512 | +0 |
+| 2 Mbps | not | 0.84 ms, 37.4 kB/s | +0.01 | 20 % | 81 % | 417/512 | +4 |
 
-The sending side did not move, and should not have: 3.10.0 changed when the RX
-FIFO is flushed, which is the receiving side. The observer column is new here,
-so it carries no delta of its own - its before-and-after was taken directly
-against the change that produced it, **50 % → 99 %** of 512 frames of 32 bytes.
+3.11.0 keeps the transmit FIFO fed under acknowledgement, and the acknowledged
+rows are where it shows: **+38 %, +48 % and +21 %** of throughput. The
+unacknowledged rows moved by 0.01 ms, which is noise and is correct - they were
+already pipelined.
+
+Two things in that table are worth reading twice.
+
+**2 Mbps is now slower than 1 Mbps acknowledged** (1.05 against 1.00). Sending
+back to back fills the receiver's FIFO, a full FIFO stops acknowledging, and
+the sender retransmits: 144 retransmissions over 512 frames at 2 Mbps against
+77 at 1 Mbps and 1 at 250 kbps. The link is pacing itself to the receiver, and
+past a point a faster air rate only buys more retransmissions.
+
+**250 kbps acknowledged is at 87 % of the air.** That row is nearly finished
+too now; the remaining rows are all bound by the wire or by the receiver.
 
 Read the two "used" columns together, because they say which constraint is
-binding where.
-
-**250 kbps is finished.** Unacknowledged it sits at the air's own limit, and
-nothing on the host side can add to that.
-
-**1 and 2 Mbps look badly used and are not.** Above 250 kbps the air stops
-binding and the serial line takes over, and against *that* ceiling
-unacknowledged reaches 80-82 %. What is left is the acknowledged case at about
-half the wire - the air it refuses to overlap with.
+binding where. Above 250 kbps the air stops binding and the serial line takes
+over, and against *that* ceiling the unacknowledged path reaches 81 % and the
+acknowledged one now 65-68 % - it was 46-53 % before this change.
 
 The last column is the observing dongle, not the transfer: every acknowledged
-row was received complete, and the two fast unacknowledged rows outrun what a
+row was received complete, and the fast unacknowledged rows outrun what a
 dongle can write out, which is a limit of watching rather than of sending.
 
 #### How much of it is Arduino

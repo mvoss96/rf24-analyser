@@ -588,7 +588,44 @@ bool RadioController::sequenceWrite(const uint8_t *data, uint8_t len) {
     seq_.sent++;
     return true;
   }
-  // With acknowledgements the count has to mean something, so each frame is
+  // Acknowledged, and still pipelining: keep the FIFO fed and collect the
+  // acknowledgements as they land, so the air runs while the next record is
+  // still arriving over serial. Waiting for each frame instead cost half the
+  // wire - 1.28 ms a frame at 2 Mbps where the line's own floor is 0.68.
+  if (seq_.pipelining) {
+    const uint32_t start = millis();
+    while (true) {
+      const uint8_t status = regRead(REG_STATUS);
+      if (status & 0x10) {                        // MAX_RT: a frame gave up
+        seq_.retries += regRead(0x08) & 0x0F;
+        seq_.failed++;
+        regWrite(REG_STATUS, 0x10);
+        radio_.flush_tx();
+        // Stop pipelining for the rest of the run. From here the count can no
+        // longer be exact: TX_DS is a flag rather than a counter, and nothing
+        // says how many packets were queued behind the one that failed. It can
+        // only be short, never long, so the host resumes a little early and
+        // sends up to a FIFO's worth twice - never skips any.
+        seq_.pipelining = false;
+        seq_.gaveUp = true;
+        return false;                             // the run ends; host resumes
+      }
+      if (status & 0x20) {                        // TX_DS: one acknowledged
+        seq_.sent++;
+        seq_.retries += regRead(0x08) & 0x0F;     // OBSERVE_TX, that packet
+        regWrite(REG_STATUS, 0x20);
+      }
+      if (!(status & 0x01)) break;                // TX_FULL clear: room for one
+      if (millis() - start > TX_TIMEOUT_MS) {     // CE not wired, or no clock
+        seq_.failed++;
+        return false;
+      }
+    }
+    radio_.startFastWrite(data, len, false);
+    return true;
+  }
+
+  // After a failure the count has to mean something again, so each frame is
   // confirmed before the next goes in.
   radio_.startFastWrite(data, len, false);
   if (radio_.txStandBy(TX_TIMEOUT_MS)) {
@@ -598,6 +635,7 @@ bool RadioController::sequenceWrite(const uint8_t *data, uint8_t len) {
   }
   seq_.failed++;
   seq_.retries += regRead(0x08) & 0x0F;
+  seq_.gaveUp = true;
   radio_.flush_tx();
   return false;                                    // the run ends here
 }
@@ -605,7 +643,18 @@ bool RadioController::sequenceWrite(const uint8_t *data, uint8_t len) {
 RadioController::TxResult RadioController::endSequence() {
   // Whatever is still in the FIFO has not been on the air yet. Waiting for it
   // is the difference between "handed over" and "transmitted".
-  if (!seq_.acking) radio_.txStandBy(TX_TIMEOUT_MS);
+  if (!seq_.acking) {
+    radio_.txStandBy(TX_TIMEOUT_MS);
+  } else if (seq_.pipelining) {
+    // Drain what is still queued, then say the exact thing. Counting TX_DS
+    // events can only undercount - two frames finishing between two looks are
+    // one flag - so the tally is not what gets reported. If nothing gave up,
+    // every frame that was written was acknowledged, and `sent` is `attempted`
+    // exactly. That is the whole reason the pipeline stops at the first
+    // failure: up to that point this identity holds.
+    radio_.txStandBy(TX_TIMEOUT_MS);
+    if (!seq_.gaveUp) seq_.sent = seq_.attempted;
+  }
   led(hw_.ledTx, false);
   reconfigure();
   return seq_;

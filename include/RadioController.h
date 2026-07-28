@@ -178,6 +178,11 @@ public:
     uint16_t retries = 0;    // summed ARC_CNT, the retransmissions it did make
     bool acking = false;     // was an acknowledgement actually going to be waited for
     bool asked = false;      // ...and was one asked for, which is a different question
+    // Whether the run is still keeping the transmit FIFO fed. It stops at the
+    // first frame that gives up, because from that moment the count can no
+    // longer be exact - see sequenceWrite().
+    bool pipelining = true;
+    bool gaveUp = false;
   };
 
   // Transmits `count` copies of one payload to `addr`, `gapMs` apart. noack=true
