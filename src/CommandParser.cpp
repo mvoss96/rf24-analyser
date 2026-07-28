@@ -106,9 +106,11 @@ void CommandParser::feed(char c) {
     if (overlong_) {
       err(F("line too long"));
       overlong_ = false;
+      if (seqLeft_ != SEQ_IDLE) endSeq(F("line too long"));
     } else {
       buf_[len_] = '\0';
-      dispatch(buf_);
+      if (seqLeft_ != SEQ_IDLE) feedSeqPayload(buf_);
+      else dispatch(buf_);
     }
     len_ = 0;
   } else if (len_ < BUF_SIZE - 1) {
@@ -116,6 +118,93 @@ void CommandParser::feed(char c) {
   } else {
     overlong_ = true;   // keep reading to the terminator, then say so
   }
+}
+
+void CommandParser::poll() {
+  if (seqLeft_ == SEQ_IDLE) return;
+  if (millis() - seqLastMs_ > SEQ_QUIET_MS) endSeq(F("truncated"));
+}
+
+// --- Sending a run of payloads ---------------------------------------------
+
+void CommandParser::handleTxSeq(char *args) {
+  if (!radio_.configured()) { err(F("unconfigured - run listen first")); return; }
+  if (args == nullptr) { err(F("usage: txseq <addr> <count> [ack|noack]")); return; }
+
+  const RadioConfig &cfg = radio_.config();
+  char *save = nullptr;
+  char *addrTok = strtok_r(args, " \t", &save);
+  if (addrTok == nullptr) { err(F("missing addr")); return; }
+  uint8_t addr[MAX_ADDR_WIDTH];
+  if (parseHexList(addrTok, addr, 0, MAX_ADDR_WIDTH) != cfg.addrWidth) {
+    err(F("addr length must match aw")); return;
+  }
+  char *countTok = strtok_r(nullptr, " \t", &save);
+  if (countTok == nullptr) { err(F("missing count")); return; }
+  long count = atol(countTok);
+  if (count < 1 || count > 60000) { err(F("count 1..60000")); return; }
+
+  bool noack = true;
+  for (char *tok = strtok_r(nullptr, " \t", &save); tok != nullptr;
+       tok = strtok_r(nullptr, " \t", &save)) {
+    if (strcmp(tok, "ack") == 0)        noack = false;
+    else if (strcmp(tok, "noack") == 0) noack = true;
+    else { err(F("unknown key")); return; }
+  }
+
+  seqLeft_ = (uint16_t)count;
+  seqTaken_ = 0;
+  seqLastMs_ = millis();
+  radio_.beginSequence(addr, noack);
+  // Said before the payloads, so a host knows the dongle is listening for them
+  // rather than for commands - and so a human who typed it by hand sees why
+  // the next thing they type is not answered.
+  Serial.print(F("OK txseq ready count="));
+  Serial.println(count);
+}
+
+void CommandParser::feedSeqPayload(char *line) {
+  seqLastMs_ = millis();
+  if (line[0] == '\0') return;              // a CRLF's second terminator
+  uint8_t payload[32];
+  int n = parseHexList(line, payload, 0, 32);
+  if (n < 1) { endSeq(F("bad payload")); return; }
+
+  const bool more = radio_.sequenceWrite(payload, (uint8_t)n);
+  seqTaken_++;
+  seqLeft_--;
+  if (!more) { endSeq(F("gave up")); return; }
+  if (seqLeft_ == SEQ_IDLE) { endSeq(nullptr); return; }
+  // A progress line every so often: a run of three thousand frames is nearly a
+  // minute of silence otherwise, and silence is what a hung dongle looks like.
+  if (seqTaken_ % SEQ_PROGRESS_EVERY == 0) {
+    Serial.print(F("OK txseq at="));
+    Serial.println(seqTaken_);
+  }
+}
+
+void CommandParser::endSeq(const __FlashStringHelper *why) {
+  const uint16_t asked = seqTaken_ + seqLeft_;
+  seqLeft_ = SEQ_IDLE;
+  const RadioController::TxResult r = radio_.endSequence();
+  Serial.print(F("OK txseq sent="));
+  Serial.print(r.sent);
+  Serial.print('/');
+  Serial.print(asked);
+  Serial.print(F(" ack="));
+  if (!r.acking) {
+    Serial.print(F("no"));
+  } else {
+    Serial.print(F("yes failed="));
+    Serial.print(r.failed);
+    Serial.print(F(" retries="));
+    Serial.print(r.retries);
+  }
+  if (why != nullptr) {
+    Serial.print(F(" stopped="));
+    Serial.print(why);
+  }
+  Serial.println();
 }
 
 // --- Command handlers ------------------------------------------------------
@@ -443,6 +532,8 @@ void CommandParser::dispatch(char *line) {
     }
   } else if (strcmp(cmd, "tx") == 0) {
     handleTx(rest);
+  } else if (strcmp(cmd, "txseq") == 0) {
+    handleTxSeq(rest);
   } else if (strcmp(cmd, "repeats") == 0) {
     int v = rest ? atoi(rest) : -1;
     if (v != 0 && v != 1) { err(F("repeats 0|1")); return; }
@@ -488,6 +579,7 @@ void CommandParser::dispatch(char *line) {
     Serial.println(F("hwset ce=<pin> csn=<pin> [irq=<pin|none>] [led_rx=<pin|none>] [led_tx=<pin|none>]"));
     Serial.println(F("listen ch= rate= crc= aw= pa= ack= dpl= [plsize=] pipeN=<addr>"));
     Serial.println(F("hwclear | listen | stop | info | scan [passes] | repeats <0|1>"));
+    Serial.println(F("txseq <addr> <count> [ack|noack] then <count> hex lines"));
     Serial.println(F("tx <addr> <hex...> [ack|noack] [x<n>] [gap=<ms>]"));
     Serial.println(F("rxmode <0|1|2> | rxdbg <0|1> | regs | reg <addr> [val]  (diagnosis)"));
     ok();

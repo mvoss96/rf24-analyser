@@ -11,6 +11,12 @@ public:
   // Feed one received serial character. Dispatches on CR, LF or CRLF.
   void feed(char c);
 
+  // Called every loop. Notices a `txseq` whose payload lines stopped arriving
+  // and ends it, rather than leaving the dongle waiting for a run that the
+  // host has abandoned - in which case every later command would be eaten as
+  // if it were a payload.
+  void poll();
+
   // The identity-and-state line: printed once at boot as the greeting, and on
   // demand by `status`. A host that attaches to a dongle already running - or
   // to one whose adapter did not pull DTR - can ask instead of waiting.
@@ -24,8 +30,20 @@ private:
   uint8_t len_ = 0;
   bool overlong_ = false;   // this line outgrew the buffer; say so at its end
 
+  // A `txseq` in progress: how many payload lines are still expected, how many
+  // have been taken, and when the last one arrived.
+  static constexpr uint16_t SEQ_IDLE = 0;
+  static constexpr uint16_t SEQ_QUIET_MS = 500;   // silence that ends a run
+  static constexpr uint16_t SEQ_PROGRESS_EVERY = 32;
+  uint16_t seqLeft_ = SEQ_IDLE;
+  uint16_t seqTaken_ = 0;
+  uint32_t seqLastMs_ = 0;
+
   void dispatch(char *line);
   void handleHwset(char *args);
   void handleListen(char *args);
   void handleTx(char *args);
+  void handleTxSeq(char *args);
+  void feedSeqPayload(char *line);
+  void endSeq(const __FlashStringHelper *why);
 };

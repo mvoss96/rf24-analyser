@@ -485,6 +485,54 @@ RadioController::TxResult RadioController::transmit(const uint8_t *addr,
   return result;
 }
 
+void RadioController::beginSequence(const uint8_t *addr, bool noack) {
+  radio_.stopListening();
+  radio_.openWritingPipe(addr);
+  led(hw_.ledTx, true);
+  seq_ = TxResult();
+  seqNoack_ = noack;
+  seq_.acking = !noack && regRead(0x01) != 0;   // EN_AA, the chip's own answer
+}
+
+bool RadioController::sequenceWrite(const uint8_t *data, uint8_t len) {
+  seq_.attempted++;
+  if (!seq_.acking) {
+    // Nothing to wait for, so only the FIFO can hold us up. Three deep: by the
+    // time the third is written the first is usually gone.
+    const uint32_t start = millis();
+    while (regRead(REG_STATUS) & 0x01) {          // TX_FULL
+      if (millis() - start > TX_TIMEOUT_MS) {     // CE not wired, or no clock
+        seq_.failed++;
+        return false;
+      }
+    }
+    radio_.startFastWrite(data, len, true);
+    seq_.sent++;
+    return true;
+  }
+  // With acknowledgements the count has to mean something, so each frame is
+  // confirmed before the next goes in.
+  radio_.startFastWrite(data, len, false);
+  if (radio_.txStandBy(TX_TIMEOUT_MS)) {
+    seq_.sent++;
+    seq_.retries += regRead(0x08) & 0x0F;         // OBSERVE_TX, this packet
+    return true;
+  }
+  seq_.failed++;
+  seq_.retries += regRead(0x08) & 0x0F;
+  radio_.flush_tx();
+  return false;                                    // the run ends here
+}
+
+RadioController::TxResult RadioController::endSequence() {
+  // Whatever is still in the FIFO has not been on the air yet. Waiting for it
+  // is the difference between "handed over" and "transmitted".
+  if (!seq_.acking) radio_.txStandBy(TX_TIMEOUT_MS);
+  led(hw_.ledTx, false);
+  reconfigure();
+  return seq_;
+}
+
 // The sweep runs at 2 Mbps whatever the radio is configured for. The RPD fires
 // on carriers above about -64 dBm *inside the receiver bandwidth*, and that
 // bandwidth follows the data rate: measured here, a band busy enough to light up

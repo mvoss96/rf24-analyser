@@ -58,5 +58,6 @@ void loop() {
   while (Serial.available()) {
     g_parser.feed((char)Serial.read());
   }
+  g_parser.poll();   // a txseq whose payloads stopped arriving has to end
   g_radio.poll();
 }

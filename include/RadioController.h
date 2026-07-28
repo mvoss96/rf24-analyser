@@ -169,6 +169,23 @@ public:
   TxResult transmit(const uint8_t *addr, const uint8_t *data, uint8_t len,
                     bool noack, uint8_t count = 1, uint16_t gapMs = 0);
 
+  // A run of different payloads, sent back to back.
+  //
+  // The radio is set up once and the FIFO kept fed: three packets deep, so a
+  // free slot is written the moment there is one rather than after waiting for
+  // the previous packet to be confirmed. That is what keeps the air busy - one
+  // command per frame spent about seven milliseconds on serial and setup for
+  // every one millisecond of transmission.
+  //
+  // Without acknowledgements the writes are never waited on at all, and `sent`
+  // means emitted. With them each frame is confirmed before the next is written
+  // - slower, but the count then means what it says - and the first frame the
+  // receiver does not acknowledge ends the run, because in a transfer the
+  // frames after a lost one are worth nothing until it is resent.
+  void beginSequence(const uint8_t *addr, bool noack);
+  bool sequenceWrite(const uint8_t *data, uint8_t len);   // false: gave up here
+  TxResult endSequence();
+
   // Energy scan across all 126 channels, `passes` sweeps. Prints hits.
   void scan(uint16_t passes);
 
@@ -231,6 +248,10 @@ private:
   HwState hwState_ = HW_NONE;
   uint32_t rxCount_ = 0;
   uint16_t fifoFull_ = 0;
+
+  // Running totals of the sequence in progress; see beginSequence().
+  TxResult seq_;
+  bool seqNoack_ = true;
 
   static constexpr uint8_t CHANNELS = 126;
   bool scanning_ = false;
