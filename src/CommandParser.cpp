@@ -151,17 +151,27 @@ void CommandParser::handleTxSeq(char *args) {
 
   bool noack = true;
   bool binary = false;
+  uint16_t conf = 0;
   for (char *tok = strtok_r(nullptr, " \t", &save); tok != nullptr;
        tok = strtok_r(nullptr, " \t", &save)) {
     if (strcmp(tok, "ack") == 0)        noack = false;
     else if (strcmp(tok, "noack") == 0) noack = true;
     else if (strcmp(tok, "bin") == 0)   binary = true;
+    else if (strncmp(tok, "conf=", 5) == 0) {
+      // How often the dongle confirms, in frames. Exposed because the right
+      // value is not derivable - it trades a host round trip against how many
+      // payloads may be in flight, and both were measured rather than reasoned.
+      long v = atol(tok + 5);
+      if (v < 1 || v > 255) { err(F("conf 1..255")); return; }
+      conf = (uint16_t)v;
+    }
     else { err(F("unknown key")); return; }
   }
 
   seqLeft_ = (uint16_t)count;
   seqAcking_ = !noack;
   seqBin_ = binary;
+  seqConf_ = conf;
   binLen_ = 0;
   seqTaken_ = 0;
   seqLastMs_ = millis();
@@ -192,10 +202,16 @@ void CommandParser::feedSeqPayload(char *line) {
   if (seqLeft_ == SEQ_IDLE) { endSeq(nullptr); return; }
   // A progress line every so often: a run of three thousand frames is nearly a
   // minute of silence otherwise, and silence is what a hung dongle looks like.
-  if (seqTaken_ % (seqAcking_ ? (seqBin_ ? SEQ_PROGRESS_ACK_BIN : 1) : SEQ_PROGRESS_EVERY) == 0) {
+  if (seqTaken_ % confEvery() == 0) {
     Serial.print(F("OK txseq at="));
     Serial.println(seqTaken_);
   }
+}
+
+uint16_t CommandParser::confEvery() const {
+  if (seqConf_) return seqConf_;
+  if (!seqAcking_) return SEQ_PROGRESS_EVERY;
+  return seqBin_ ? SEQ_PROGRESS_ACK_BIN : 1;
 }
 
 void CommandParser::feedSeqByte(uint8_t b) {
@@ -220,7 +236,7 @@ void CommandParser::feedSeqByte(uint8_t b) {
   seqLeft_--;
   if (!more) { endSeq(F("gave up")); return; }
   if (seqLeft_ == SEQ_IDLE) { endSeq(nullptr); return; }
-  if (seqTaken_ % (seqAcking_ ? (seqBin_ ? SEQ_PROGRESS_ACK_BIN : 1) : SEQ_PROGRESS_EVERY) == 0) {
+  if (seqTaken_ % confEvery() == 0) {
     Serial.print(F("OK txseq at="));
     Serial.println(seqTaken_);
   }

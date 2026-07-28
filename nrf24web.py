@@ -88,7 +88,15 @@ MAX_FRAMES = 5000
 #       host waits for costs a round trip, measured at 0.76 ms on a 0.79 ms
 #       frame. Together: 1.32 ms a frame and 23.6 kB/s, against 5.72 and 5.5
 #       when the transfer was first measured.
-APP_VERSION = "1.5.0"
+#
+# 1.6.0 finishes the throughput work. A broken acknowledged run is picked up
+#       where it stopped rather than lost; the window and confirmation interval
+#       are exposed and set to the fastest pair that completed every run. An
+#       acknowledged transfer holds 1.29 ms a frame and 24.3 kB/s from 4 kB to
+#       64 kB, against 5.72 ms and 5.5 kB/s at the start. What did not work is
+#       written down too: 1 MBaud costs more than it saves, and batching the
+#       writes changed nothing.
+APP_VERSION = "1.6.0"
 
 # Python imports a module once and keeps it: editing nrf24_parsers.py while the
 # server runs changes nothing until the process is restarted. That cost a real
@@ -157,9 +165,22 @@ NO_REFRESH_AFTER = {"tx", "txseq", "info"}
 # not reading the port at all.
 SEND_WINDOW = 3
 
-# The same bound for a binary run, where a record is 34 bytes rather than 69.
-# Six fit in the 256-byte buffer with room to spare; seven would not.
-SEND_WINDOW_BIN = 6
+# The same bound for a binary run, where a record is 34 bytes rather than 69:
+# seven fit in the 256-byte buffer and an eighth would not.
+#
+# Seven with a confirmation every fourth frame was the fastest pairing that
+# completed every run, out of the whole grid measured at 2 Mbps. The shape of
+# that grid is worth keeping: a window of three could not be rescued by any
+# confirmation interval (1.71 ms a frame at best), and confirming too rarely is
+# as bad as too often, because the host then stalls with the window full.
+SEND_WINDOW_BIN = 7
+SEND_CONFIRM_BIN = 4
+
+# How many times a broken acknowledged run may be picked up again. A corrupted
+# record ends a run, and at a raised serial rate that is expected rather than
+# exceptional - but a run that keeps breaking at the same place is a fault, not
+# a hiccup, and should be reported instead of retried forever.
+SEND_RETRIES = 8
 
 # How many heartbeats may go unanswered before the dongle counts as gone. The
 # poll was already measuring this and throwing the result away: after a suspend
@@ -718,7 +739,8 @@ class Session:
                 time.sleep(min(pause_ms, 10000) / 1000.0)
         return results
 
-    def send_sequence(self, address, payloads, ack=False, on_progress=None):
+    def send_sequence(self, address, payloads, ack=False, on_progress=None,
+                      window=None, confirm=None):
         """Transmits many payloads through one `txseq`, in order.
 
         The dongle is told how many lines to expect and then reads them as
@@ -742,62 +764,107 @@ class Session:
             q = self.hub.subscribe()
             self._sending = True
             try:
-                # Binary payloads first, and fall back to hex on refusal. That
-                # is the whole negotiation: firmware older than 3.9.0 answers
-                # `ERR unknown key`, which asks and answers the question in one
-                # round trip, and one that has it echoes ` bin` back.
-                head = f"txseq {address} {len(payloads)} {'ack' if ack else 'noack'}"
-                reply = self.command(head + " bin", timeout=5.0, lock=False, q=q)
-                binary = reply.startswith("OK txseq ready") and reply.endswith(" bin")
-                if not binary:
-                    reply = self.command(head, timeout=5.0, lock=False, q=q)
-                if not reply.startswith("OK txseq ready"):
-                    raise RuntimeError(reply)
-                # A record is 34 bytes against a hex line's 69, so more of them
-                # fit in the same 256-byte input buffer.
-                window = SEND_WINDOW_BIN if binary else SEND_WINDOW
-                closing = None
-                written = confirmed = 0
-                for index, payload in enumerate(payloads):
-                    if self._cancel_send:
-                        break
-                    # An acknowledged frame keeps the dongle out of its serial
-                    # port for as long as its retries take, and writing freely
-                    # into that overran the input buffer - runs died reporting
-                    # `stopped=bad payload` for payloads that were never
-                    # malformed. So the dongle answers every acknowledged frame
-                    # and the host keeps at most SEND_WINDOW of them in flight.
-                    #
-                    # A window rather than one at a time, because waiting for
-                    # each answer put a full host round trip between frames:
-                    # measured at 2 Mbps, 4.42 ms a frame of which 0.35 ms was
-                    # air. Three fit: the dongle's buffer is 256 bytes and a
-                    # payload line is 69, so three unread lines cannot overflow
-                    # it, while the fourth might.
-                    while ack and written - confirmed >= window:
-                        answer = self._await_frame(q)
-                        if isinstance(answer, str):
-                            closing = answer      # the run ended on its own
-                            break
-                        confirmed = answer
-                    if closing is not None:
-                        break           # stop feeding a run that has ended
-                    # Straight at the port: these are payloads, not commands,
-                    # and nothing may be interleaved between them.
-                    if binary:
-                        self.dongle.send_raw(dongle.seq_record(bytes.fromhex(payload)))
-                    else:
-                        self.dongle.send(payload)
-                    written += 1
-                    if on_progress and index % 64 == 63:
-                        on_progress(index + 1, len(payloads))
-                if closing is not None:
-                    return closing
-                return self._await_sequence(q, len(payloads), on_progress)
+                return self._send_run(q, address, payloads, ack, on_progress,
+                                      window, confirm)
             finally:
                 self._sending = False
                 self._cancel_send = False
                 self.hub.unsubscribe(q)
+
+    def _send_run(self, q, address, payloads, ack, on_progress, window, confirm):
+        """Runs the payloads, picking up again where a broken one left off.
+
+        An acknowledged run reports how many frames the radio confirmed, and a
+        confirmed frame is one the receiver has. So a run that ends early -
+        `stopped=bad payload` is a record whose checksum failed on the way to
+        the dongle - can be continued from exactly there, with nothing sent
+        twice and nothing skipped. That is what makes a faster serial rate
+        usable at all: at 1 MBaud a corrupted record is expected rather than
+        exceptional, and without this it would end a transfer instead of
+        costing it a few frames.
+
+        Only for acknowledged runs. Without acknowledgement `sent` counts
+        frames thrown, not frames arrived, so there is no point to resume from.
+        """
+        total = len(payloads)
+        done = 0
+        attempts = 0
+        while True:
+            reply = self._send_attempt(q, address, payloads[done:], ack,
+                                       on_progress, window, confirm, done, total)
+            match = re.search(r"sent=(\d+)", reply)
+            sent = int(match.group(1)) if match else 0
+            done += sent
+            if done >= total or not ack or self._cancel_send:
+                break
+            if "stopped=" not in reply or attempts >= SEND_RETRIES:
+                break
+            attempts += 1
+            self.hub.publish({"type": "line", "kind": "warn",
+                              "text": f"txseq resumed at {done}/{total} after: {reply}"})
+        suffix = f" resumed={attempts}" if attempts else ""
+        return re.sub(r"sent=\d+/\d+", f"sent={done}/{total}", reply, count=1) + suffix
+
+    def _send_attempt(self, q, address, payloads, ack, on_progress, window,
+                      confirm, done, total):
+        """One `txseq`, from the first payload given to wherever it stops."""
+        # Binary payloads first, and fall back to hex on refusal. That
+        # is the whole negotiation: firmware older than 3.9.0 answers
+        # `ERR unknown key`, which asks and answers the question in one
+        # round trip, and one that has it echoes ` bin` back.
+        head = f"txseq {address} {len(payloads)} {'ack' if ack else 'noack'}"
+        if confirm is None and ack:
+            confirm = SEND_CONFIRM_BIN
+        if confirm:
+            head += f" conf={confirm}"
+        reply = self.command(head + " bin", timeout=5.0, lock=False, q=q)
+        binary = reply.startswith("OK txseq ready") and reply.endswith(" bin")
+        if not binary:
+            reply = self.command(head, timeout=5.0, lock=False, q=q)
+        if not reply.startswith("OK txseq ready"):
+            raise RuntimeError(reply)
+        # A record is 34 bytes against a hex line's 69, so more of them
+        # fit in the same 256-byte input buffer.
+        if window is None:
+            window = SEND_WINDOW_BIN if binary else SEND_WINDOW
+        closing = None
+        written = confirmed = 0
+        for index, payload in enumerate(payloads):
+            if self._cancel_send:
+                break
+            # An acknowledged frame keeps the dongle out of its serial
+            # port for as long as its retries take, and writing freely
+            # into that overran the input buffer - runs died reporting
+            # `stopped=bad payload` for payloads that were never
+            # malformed. So the dongle answers every acknowledged frame
+            # and the host keeps at most SEND_WINDOW of them in flight.
+            #
+            # A window rather than one at a time, because waiting for
+            # each answer put a full host round trip between frames:
+            # measured at 2 Mbps, 4.42 ms a frame of which 0.35 ms was
+            # air. Three fit: the dongle's buffer is 256 bytes and a
+            # payload line is 69, so three unread lines cannot overflow
+            # it, while the fourth might.
+            while ack and written - confirmed >= window:
+                answer = self._await_frame(q)
+                if isinstance(answer, str):
+                    closing = answer      # the run ended on its own
+                    break
+                confirmed = answer
+            if closing is not None:
+                break           # stop feeding a run that has ended
+            # Straight at the port: these are payloads, not commands,
+            # and nothing may be interleaved between them.
+            if binary:
+                self.dongle.send_raw(dongle.seq_record(bytes.fromhex(payload)))
+            else:
+                self.dongle.send(payload)
+            written += 1
+            if on_progress and index % 64 == 63:
+                on_progress(done + index + 1, total)
+        if closing is not None:
+            return closing
+        return self._await_sequence(q, len(payloads), None)
 
     def _await_frame(self, q, timeout=5.0):
         """Waits for the dongle to confirm what it has transmitted so far.
@@ -1322,7 +1389,9 @@ class Handler(BaseHTTPRequestHandler):
                 progress(0, total)
                 reply = session.send_sequence(address, payloads,
                                               ack=bool(payload.get("ack", False)),
-                                              on_progress=progress)
+                                              on_progress=progress,
+                                              window=payload.get("window"),
+                                              confirm=payload.get("confirm"))
                 sent = int(re.search(r"sent=(\d+)", reply).group(1))
                 progress(sent, total)
                 self._json({"ok": sent == total, "sent": sent, "of": total,

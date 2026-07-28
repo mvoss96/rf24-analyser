@@ -59,6 +59,7 @@ private:
   // sync marker is needed and none would help: the parser knows it is owed
   // exactly `seqLeft_` records, and each says its own length.
   bool seqBin_ = false;
+  uint16_t seqConf_ = 0;    // confirm every n-th frame; 0 = the default for the mode
   uint8_t binLen_ = 0;      // 0 = the next byte is a length
   uint8_t binGot_ = 0;
   long baud_ = BOOT_BAUD;   // what the port is running at, for `info` to report
@@ -72,5 +73,6 @@ private:
   void handleTxSeq(char *args);
   void feedSeqPayload(char *line);
   void feedSeqByte(uint8_t b);
+  uint16_t confEvery() const;
   void endSeq(const __FlashStringHelper *why);
 };

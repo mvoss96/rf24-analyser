@@ -352,6 +352,55 @@ first measured:
 | 250 kbps | 2.74 | 11.4 |
 | 2 Mbps | **1.32** | **23.6** |
 
+#### Everything else that was tried
+
+The remaining levers were measured and most of them did nothing. Written down
+so they are not tried again.
+
+**Window against confirmation interval**, 512 frames at 2 Mbps, ms per frame:
+
+| window | conf=1 | conf=2 | conf=3 | conf=4 | conf=6 |
+|---|---|---|---|---|---|
+| 3 | 1.71 | 1.85 | 2.05 | – | – |
+| 6 | 1.54 | 1.41 | 1.33 | 1.30 | 1.63 |
+| 7 | 1.60 | 1.39 | 1.32 | **1.29** | 1.45 |
+
+Both directions cost. Confirming every frame is a round trip per frame;
+confirming too rarely leaves the host stalled with a full window. A window of
+three cannot be rescued by any interval, which is why the hex path is slower
+than the record path for a reason beyond its byte count. Seven and four are the
+defaults now, and `conf=` on the command exposes the axis because the right
+value is not derivable.
+
+**1 MBaud is a net loss.** The sending line is what binds, so quadrupling it
+should have helped. Measured: 24.4 kB/s at 500000 became **5.0 kB/s** at
+1000000. At about one corrupted byte in a hundred lines a record fails its
+checksum often enough that the run spends its time being resumed - five times
+in 512 frames - and the capture becomes unreliable as well, because the
+observing dongle is reading at the raised rate too. 500000 stays.
+
+**Batching the writes did nothing.** Handing the dongle a windowful of records
+in one `write` rather than one call per record measured 1.28 ms a frame either
+way. The syscall was not the cost, and the change was reverted rather than kept
+for tidiness.
+
+So a transfer settles at **1.29 ms a frame and 24.3 kB/s** acknowledged, which
+held from 4 kB to 64 kB (2048 frames in 2.6 seconds, every frame confirmed,
+byte-for-byte identical). Unacknowledged and binary reaches 0.79 ms and
+39.7 kB/s, which is the sending dongle's serial line and nothing else - but
+at that rate the receiving dongle sees about a seventh of it.
+
+#### Picking up where a broken run stopped
+
+An acknowledged run reports how many frames the radio confirmed, and a
+confirmed frame is one the receiver has. So a run that ends early continues
+from exactly there, with nothing sent twice and nothing skipped, up to
+`SEND_RETRIES` times. The reply then carries ` resumed=<n>`.
+
+This is what would make a raised serial rate survivable, and measuring it is
+how the rate was shown not to be worth raising. It earns its place anyway: a
+record whose checksum fails is otherwise a whole transfer lost.
+
 **Do not verify a transfer from the capture.** Sixteen kilobytes sent three
 times at 250 kbps came back `sent=512/512 ack=yes failed=0` every time - the
 radio confirmed every frame - while the observing dongle's own history held 512
