@@ -390,24 +390,34 @@ function paintRow(group) {
     repeats: count > 1 ? `×${count}` + (ms !== null ? `  ${ms} ms` : "") : "",
   };
   const pipeTag = tagOf(seenPipes, head.pipe);
+  // [text, class, missing count, colour marker as [attribute, slot]]
   const cells = radioColumns().map(({ key, cls }) =>
-    [values[key], cls, null, key === "pipe" ? pipeTag : null]);
+    [values[key], cls, null, key === "pipe" ? ["pipe", pipeTag] : null]);
+  const senderTag = tagOf(seenSources, head.source);
   for (const column of decoderColumns) {
     // Skipped counter values are marked on the packet number itself: a row of
     // its own said the same thing in far more space, and pushed the frames
     // apart to say it.
     const lost = column.packet && group.missing ? group.missing : null;
-    cells.push([head.cells[column.key] ?? "", "", lost]);
+    // The sender's colour goes on the cell that names the sender. The decoder
+    // says which column that is, the same way it says which one holds the
+    // packet number - the table has no business guessing from the contents.
+    cells.push([head.cells[column.key] ?? "", "", lost,
+                column.source ? ["source", senderTag] : null]);
   }
 
   const tds = group.tr.children;
   while (tds.length > cells.length) group.tr.removeChild(group.tr.lastChild);
-  cells.forEach(([text, cls, lost, tag], i) => {
+  cells.forEach(([text, cls, lost, marker], i) => {
     const td = tds[i] || group.tr.appendChild(document.createElement("td"));
     td.className = cls;
     td.textContent = text;
     td.title = "";
-    setTag(td, "pipe", tag === undefined ? null : tag);
+    // Both cleared first: a cell is reused when the decoder changes, and the
+    // column it becomes may not be the one it was.
+    setTag(td, "pipe", null);
+    setTag(td, "source", null);
+    if (marker) setTag(td, marker[0], marker[1]);
     if (lost) {
       const mark = document.createElement("span");
       mark.className = "lost";
@@ -504,11 +514,17 @@ function passesFilter(frame) {
 // run whenever a new pipe or sender turns up, which is rare - and far cheaper
 // than redrawing every cell to change an outline.
 function repaintTags() {
-  const pipeCell = radioColumns().findIndex((column) => column.key === "pipe");
+  const radio = radioColumns();
+  const pipeCell = radio.findIndex((column) => column.key === "pipe");
+  const sourceCell = decoderColumns.findIndex((column) => column.source);
   for (const group of groups) {
     const [head] = group.frames;
     setTag(group.tr, "sender", tagOf(seenSources, head.source));
     if (pipeCell >= 0) setTag(group.tr.children[pipeCell], "pipe", tagOf(seenPipes, head.pipe));
+    if (sourceCell >= 0) {
+      setTag(group.tr.children[radio.length + sourceCell], "source",
+             tagOf(seenSources, head.source));
+    }
   }
 }
 

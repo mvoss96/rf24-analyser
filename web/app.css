@@ -392,6 +392,18 @@ td.c-pipe, td.c-len, td.c-rep { color: var(--text-dim); }
 #rows tr[data-sender="3"] { --tag: var(--tag-3); }
 #rows tr[data-sender="4"] { --tag: var(--tag-4); }
 #rows tr[data-sender="5"] { --tag: var(--tag-5); }
+/* The sender's colour on the cell that names the sender - which decoder column
+   that is, the decoder says. A stripe at the edge of the row was there first
+   and could not be read: at three pixels, on the outer edge of a scrolling
+   table, with most rows sharing one colour, it was a marker looking for its
+   subject. The stripe stays as the coarse cue for scanning down the list. */
+td[data-source="0"] { color: var(--tag-0); }
+td[data-source="1"] { color: var(--tag-1); }
+td[data-source="2"] { color: var(--tag-2); }
+td[data-source="3"] { color: var(--tag-3); }
+td[data-source="4"] { color: var(--tag-4); }
+td[data-source="5"] { color: var(--tag-5); }
+tbody tr.flagged td[data-source] { color: var(--danger); }
 td.c-pipe[data-pipe="0"] { color: var(--tag-0); }
 td.c-pipe[data-pipe="1"] { color: var(--tag-1); }
 td.c-pipe[data-pipe="2"] { color: var(--tag-2); }

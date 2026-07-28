@@ -137,7 +137,8 @@ DEAF_STATE = "no answer"
 def column_spec(parser):
     """The decoder's table columns, as the browser wants them."""
     return [{"key": key, "label": label, "width": width,
-             "packet": key == parser.packet_column}
+             "packet": key == parser.packet_column,
+             "source": key == parser.source_column}
             for key, label, width in parser.columns]
 
 
