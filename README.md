@@ -289,19 +289,27 @@ the next payload — it has to, because a frame being retried keeps the dongle
 out of its serial port for longer than its input buffer can cover. That costs
 speed and buys certainty:
 
-| | per frame | of 4096 bytes, received |
+| | per frame | of 4096 bytes, at a second dongle |
 |---|---|---|
 | `noack`, full rate | 1.6 ms | ~40 % |
 | `ack` | 5.7 ms | 100 %, byte-for-byte |
 | one `tx` per frame | 20 ms | 100 % |
 
-The loss in the fast case is not the radio and not the host: it is the
-*receiving* dongle, which writes about 85 characters per frame to its serial
-port. At 500 kBaud that is roughly 1.7 ms — exactly what the fast sender
-leaves it. Send faster than the receiver can talk and the difference is simply
-gone. `ack` works because it slows the sender down to a rate the receiver can
-keep up with, and would still work if it did not, because a frame that is not
-acknowledged is retried.
+Read that right: it was measured **dongle to dongle**, so the receiving side is
+the analyser itself. The loss in the fast case is neither the radio nor the
+host — it is the *receiving dongle*, which writes about 85 characters per frame
+to its own serial port. At 500 kBaud that is roughly 1.7 ms, exactly what the
+fast sender leaves it. Send faster than the receiver can talk and the surplus
+is gone before anything can retry it, which is also why `fifofull` stays at
+zero: the overflow was never in the radio's FIFO.
+
+So the 40 % is a property of **this instrument**, not of the link. A receiver
+that does not have to narrate every frame over a serial line — a real product,
+an embedded node — may well take the full rate; that has not been measured
+here. What generalises is the shape of it: `noack` throws a frame once and
+never learns whether it landed, so the fast figure is whatever the slowest
+stage downstream can absorb. `ack` sidesteps the question, both by pacing the
+sender to a rate the receiver holds and by retrying what still does not land.
 
 With `dpl=0` every frame is padded to `plsize`, so a transfer's last frame
 carries filler and the receiver has to know the real length. With `dpl=1` the

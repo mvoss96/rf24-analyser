@@ -50,19 +50,24 @@ into `size`-byte frames and sends them in order, and it adds nothing: no
 sequence number, no length, no checksum. Only you know what your receiver
 expects, so build the framing into the bytes before sending them.
 
-**Use `ack=True` for anything that has to arrive.** Measured over two dongles:
+**Use `ack=True` for anything that has to arrive.** Measured dongle to dongle,
+4096 bytes:
 
-| | per frame | of 4096 bytes, received |
+| | per frame | received at a second dongle |
 |---|---|---|
 | `ack=False`, full rate | 1.6 ms | ~40 % |
 | `ack=True` | 5.7 ms | 100 %, byte-for-byte |
 
-The fast case does not lose frames to the radio — it loses them at the
+The fast case does not lose frames to the radio. It loses them at the
 *receiver*, which needs about 1.7 ms to write each frame out over its own
-serial port and simply misses what arrives faster than that. `ack=False` is
-worth having when losing most of it is acceptable, and misleading otherwise:
-`sent` then counts frames thrown, not frames received. The reply's `means`
-field says which of the two it is.
+serial port and misses what arrives faster than that — so the 40 % measures
+the analyser, not the link, and a receiver that does not narrate every frame
+over serial may do better. Do not carry that number over to your device
+without measuring it.
+
+What holds regardless: `ack=False` throws each frame once and never learns
+whether it landed, so `sent` counts frames transmitted, not frames received.
+The reply's `means` field says which of the two you are looking at.
 
 Note that with `dpl=0` every frame is padded to `plsize`, so the last frame of
 a transfer carries filler. Configure `dpl=1` if the byte count has to come back
