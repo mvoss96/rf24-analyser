@@ -649,10 +649,11 @@ instead of looking like a dead radio.
 Pipes and senders are also **coloured apart**, each on the cell that names it —
 the decoder declares which of its columns holds the sender, the same way it
 declares which one holds the packet number, so the table never has to guess from
-the contents. A three-pixel stripe down the left edge came first and could not
-be read: on the outer edge of a scrolling table, with most rows sharing one
-colour, it was a marker looking for its subject. It stays as the coarse cue for
-scanning down the list. Only once there are two of them: a colour every row shares
+the contents. A three-pixel stripe down the left edge came first and was
+removed: it was correct and unreadable, and it marked the whole row without
+saying which of the row's two colourable things it meant. Two things worth
+telling apart need two places to say it, not one place and a stripe. Only once
+there are two of them, though: a colour every row shares
 says nothing and still costs the eye something. Six colours are defined and a
 seventh value goes uncoloured rather than repeating one, because a repeated
 colour asserts a sameness that is not there. A frame the decoder objected to

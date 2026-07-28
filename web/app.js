@@ -428,7 +428,6 @@ function paintRow(group) {
   });
   group.tr.classList.toggle("flagged", head.flagged);
   group.tr.classList.toggle("repeated", count > 1);
-  setTag(group.tr, "sender", tagOf(seenSources, head.source));
 }
 
 // Packet counters run in sequence per sender, so a jump in one is the only
@@ -519,7 +518,6 @@ function repaintTags() {
   const sourceCell = decoderColumns.findIndex((column) => column.source);
   for (const group of groups) {
     const [head] = group.frames;
-    setTag(group.tr, "sender", tagOf(seenSources, head.source));
     if (pipeCell >= 0) setTag(group.tr.children[pipeCell], "pipe", tagOf(seenPipes, head.pipe));
     if (sourceCell >= 0) {
       setTag(group.tr.children[radio.length + sourceCell], "source",

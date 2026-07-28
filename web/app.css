@@ -380,23 +380,14 @@ tbody tr.repeated td.c-rep { color: var(--text); }
 td.c-delta { text-align: right; color: var(--text-dim); }
 td.c-pipe, td.c-len, td.c-rep { color: var(--text-dim); }
 
-/* Which pipe, and which sender, without reading either. Only set once there is
-   a second one to tell apart - a colour that every row shares says nothing and
-   costs the eye something. The sender is a stripe down the left edge because
-   that is what a column of rows is scanned along; the pipe is its own cell, so
-   it can simply be that colour. */
-#rows tr[data-sender] td:first-child { border-left: 3px solid var(--tag); }
-#rows tr[data-sender="0"] { --tag: var(--tag-0); }
-#rows tr[data-sender="1"] { --tag: var(--tag-1); }
-#rows tr[data-sender="2"] { --tag: var(--tag-2); }
-#rows tr[data-sender="3"] { --tag: var(--tag-3); }
-#rows tr[data-sender="4"] { --tag: var(--tag-4); }
-#rows tr[data-sender="5"] { --tag: var(--tag-5); }
-/* The sender's colour on the cell that names the sender - which decoder column
-   that is, the decoder says. A stripe at the edge of the row was there first
-   and could not be read: at three pixels, on the outer edge of a scrolling
-   table, with most rows sharing one colour, it was a marker looking for its
-   subject. The stripe stays as the coarse cue for scanning down the list. */
+/* Which pipe, and which sender, without reading either - each on the cell that
+   names it. Only set once there is a second one to tell apart: a colour that
+   every row shares says nothing and costs the eye something.
+
+   A three-pixel stripe down the left edge of the row came first and was
+   removed. It was correct and unreadable: on the outer edge of a scrolling
+   table, with most rows sharing one colour, it marked the row without saying
+   which of the row's two colourable things it meant. */
 td[data-source="0"] { color: var(--tag-0); }
 td[data-source="1"] { color: var(--tag-1); }
 td[data-source="2"] { color: var(--tag-2); }
