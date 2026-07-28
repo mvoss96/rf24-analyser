@@ -384,6 +384,44 @@ in one `write` rather than one call per record measured 1.28 ms a frame either
 way. The syscall was not the cost, and the change was reverted rather than kept
 for tidiness.
 
+**A bigger input buffer and a bigger window did nothing.** The obvious reading
+of the gap below was that the host stalls waiting for a confirmation with the
+window full, so the serial receive buffer went to 512 bytes and the window to
+fourteen records. Measured across windows of 7, 10, 12 and 14: 1.30 to 1.33 ms
+a frame, indistinguishable. The window was never the constraint, and the buffer
+came back down rather than spend a quarter of the ATmega's RAM on nothing.
+
+#### How close this is to the serial line, and what the rest is
+
+At 500000 baud, 8N1, a byte costs 20 us. An acknowledged frame puts 34 bytes on
+the wire outbound and about four inbound, so the line's own floor is **0.68 ms
+a frame - 47 kB/s of payload**. Against that:
+
+| | ms/frame | share of the line |
+|---|---|---|
+| unacknowledged | 0.79 | **86 %** |
+| acknowledged | 1.29 | 51 % |
+
+The unacknowledged path is essentially at the wire. The acknowledged one is at
+half, and the missing half is not the host and not the buffer: it is that the
+firmware does not overlap the air with the wire. It reads a record, transmits,
+waits for the acknowledgement, and only then reads the next - while the host,
+thanks to the window, wrote the next seven long ago.
+
+That is measurable rather than argued. Going from 2 Mbps to 250 kbps costs
+1.45 ms a frame; the arithmetic for one 329-bit packet and its acknowledgement
+predicts 1.41 ms. Nothing hides behind anything - the extra air time shows up
+in full, which is what "not overlapped" means.
+
+Closing it means keeping the transmit FIFO fed under acknowledgement, the way
+the unacknowledged path already does, and that has a price this tool should not
+pay quietly: `TX_DS` is a flag rather than a counter, and on `MAX_RT` there is
+no register saying how many packets are still queued behind the failed one. So
+`sent` would stop being exact at the moment a frame fails - and `sent` is what
+[resume](#picking-up-where-a-broken-run-stopped) trusts to continue without
+sending anything twice. The failure would be duplicates rather than gaps, but
+it would be a guarantee traded for about sixty per cent more speed.
+
 So a transfer settles at **1.29 ms a frame and 24.3 kB/s** acknowledged, which
 held from 4 kB to 64 kB (2048 frames in 2.6 seconds, every frame confirmed,
 byte-for-byte identical). Unacknowledged and binary reaches 0.79 ms and
