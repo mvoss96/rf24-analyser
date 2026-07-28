@@ -825,17 +825,23 @@ function renderCompare(a, b) {
     return span;
   };
 
-  // The differing bytes first, each pair stacked, in the same shape the fields
-  // use one tab over. Eight-byte rows with a marker line under them came from a
-  // pane half this wide; they spread four differences over a dozen lines and
-  // put a blank line between every one of them.
+  // The differing bytes first, one line's worth at a time. Stacking each pair
+  // cost two lines apiece and pushed the frames themselves off the bottom of a
+  // pane that is a dozen lines tall; two bytes written `E8 → EA` are three
+  // characters apart, which is the distance that made stacking worth it for the
+  // fields one tab over and does not apply here.
   const offsets = [];
   for (let i = 0; i < width; i++) if (differs(i)) offsets.push(i);
-  for (const i of offsets) {
-    out.append(line(`  byte ${String(i).padEnd(6)}A  `),
-               line((A[i] ?? "--") + "\n", "diff"),
-               line(`  ${"".padEnd(11)}B  `),
-               line((B[i] ?? "--") + "\n", "diff"));
+  const PER_LINE = 4;
+  for (let n = 0; n < offsets.length; n += PER_LINE) {
+    out.append(line("  "));
+    for (const i of offsets.slice(n, n + PER_LINE)) {
+      out.append(line(`byte ${String(i).padEnd(4)}`),
+                 line(A[i] ?? "--", "diff"),
+                 line(" → "),
+                 line((B[i] ?? "--").padEnd(6), "diff"));
+    }
+    out.append(line("\n"));
   }
 
   // Then both frames whole, one line each, so the columns line up under one
@@ -888,8 +894,7 @@ function renderCompare(a, b) {
   // whether the second pair meant something else.
   const headline = `  ${offsets.length} of ${width} bytes differ`
     + (offsets.length ? ` — at ${offsets.join(", ")}` : ", the two are identical");
-  $("detail").textContent = [headline, "", ...text, "",
-    "  ctrl-click or right-click the marked row again to stop comparing"].join("\n");
+  $("detail").textContent = [headline, "", ...text].join("\n");
   out.prepend(document.createTextNode(headline + "\n\n"));
   $("raw").replaceChildren(out);
 }

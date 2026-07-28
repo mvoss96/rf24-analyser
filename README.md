@@ -709,10 +709,12 @@ frames instead of showing one.** Decoded stacks each differing field's two
 values one under the other — never side by side, which put them a field width
 apart and left the eye to travel — and names the fields that match on a single
 `identical` line, because the question a comparison is asked is what differs and
-eight lines of "the same" is where that answer goes to hide. Raw does the same with the bytes: each
-differing pair stacked and named by its offset, then both frames whole, one line
-each, so the columns stand under one another and the differences sit in their
-context. Thirty-two bytes is ninety-six characters and fits the width this pane
+eight lines of "the same" is where that answer goes to hide. Raw lists the differing bytes as
+`byte 8  0C → 0E`, four to a line, then both frames whole, one line each, so the
+columns stand under one another and the differences sit in their context. Two
+bytes written that way are three characters apart, which is why they are not
+stacked the way the fields are: there the two values sat a field width apart and
+the eye had to travel. Thirty-two bytes is ninety-six characters and fits the width this pane
 has — the eight-byte blocks with a marker row under them predated the tabs, and
 spread four differences over a dozen lines. Both tabs carry the same headline
 saying how far apart the two are. Comparing two receptions is what this tool exists for — invented frames
