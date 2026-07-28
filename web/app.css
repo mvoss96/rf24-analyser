@@ -14,6 +14,15 @@
   --ok: #3b6d11;
   --warn: #854f0b;
   --row-alt: #faf9f7;
+  /* Telling one pipe or one sender from another at a glance. Six, because the
+     seventh would have to start repeating and a repeated colour is worse than
+     no colour. Red is left out: a flagged row already owns it. */
+  --tag-0: #1f6fb2;
+  --tag-1: #3f7d2f;
+  --tag-2: #7a4bbd;
+  --tag-3: #0f7d80;
+  --tag-4: #a5651a;
+  --tag-5: #a33a86;
   --mono: ui-monospace, "Cascadia Mono", Consolas, "SF Mono", monospace;
 }
 
@@ -34,6 +43,12 @@
     --ok: #97c459;
     --warn: #efa93f;
     --row-alt: #1f1f1e;
+    --tag-0: #7fb6e8;
+    --tag-1: #96c96f;
+    --tag-2: #b79bea;
+    --tag-3: #62c4c2;
+    --tag-4: #e0a95f;
+    --tag-5: #e28fc4;
   }
 }
 
@@ -364,6 +379,27 @@ tbody tr.repeated td.c-rep { color: var(--text); }
 .c-rep  { width: 92px; }
 td.c-delta { text-align: right; color: var(--text-dim); }
 td.c-pipe, td.c-len, td.c-rep { color: var(--text-dim); }
+
+/* Which pipe, and which sender, without reading either. Only set once there is
+   a second one to tell apart - a colour that every row shares says nothing and
+   costs the eye something. The sender is a stripe down the left edge because
+   that is what a column of rows is scanned along; the pipe is its own cell, so
+   it can simply be that colour. */
+#rows tr[data-sender] td:first-child { border-left: 3px solid var(--tag); }
+#rows tr[data-sender="0"] { --tag: var(--tag-0); }
+#rows tr[data-sender="1"] { --tag: var(--tag-1); }
+#rows tr[data-sender="2"] { --tag: var(--tag-2); }
+#rows tr[data-sender="3"] { --tag: var(--tag-3); }
+#rows tr[data-sender="4"] { --tag: var(--tag-4); }
+#rows tr[data-sender="5"] { --tag: var(--tag-5); }
+td.c-pipe[data-pipe="0"] { color: var(--tag-0); }
+td.c-pipe[data-pipe="1"] { color: var(--tag-1); }
+td.c-pipe[data-pipe="2"] { color: var(--tag-2); }
+td.c-pipe[data-pipe="3"] { color: var(--tag-3); }
+td.c-pipe[data-pipe="4"] { color: var(--tag-4); }
+td.c-pipe[data-pipe="5"] { color: var(--tag-5); }
+/* A flagged row is about the frame being wrong, which outranks whose it was. */
+tbody tr.flagged td.c-pipe { color: var(--danger); }
 
 .empty { padding: 24px; color: var(--text-faint); text-align: center; }
 

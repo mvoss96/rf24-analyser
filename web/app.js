@@ -11,11 +11,25 @@ let allFrames = [];
 let frames = [];      // the frames the filter lets through, in arrival order
 let groups = [];      // table rows: frames folded by event identity
 
-// The pipes and senders this capture has actually shown. The pickers offer
-// these rather than every pipe a radio has - six choices where one is in use is
-// a list of five wrong answers.
-const seenPipes = new Set();
-const seenSources = new Set();
+// The pipes and senders this capture has actually shown, each mapped to the
+// order it first appeared in. The pickers offer these rather than every pipe a
+// radio has - six choices where one is in use is a list of five wrong answers -
+// and the order doubles as the colour each one is drawn in.
+const seenPipes = new Map();
+const seenSources = new Map();
+
+// Six colours are defined; a seventh value would have to reuse one, and a
+// repeated colour is worse than no colour because it asserts a sameness that is
+// not there.
+const TAGS = 6;
+
+// The colour slot for a value, or null when there is nothing to tell apart.
+// One pipe on screen needs no colour to distinguish it from the others.
+function tagOf(seen, value) {
+  if (seen.size < 2 || value === null || value === undefined) return null;
+  const index = seen.get(value);
+  return index === undefined || index >= TAGS ? null : String(index);
+}
 let selected = -1;
 
 // What the dongle last said about itself, from the server's `info` snapshot -
@@ -375,7 +389,9 @@ function paintRow(group) {
     len: head.len,
     repeats: count > 1 ? `×${count}` + (ms !== null ? `  ${ms} ms` : "") : "",
   };
-  const cells = radioColumns().map(({ key, cls }) => [values[key], cls, null]);
+  const pipeTag = tagOf(seenPipes, head.pipe);
+  const cells = radioColumns().map(({ key, cls }) =>
+    [values[key], cls, null, key === "pipe" ? pipeTag : null]);
   for (const column of decoderColumns) {
     // Skipped counter values are marked on the packet number itself: a row of
     // its own said the same thing in far more space, and pushed the frames
@@ -386,11 +402,12 @@ function paintRow(group) {
 
   const tds = group.tr.children;
   while (tds.length > cells.length) group.tr.removeChild(group.tr.lastChild);
-  cells.forEach(([text, cls, lost], i) => {
+  cells.forEach(([text, cls, lost, tag], i) => {
     const td = tds[i] || group.tr.appendChild(document.createElement("td"));
     td.className = cls;
     td.textContent = text;
     td.title = "";
+    setTag(td, "pipe", tag === undefined ? null : tag);
     if (lost) {
       const mark = document.createElement("span");
       mark.className = "lost";
@@ -401,6 +418,7 @@ function paintRow(group) {
   });
   group.tr.classList.toggle("flagged", head.flagged);
   group.tr.classList.toggle("repeated", count > 1);
+  setTag(group.tr, "sender", tagOf(seenSources, head.source));
 }
 
 // Packet counters run in sequence per sender, so a jump in one is the only
@@ -445,7 +463,12 @@ function missingNote(frame, missing) {
 
 function addRow(frame) {
   allFrames.push(frame);
-  if (noteSeen(frame)) paintFilters();
+  if (noteSeen(frame)) {
+    paintFilters();
+    // The rows already drawn were drawn when there was nothing to tell apart.
+    // The second sender is exactly the moment the first one needs its colour.
+    repaintTags();
+  }
   if (passesFilter(frame)) renderFrame(frame);
   else updateCount();     // the total moved even though the screen did not
 }
@@ -457,11 +480,11 @@ function addRow(frame) {
 function noteSeen(frame) {
   let fresh = false;
   if (frame.pipe !== null && frame.pipe !== undefined && !seenPipes.has(frame.pipe)) {
-    seenPipes.add(frame.pipe);
+    seenPipes.set(frame.pipe, seenPipes.size);
     fresh = true;
   }
   if (frame.source && !seenSources.has(frame.source)) {
-    seenSources.add(frame.source);
+    seenSources.set(frame.source, seenSources.size);
     fresh = true;
   }
   return fresh;
@@ -477,11 +500,29 @@ function passesFilter(frame) {
   return true;
 }
 
+// Only the two colour attributes, on rows that already exist. Cheap enough to
+// run whenever a new pipe or sender turns up, which is rare - and far cheaper
+// than redrawing every cell to change an outline.
+function repaintTags() {
+  const pipeCell = radioColumns().findIndex((column) => column.key === "pipe");
+  for (const group of groups) {
+    const [head] = group.frames;
+    setTag(group.tr, "sender", tagOf(seenSources, head.source));
+    if (pipeCell >= 0) setTag(group.tr.children[pipeCell], "pipe", tagOf(seenPipes, head.pipe));
+  }
+}
+
+function setTag(el, name, tag) {
+  if (!el) return;
+  if (tag === null) delete el.dataset[name];
+  else el.dataset[name] = tag;
+}
+
 function paintFilters() {
   fillPicker($("f-pipe"), "all pipes",
-             [...seenPipes].sort((a, b) => a - b).map((p) => [String(p), `pipe ${p}`]));
+             [...seenPipes.keys()].sort((a, b) => a - b).map((p) => [String(p), `pipe ${p}`]));
   fillPicker($("f-source"), "all senders",
-             [...seenSources].sort().map((s) => [s, s]));
+             [...seenSources.keys()].sort().map((s) => [s, s]));
   // A decoder that does not name a sender has nothing to offer here - the raw
   // one does not, and an empty picker would only invite a click that does
   // nothing.
@@ -538,10 +579,29 @@ function renderFrame(frame) {
   }
 
   updateCount();
-  if ($("follow").checked) {
+  scrollToEnd();
+}
+
+// Following the tail is one scroll per batch of work, not one per row.
+//
+// Reading scrollHeight forces the browser to lay the table out there and then,
+// so doing it per row makes the whole rebuild quadratic: measured over 800
+// frames it went from 11 ms to 3.9 seconds, and a full 5000-frame history would
+// have taken minutes. It cost that on every filter change and on every tab that
+// opened against a server with history to replay. requestAnimationFrame folds
+// any number of requests in one paint into a single scroll, which is all the
+// screen could show anyway.
+let scrollPending = false;
+
+function scrollToEnd() {
+  if (scrollPending || !$("follow").checked) return;
+  scrollPending = true;
+  requestAnimationFrame(() => {
+    scrollPending = false;
+    if (!$("follow").checked) return;
     const wrap = document.querySelector(".table-wrap");
     wrap.scrollTop = wrap.scrollHeight;
-  }
+  });
 }
 
 function updateCount() {
@@ -605,6 +665,7 @@ function rebuild(list) {
   paintFilters();
   for (const frame of allFrames) if (passesFilter(frame)) renderFrame(frame);
   updateCount();
+  scrollToEnd();
   $("detail").textContent = "";
   $("raw").textContent = "";
 }

@@ -646,6 +646,21 @@ rather than `3`, because a filtered count that looks like a total is a quiet lie
 about how much traffic there was. When nothing matches, the table says that
 instead of looking like a dead radio.
 
+Pipes and senders are also **coloured apart** — the pipe as its own cell, the
+sender as a stripe down the left edge, which is the direction a column of rows
+is scanned along. Only once there are two of them: a colour every row shares
+says nothing and still costs the eye something. Six colours are defined and a
+seventh value goes uncoloured rather than repeating one, because a repeated
+colour asserts a sameness that is not there. A frame the decoder objected to
+stays red throughout — that it is broken outranks whose it was.
+
+> Following the tail is one scroll per batch of rows, not one per row. Reading
+> `scrollHeight` forces the browser to lay the table out on the spot, so doing
+> it per row made every redraw quadratic: 800 frames took 3.9 seconds instead of
+> 11 ms, and a full 5000-frame history would have taken minutes. It cost that on
+> every filter change and on every tab that opened against a server with history
+> to replay.
+
 Frames arrive with **millisecond timestamps and a Δ column** — the
 three repeats of one event sit ~4 ms apart, which per-second resolution hides.
 Selecting a row shows **decoded fields and the hex dump side by side**; frames the
