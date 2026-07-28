@@ -428,6 +428,35 @@ byte-for-byte identical). Unacknowledged and binary reaches 0.79 ms and
 39.7 kB/s, which is the sending dongle's serial line and nothing else - but
 at that rate the receiving dongle sees about a seventh of it.
 
+#### Which air rate is actually used
+
+A 32-byte packet is 329 bits on air - preamble, address, packet control,
+payload, CRC - and its acknowledgement is 73 more. Against what a transfer
+reaches:
+
+| air rate | | measured | air allows | air used |
+|---|---|---|---|---|
+| 250 kbps | acknowledged | 2.78 ms, 11.2 kB/s | 1.74 ms, 18.0 kB/s | 62 % |
+| 250 kbps | not | 1.34 ms, 23.3 kB/s | 1.32 ms, 23.7 kB/s | **98 %** |
+| 1 Mbps | acknowledged | 1.50 ms, 20.8 kB/s | 0.53 ms, 58.7 kB/s | 35 % |
+| 1 Mbps | not | 0.85 ms, 36.7 kB/s | 0.33 ms, 95.0 kB/s | 39 % |
+| 2 Mbps | acknowledged | 1.30 ms, 24.1 kB/s | 0.33 ms, 94.4 kB/s | 26 % |
+| 2 Mbps | not | 0.83 ms, 37.6 kB/s | 0.16 ms, 190 kB/s | 20 % |
+
+**250 kbps is finished** - unacknowledged it runs at 98 % of what the air can
+carry, and there is nothing left to win there. **1 and 2 Mbps are barely
+touched**, and not for want of trying: above 250 kbps the air stops being the
+constraint and the serial line takes over. At 34 bytes a record and 20 us a
+byte that line allows 0.68 ms a frame, **47 kB/s, whatever the radio is doing**.
+
+Measured against *that* ceiling rather than the air, the picture is the honest
+one: unacknowledged reaches 37.6 of 47 kB/s, **80 %**; acknowledged reaches
+24.1, **51 %**, the gap being the air it refuses to overlap with the wire.
+
+So the fast modes are not being wasted through inefficiency. They are simply
+larger than the host link, and the one way to widen that link - a faster serial
+rate - measured as a net loss.
+
 #### How much of it is Arduino
 
 The SPI clock was at 4 MHz where the chip allows 10 and the ATmega can drive 8.

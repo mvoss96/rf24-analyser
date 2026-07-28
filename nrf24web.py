@@ -96,7 +96,13 @@ MAX_FRAMES = 5000
 #       64 kB, against 5.72 ms and 5.5 kB/s at the start. What did not work is
 #       written down too: 1 MBaud costs more than it saves, and batching the
 #       writes changed nothing.
-APP_VERSION = "1.6.0"
+#
+# 1.6.1 gives an unacknowledged binary run the same flow control the
+#       acknowledged one has. Records are half a hex line, which is what let
+#       the host outrun 250 kbps air and overrun the dongle's input buffer -
+#       runs ended at frame 23 with `stopped=bad payload`. Hex lines had hidden
+#       it by being nearly as slow as the air.
+APP_VERSION = "1.6.1"
 
 # Python imports a module once and keeps it: editing nrf24_parsers.py while the
 # server runs changes nothing until the process is restarted. That cost a real
@@ -813,11 +819,19 @@ class Session:
         # `ERR unknown key`, which asks and answers the question in one
         # round trip, and one that has it echoes ` bin` back.
         head = f"txseq {address} {len(payloads)} {'ack' if ack else 'noack'}"
-        if confirm is None and ack:
+        if confirm is None:
             confirm = SEND_CONFIRM_BIN
-        if confirm:
-            head += f" conf={confirm}"
-        reply = self.command(head + " bin", timeout=5.0, lock=False, q=q)
+        # The confirmation goes with `bin`, not with `ack`. A record is half a
+        # hex line, which is what makes the host able to outrun the air: at
+        # 250 kbps a frame needs 1.32 ms on air and 0.68 ms on the wire, so an
+        # unacknowledged run filled the transmit FIFO, the firmware stopped
+        # reading its port while it waited, and the input buffer overran. That
+        # ended runs at frame 23 with `stopped=bad payload` - the same failure
+        # the acknowledged path had, uncovered on the other path by making the
+        # payloads smaller. Hex lines hid it: at 1.38 ms each the host could
+        # never get far enough ahead.
+        reply = self.command(f"{head} conf={confirm} bin", timeout=5.0,
+                             lock=False, q=q)
         binary = reply.startswith("OK txseq ready") and reply.endswith(" bin")
         if not binary:
             reply = self.command(head, timeout=5.0, lock=False, q=q)
@@ -845,7 +859,7 @@ class Session:
             # air. Three fit: the dongle's buffer is 256 bytes and a
             # payload line is 69, so three unread lines cannot overflow
             # it, while the fourth might.
-            while ack and written - confirmed >= window:
+            while (ack or binary) and written - confirmed >= window:
                 answer = self._await_frame(q)
                 if isinstance(answer, str):
                     closing = answer      # the run ended on its own
