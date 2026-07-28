@@ -696,13 +696,20 @@ RadioController::TxResult RadioController::endSequence() {
 // A scan configured for 250 kbps therefore reports an empty band no matter what
 // is on the air, which is worse than useless. This measures the band; it does
 // not claim to measure what a 250 kbps receiver will suffer from.
-void RadioController::scanBegin() {
+bool RadioController::scanBegin() {
+  if (scanCounts_ == nullptr) {
+    scanCounts_ = (uint8_t *)calloc(CHANNELS, 1);
+    if (scanCounts_ == nullptr) return false;
+  }
   radio_.stopListening();
   listening_ = false;
   radio_.setDataRate(RF24_2MBPS);
+  return true;
 }
 
 void RadioController::scanEnd() {
+  free(scanCounts_);
+  scanCounts_ = nullptr;
   if (configured_) {
     radio_.setDataRate(rateEnum(cfg_.rateKbps));
     radio_.setChannel(cfg_.channel);
@@ -736,7 +743,7 @@ void RadioController::scanReport() {
 
 void RadioController::scan(uint16_t passes) {
   bool wasListening = listening_;
-  scanBegin();
+  if (!scanBegin()) { Serial.println(F("ERR no memory for a scan")); return; }
 
   // Announced before the sweeps, not after: a sweep is a stretch of time with
   // nothing on the wire, and a host that hears about it only afterwards cannot
@@ -754,13 +761,13 @@ void RadioController::scan(uint16_t passes) {
   Serial.println(F("OK scan done"));
 }
 
-void RadioController::startScan(uint16_t passesPerReport) {
+bool RadioController::startScan(uint16_t passesPerReport) {
   scanResume_ = listening_;
-  scanBegin();
-  for (uint8_t ch = 0; ch < CHANNELS; ch++) scanCounts_[ch] = 0;
+  if (!scanBegin()) return false;
   scanDone_ = 0;
   scanTarget_ = passesPerReport;
   scanning_ = true;
+  return true;
 }
 
 void RadioController::stopScan() {
@@ -806,20 +813,27 @@ void RadioController::printWiring() const {
 // tells you nothing you can act on. Addresses are left out: they are multi-byte
 // reads and `info` already prints what the pipes were told to listen on.
 void RadioController::printRegs() {
-  static const struct { uint8_t reg; const char *name; } kRegs[] = {
-      {0x00, "CONFIG"},     {0x01, "EN_AA"},      {0x02, "EN_RXADDR"},
-      {0x03, "SETUP_AW"},   {0x04, "SETUP_RETR"}, {0x05, "RF_CH"},
-      {0x06, "RF_SETUP"},   {0x07, "STATUS"},     {0x08, "OBSERVE_TX"},
-      {0x09, "RPD"},        {0x11, "RX_PW_P0"},   {0x12, "RX_PW_P1"},
-      {0x13, "RX_PW_P2"},   {0x14, "RX_PW_P3"},   {0x15, "RX_PW_P4"},
-      {0x16, "RX_PW_P5"},   {0x17, "FIFO_STATUS"},{0x1C, "DYNPD"},
-      {0x1D, "FEATURE"},
+  // Both tables in flash. As a plain array of pointers-to-string this cost 57
+  // bytes of RAM permanently to print nineteen names on request, which on a 2 KB
+  // chip is a poor trade for a diagnostic command.
+  static const uint8_t kRegAddr[] PROGMEM = {
+      0x00, 0x01, 0x02, 0x03, 0x04, 0x05, 0x06, 0x07, 0x08, 0x09,
+      0x11, 0x12, 0x13, 0x14, 0x15, 0x16, 0x17, 0x1C, 0x1D,
   };
+  static const char kRegName[][12] PROGMEM = {
+      "CONFIG",   "EN_AA",    "EN_RXADDR", "SETUP_AW", "SETUP_RETR",
+      "RF_CH",    "RF_SETUP", "STATUS",    "OBSERVE_TX", "RPD",
+      "RX_PW_P0", "RX_PW_P1", "RX_PW_P2",  "RX_PW_P3", "RX_PW_P4",
+      "RX_PW_P5", "FIFO_STATUS", "DYNPD",  "FEATURE",
+  };
+  char name[12];
+
   Serial.println(F("regs:"));
-  for (uint8_t i = 0; i < sizeof(kRegs) / sizeof(kRegs[0]); i++) {
-    const uint8_t value = regRead(kRegs[i].reg);
+  for (uint8_t i = 0; i < sizeof(kRegAddr); i++) {
+    const uint8_t value = regRead(pgm_read_byte(&kRegAddr[i]));
+    strcpy_P(name, kRegName[i]);
     Serial.print(F("  "));
-    Serial.print(kRegs[i].name);
+    Serial.print(name);
     Serial.print('=');
     if (value < 0x10) Serial.print('0');
     Serial.println(value, HEX);

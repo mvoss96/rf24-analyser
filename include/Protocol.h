@@ -66,7 +66,13 @@
 //     real BTHome traffic a record goes from 41 bytes to 28, which is the
 //     difference between falling behind and keeping up. Arbitrary payloads have
 //     no tail to suppress and pay nothing for the attempt.
-#define FW_VERSION "3.15.0"
+// 3.16.0 frees 183 bytes of RAM without giving anything up. The scan's
+// per-channel counters are taken for the duration of a scan instead of being a
+// member - a scan retunes the radio, so it can never overlap with receiving, and
+// the peak is unchanged while the resting state is 126 bytes better. The
+// register-name table moves to flash, where it always belonged. Additive: only
+// `scan live` gains a way to fail, and it says so. api stays at 6.
+#define FW_VERSION "3.16.0"
 #define API_VERSION 6
 
 // The rate a dongle always boots at. `baud` can raise it for a session, but a

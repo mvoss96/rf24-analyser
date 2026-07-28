@@ -225,7 +225,9 @@ public:
   // poll() so commands keep being answered in between. Receiving is impossible
   // while it runs - the radio is being retuned across the band - and resumes on
   // stopScan() if it was running before.
-  void startScan(uint16_t passesPerReport);
+  // False if the per-channel counters could not be taken; nothing has changed
+  // and the caller must not report a scan as running.
+  bool startScan(uint16_t passesPerReport);
   void stopScan();
   bool scanning() const { return scanning_; }
 
@@ -295,9 +297,16 @@ private:
   bool scanResume_ = false;      // was the radio listening when the scan began
   uint16_t scanTarget_ = 0;      // sweeps per report
   uint16_t scanDone_ = 0;        // sweeps since the last report
-  uint8_t scanCounts_[CHANNELS] = {0};
+  // One counter per channel, held only while a scan runs. As a member it was
+  // 126 bytes of a 2 KB chip reserved permanently for something that happens
+  // for a few seconds and never while receiving - and the two cannot overlap,
+  // because a scan retunes the radio. Allocated in scanBegin and released in
+  // scanEnd, so the peak is what it always was and the resting state is 126
+  // bytes better. It is the only allocation this firmware makes, and it is
+  // freed by the same pair that made it, so there is nothing to fragment.
+  uint8_t *scanCounts_ = nullptr;
 
-  void scanBegin();              // stop receiving and widen the receiver
+  bool scanBegin();              // stop receiving, widen the receiver, take the counters
   void scanEnd();                // put the configured rate and channel back
   void scanSweep();              // one pass over every channel
   void scanReport();             // print and clear the accumulated counts

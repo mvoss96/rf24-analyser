@@ -761,6 +761,44 @@ and stopping at 91 % would convict the host's USB stack.
 > `HKLM\SYSTEM\CurrentControlSet\Enum\...\Device Parameters`, or through Device
 > Manager under Port Settings, Advanced.
 
+#### Where the RAM goes, and 324 bytes that were not paying rent
+
+An ATmega328P has 2048 bytes. At fw 3.15.0 the firmware held 1496 of them, and
+the question of what could be spent on new capability was really the question of
+what the existing 1496 were for. From the ELF, not from guessing:
+
+| | bytes | |
+|---|---|---|
+| `Serial` | 541 | two 256-byte ring buffers and the object |
+| `RadioController` | 303 | of which **126 is the scan histogram**, 32 the repeat filter, 36 the pipe addresses |
+| `CommandParser` | 154 | a 128-byte line buffer and its state |
+| the register-name table | 198 | 57 bytes of pointers **and the nineteen names themselves** |
+
+The serial buffers are a quarter of the chip on purpose - 256 out so
+`Serial.print` does not block while the RX FIFO fills, 256 in because an
+85-character `tx` line does not fit the Arduino default of 64 and a command
+arriving during a transmit lost its tail.
+
+The other two were paying no rent at all:
+
+- **The scan's per-channel counters are now taken for the duration of a scan.**
+  A scan retunes the radio, so it can never overlap with receiving; keeping 126
+  bytes reserved permanently for something that runs for a few seconds was the
+  single worst trade in the file. During a scan the total is exactly what it
+  always was, and the resting state is 126 bytes better. It is the only
+  allocation this firmware makes and the same pair makes and releases it, so
+  there is nothing to fragment - and `scan live` gained the one way it can fail,
+  which it reports.
+- **The register-name table moved to flash.** It cost 198 bytes of RAM, not the
+  57 the symbol table shows: string literals live in RAM on this architecture
+  unless they are told otherwise, so the nineteen names were there too. For a
+  diagnostic command that prints them on request.
+
+**1496 → 1172 bytes**, and 876 free where 552 were. Nothing on the transmit or
+receive path was touched, and a check run says so: 2 Mbps unacknowledged with the
+receiver printing measures 0.88 ms a frame and 439 of 512, against 0.87 and 440
+before; padded payloads stay at 512 of 512.
+
 #### How much of it is Arduino
 
 The SPI clock was at 4 MHz where the chip allows 10 and the ATmega can drive 8.

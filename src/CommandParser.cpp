@@ -678,7 +678,12 @@ void CommandParser::dispatch(char *line) {
       Serial.println(F("OK scan stopped"));
     } else if (rest != nullptr && strncmp(rest, "live", 4) == 0) {
       int v = atoi(rest + 4);   // "live" or "live <passes per report>"
-      radio_.startScan((v <= 0) ? 8 : (uint16_t)v);
+      // The per-channel counters are taken only for the duration of a scan, so
+      // this is the one command that can fail for want of memory.
+      if (!radio_.startScan((v <= 0) ? 8 : (uint16_t)v)) {
+        err(F("no memory for a scan"));
+        return;
+      }
       Serial.println(F("OK scan live"));
     } else {
       if (radio_.scanning()) { err(F("scan live is running - scan off first")); return; }
