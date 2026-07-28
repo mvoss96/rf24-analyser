@@ -510,6 +510,8 @@ characters, one `Serial.print` per byte.
 | 3 | 4 bytes | `millis()`, little-endian |
 | 7 | *len* bytes | the payload |
 | 7+*len* | 1 byte | CRC-8 over the payload |
+| 8+*len* | 1 byte | `
+` |
 
 Forty bytes against ninety-odd characters, assembled once and handed over in a
 single `Serial.write`. The checksum covers **exactly** the bytes that `crc=`
@@ -536,6 +538,26 @@ than halving the bytes might suggest. What is left is no longer the protocol:
 about 1.7 ms per frame goes on work that does not depend on the output shape at
 all (the SPI read at 4 MHz, the per-payload `FLUSH_RX` that `rxmode 2`
 performs, the repeat check, the LED writes).
+
+**A record is not a line.** It carries no terminator that means anything - the
+length is what says where it ends - and a payload byte may be `0x0A` or `0x01`
+like any other. In a serial console the frames are noise, and that is inherent:
+this mode exists to stop spending nine tenths of a millisecond per frame making
+them readable.
+
+The trailing `
+` is therefore not a terminator, and a reader must not treat it
+as one. It buys one thing, for one byte in ninety: whatever the firmware prints
+next starts on its own line. Without it a reply lands glued to the tail of a
+record -
+
+```
+...Èð«NRF24ANALYSER fw=3.8.0 api=5 state=listening ...
+```
+
+- which is exactly the state somebody is in when they have opened a terminal to
+find out why a binary session is misbehaving. Commands, replies, `WARN` lines
+and the greeting are all still ordinary ASCII lines; only frames change shape.
 
 **It is off after every reset, and it is not hidden**: `info` reports
 `format=bin|text`. The default stays readable because that is what makes this

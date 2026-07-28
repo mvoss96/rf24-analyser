@@ -71,7 +71,7 @@ MAX_FRAMES = 5000
 #       back into the line the firmware would have printed, so the shape on the
 #       wire is a transport question and nothing above the driver changes. It
 #       raises what a dongle can receive from about 230 frames a second to 400.
-APP_VERSION = "1.3.0"
+APP_VERSION = "1.3.1"
 
 # Python imports a module once and keeps it: editing nrf24_parsers.py while the
 # server runs changes nothing until the process is restarted. That cost a real

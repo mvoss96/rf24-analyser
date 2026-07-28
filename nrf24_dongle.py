@@ -272,6 +272,9 @@ class Dongle:
         self._thread = None
         self._stop = threading.Event()
         self._write_lock = threading.Lock()   # one writer at a time - see send()
+        # A binary record's trailing newline can arrive in the next read, so
+        # whether one is still owed outlives a single pass over the buffer.
+        self._pending_lf = False
 
     @property
     def is_open(self):
@@ -366,6 +369,17 @@ class Dongle:
         on the wire and nothing above this method can tell which one arrived.
         """
         while buffer:
+            # The firmware writes a newline after each record so that a reply
+            # printed mid-stream starts on its own line in a terminal. It
+            # terminates nothing - the length already said where the record
+            # ended - so swallow it rather than reporting a blank line. It may
+            # arrive in the read after the record it belongs to.
+            if self._pending_lf:
+                self._pending_lf = False
+                if buffer[:1] == b"\n":
+                    buffer = buffer[1:]
+                    continue
+
             start = buffer.find(RX_BIN_SYNC)
             end = buffer.find(b"\n")
 
@@ -397,5 +411,6 @@ class Dongle:
             if len(buffer) < size:
                 return buffer                      # payload still in flight
             record, buffer = buffer[:size], buffer[size:]
+            self._pending_lf = True     # swallowed at the top, this pass or next
             self.lines.put(_rx_line(record))
         return buffer

@@ -414,7 +414,7 @@ void RadioController::drainRx() {
       // reader that mis-syncs takes a wrong length, and a wrong length fails
       // this checksum, so it hunts for the next sync byte instead of believing
       // a shifted frame.
-      uint8_t rec[7 + 32 + 1];
+      uint8_t rec[7 + 32 + 2];
       rec[0] = RX_BIN_SYNC;
       rec[1] = len;
       rec[2] = pipe;
@@ -424,7 +424,14 @@ void RadioController::drainRx() {
       rec[6] = (uint8_t)(stamp >> 24);
       for (uint8_t i = 0; i < len; i++) rec[7 + i] = buf[i];
       rec[7 + len] = crc8(buf, len);
-      Serial.write(rec, (size_t)(8 + len));
+      // A newline after the record. It does not make this line-based - a
+      // payload byte can be 0x0A and a reader must go by the length - but it
+      // guarantees the next readable line starts on a fresh one. Without it a
+      // reply printed while frames are arriving comes out glued to the tail of
+      // a record, which is precisely the moment somebody has opened a terminal
+      // to find out what is wrong. One byte of ninety.
+      rec[8 + len] = '\n';
+      Serial.write(rec, (size_t)(9 + len));
       led(hw_.ledRx, false);
       continue;
     }
