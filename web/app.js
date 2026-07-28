@@ -824,23 +824,31 @@ function renderCompare(a, b) {
     span.textContent = text;
     return span;
   };
-  const hexRow = (label, list, off) => {
-    out.append(line(`  ${label}  ${String(off).padStart(4, "0")}  `));
-    for (let i = off; i < Math.min(off + 8, width); i++) {
+
+  // The differing bytes first, each pair stacked, in the same shape the fields
+  // use one tab over. Eight-byte rows with a marker line under them came from a
+  // pane half this wide; they spread four differences over a dozen lines and
+  // put a blank line between every one of them.
+  const offsets = [];
+  for (let i = 0; i < width; i++) if (differs(i)) offsets.push(i);
+  for (const i of offsets) {
+    out.append(line(`  byte ${String(i).padEnd(6)}A  `),
+               line((A[i] ?? "--") + "\n", "diff"),
+               line(`  ${"".padEnd(11)}B  `),
+               line((B[i] ?? "--") + "\n", "diff"));
+  }
+
+  // Then both frames whole, one line each, so the columns line up under one
+  // another and the differences sit in their context. 32 bytes is 96 characters
+  // - it fits the width this pane now has, which the block layout predated.
+  out.append(line("\n"));
+  for (const [label, list] of [["A", A], ["B", B]]) {
+    out.append(line(`  ${label}  `));
+    for (let i = 0; i < width; i++) {
       out.append(line((list[i] ?? "--") + " ", differs(i) ? "diff" : null));
     }
     out.append(line("\n"));
-  };
-
-  for (let off = 0; off < width; off += 8) {
-    hexRow("A", A, off);
-    hexRow("B", B, off);
-    let marks = "        " + " ".repeat(6);
-    for (let i = off; i < Math.min(off + 8, width); i++) marks += differs(i) ? "^^ " : "   ";
-    out.append(line(marks.trimEnd() + "\n\n", "diff"));
   }
-  const offsets = [];
-  for (let i = 0; i < width; i++) if (differs(i)) offsets.push(i);
   const rows = [
     ["time", a.time, b.time],
     ["pipe", a.pipe, b.pipe],
