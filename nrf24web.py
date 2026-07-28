@@ -75,7 +75,13 @@ MAX_FRAMES = 5000
 # 1.3.2 says what `show repeats` costs, where it is switched. Off is a third of
 #       the traffic and three times the headroom; it is also two thirds of a
 #       file, which is why a transfer needs it on.
-APP_VERSION = "1.3.2"
+#
+# 1.4.0 keeps three acknowledged payloads in flight instead of one. Waiting for
+#       each answer put a whole host round trip between frames; a window closes
+#       that without risking the dongle's input buffer. Measured over 4096
+#       bytes at 2 Mbps: 5.72 ms a frame became 1.74, 5.5 kB/s became 18.0, and
+#       the result is still byte-for-byte identical at the receiver.
+APP_VERSION = "1.4.0"
 
 # Python imports a module once and keeps it: editing nrf24_parsers.py while the
 # server runs changes nothing until the process is restarted. That cost a real
@@ -136,6 +142,13 @@ INFO_HEARTBEAT = 5.0
 # Everything else this process sends may change what the dongle is doing, so it
 # is followed by an `info`. A tx does not, and a burst is dozens of them.
 NO_REFRESH_AFTER = {"tx", "txseq", "info"}
+
+# How many acknowledged payloads may be in flight at once. The dongle's serial
+# input buffer is 256 bytes and a payload line is 69, so three unread lines fit
+# and a fourth might not. This is the whole reason an acknowledged run is not
+# simply streamed: while the radio waits for an acknowledgement the firmware is
+# not reading the port at all.
+SEND_WINDOW = 3
 
 # How many heartbeats may go unanswered before the dongle counts as gone. The
 # poll was already measuring this and throwing the result away: after a suspend
@@ -724,25 +737,34 @@ class Session:
                 if not reply.startswith("OK txseq ready"):
                     raise RuntimeError(reply)
                 closing = None
-                last = len(payloads) - 1
+                outstanding = 0
                 for index, payload in enumerate(payloads):
                     if self._cancel_send:
                         break
+                    # An acknowledged frame keeps the dongle out of its serial
+                    # port for as long as its retries take, and writing freely
+                    # into that overran the input buffer - runs died reporting
+                    # `stopped=bad payload` for payloads that were never
+                    # malformed. So the dongle answers every acknowledged frame
+                    # and the host keeps at most SEND_WINDOW of them in flight.
+                    #
+                    # A window rather than one at a time, because waiting for
+                    # each answer put a full host round trip between frames:
+                    # measured at 2 Mbps, 4.42 ms a frame of which 0.35 ms was
+                    # air. Three fit: the dongle's buffer is 256 bytes and a
+                    # payload line is 69, so three unread lines cannot overflow
+                    # it, while the fourth might.
+                    while ack and outstanding >= SEND_WINDOW:
+                        closing = self._await_frame(q)
+                        if closing is not None:
+                            break
+                        outstanding -= 1
+                    if closing is not None:
+                        break           # the run ended early; stop feeding it
                     # Straight at the port: these are payload lines, not
                     # commands, and nothing may be interleaved between them.
                     self.dongle.send(payload)
-                    if ack and index < last:
-                        # Lockstep. An acknowledged frame keeps the dongle from
-                        # reading the port for as long as fifteen retries take,
-                        # and its input buffer holds four payload lines; writing
-                        # into that ended runs with `stopped=bad payload` for
-                        # payloads that were never malformed. So the dongle
-                        # answers every acknowledged frame and the host waits.
-                        # The last payload is not waited for here - it ends the
-                        # run, and the closing line belongs to the reader below.
-                        closing = self._await_frame(q)
-                        if closing is not None:
-                            break       # the run ended early; stop feeding it
+                    outstanding += 1
                     if on_progress and index % 64 == 63:
                         on_progress(index + 1, len(payloads))
                 if closing is not None:

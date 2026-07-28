@@ -285,6 +285,45 @@ Nothing is added to the payloads. No sequence number, no length, no checksum:
 only the caller knows what its receiver expects, and framing invented here
 would describe a transfer this tool does not control.
 
+#### How fast an acknowledged transfer goes
+
+4096 bytes, verified byte-for-byte at the receiver each time:
+
+| air rate | observer | ms/frame | kB/s |
+|---|---|---|---|
+| 250 kbps | `text` | 4.44 | 7.0 |
+| 1 Mbps | `bin` | 1.88 | 16.7 |
+| 2 Mbps | `bin` | **1.74** | **18.0** |
+
+Three things had to be right, and each was measured rather than assumed.
+
+**A window, not lockstep.** Waiting for every frame to be confirmed before
+writing the next put a whole host round trip between frames - at 2 Mbps, 4.42
+ms a frame of which 0.35 ms was air. Three payloads in flight closes that gap
+and still cannot overflow the dongle's 256-byte input buffer, which holds three
+69-byte payload lines but not four.
+
+**The air rate is worth 1.3 ms, once.** 250 kbps to 1 Mbps saved 1.26 ms a
+frame; 1 Mbps to 2 Mbps saved 0.04. Past the first step the air is no longer
+what costs.
+
+**The observer is not the transfer.** At 1 Mbps with a readable-line observer
+the run reported 128/128 acknowledged while only 60 frames reached the host -
+the chip accepted and acknowledged them, and the firmware then discarded them
+at the flush. Reassembling that gives a corrupt file and no error anywhere. A
+dongle watching a fast transfer needs [`format bin`](#format-bin-the-same-frames-in-half-the-time);
+otherwise what fails is the measurement, and it fails silently.
+
+That last point cuts both ways, and it is the good news about acknowledgement:
+a receiver whose FIFO is full stops acknowledging, so the sender slows to what
+the receiver can absorb. An acknowledged transfer paces itself. That is why the
+250 kbps row above is byte-perfect even with a readable-line observer - the
+sender was being held back to 4.44 ms a frame by the observer's own limit.
+
+What binds now is the serial line to the sending dongle: 69 bytes of payload
+line plus a 16-byte confirmation is 85 bytes a frame, which at 500000 baud is
+1.7 ms - the figure measured. The next gain is fewer bytes, not faster air.
+
 **`ack` changes both the speed and the meaning.** Acknowledged, the dongle
 confirms every frame and the host waits for that confirmation before writing
 the next payload — it has to, because a frame being retried keeps the dongle
