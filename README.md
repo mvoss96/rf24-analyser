@@ -455,7 +455,7 @@ interleaved rounds: `low` 1.96 ms with 1-2 retransmissions, `high` 2.06 with
 together and full power overloads the receiver's front end; `low` is both the
 default and the optimum here.
 
-Now at **fw 3.15.0**, three interleaved rounds per row, median. **Each rate on
+Now at **fw 3.16.0**, three interleaved rounds per row, median. **Each rate on
 its own best channel** — 250 kbps on 14, 1 and 2 Mbps on 88 — because the choice
 turned out to be worth more than anything in the firmware and to differ by rate:
 channel 14 is the quietest for 250 kbps and among the worst for 2 Mbps, the
@@ -464,18 +464,22 @@ what arrived can be checked. The Δ is against fw 3.14.0 on the same channels.
 
 | air rate | | measured | Δ ms | air used | wire used | seen by observer | Δ |
 |---|---|---|---|---|---|---|---|
-| 250 kbps | acknowledged | 1.96 ms, 16.3 kB/s | −0.03 | 95 % | 35 % | 512/512 | +0 |
-| 250 kbps | not | 1.33 ms, 24.0 kB/s | +0.00 | 99 % | 51 % | 501/512 | +0 |
-| 1 Mbps | acknowledged | 0.98 ms, 32.8 kB/s | −0.06 | 68 % | 70 % | 512/512 | +0 |
-| 1 Mbps | not | 0.85 ms, 37.7 kB/s | +0.00 | 39 % | 80 % | 440/512 | **+14** |
-| 2 Mbps | acknowledged | 1.01 ms, 31.8 kB/s | −0.03 | 46 % | 68 % | 512/512 | +0 |
-| 2 Mbps | not | 0.87 ms, 36.7 kB/s | +0.02 | 19 % | 78 % | 440/512 | **+18** |
+| 250 kbps | acknowledged | 2.00 ms, 16.0 kB/s | +0.04 | 93 % | 34 % | 512/512 | +0 |
+| 250 kbps | not | 1.33 ms, 24.1 kB/s | +0.00 | 99 % | 51 % | 506/512 | +5 |
+| 1 Mbps | acknowledged | 0.98 ms, 32.7 kB/s | +0.00 | 68 % | 69 % | 512/512 | +0 |
+| 1 Mbps | not | 0.87 ms, 36.7 kB/s | +0.02 | 38 % | 78 % | 454/512 | **+14** |
+| 2 Mbps | acknowledged | 0.95 ms, 33.7 kB/s | −0.06 | 49 % | 72 % | 512/512 | +0 |
+| 2 Mbps | not | 0.88 ms, 36.4 kB/s | +0.01 | 19 % | 77 % | 447/512 | **+7** |
 
-The sending times are unchanged, which is right: 3.15.0 touched the receive path
-only. What moved is the last column — the two rows where the observer was the
-constraint gained 14 and 18 frames from the shorter record, and the acknowledged
-rows needed fewer retransmissions for the same reason (1 Mbps 78 → 71, 2 Mbps
-142 → 133), because a receiver that keeps up goes on acknowledging.
+The sending times stand still, which is right and has been right three times
+running: that path is bound by the serial line, so neither a shorter record nor
+faster SPI shows up in it. What moves is the last column. Against fw 3.15.0 the
+observer gained another 14 and 7 frames from CSN by direct port write, and the
+acknowledged rows needed fewer retransmissions again (1 Mbps 71 → 64, 2 Mbps
+133 → 125), because a receiver that keeps up goes on acknowledging.
+
+Cumulative over the two changes: on the rows where the observer is the
+constraint, **1 Mbps 426 → 454 of 512 and 2 Mbps 422 → 447**.
 
 Against a **silent** receiver the same six rows read 1.31 / 1.99 / 0.88 / 0.90 /
 0.87 / 0.89 ms with 512 of 512 seen everywhere except 250 kbps unacknowledged,
@@ -798,6 +802,31 @@ The other two were paying no rent at all:
 receive path was touched, and a check run says so: 2 Mbps unacknowledged with the
 receiver printing measures 0.88 ms a frame and 439 of 512, against 0.87 and 440
 before; padded payloads stay at 512 of 512.
+
+#### CSN, and the difference between an Arduino call and a register
+
+`digitalWrite` looks up the port and bit for a pin in three PROGMEM tables,
+checks whether a timer owns the pin, and masks interrupts around the write. That
+is about 4 us, and a frame comes out of the FIFO through four SPI transactions,
+so eight of them. The pin stays configurable - only the translation stops
+happening a hundred thousand times a second, because the port and bit are
+resolved once in `hwset`.
+
+| | `us_in` | seen at 2 Mbps, receiver printing |
+|---|---|---|
+| `digitalWrite` on CSN | 223 us | 439-441 of 512 |
+| **direct port write** | **191 us** | **449-454 of 512** |
+| plus `SPCR` written directly instead of `SPI.beginTransaction` | 191 us | 449-453 |
+
+The third row is a null result and was reverted. Without a registered interrupt
+`SPI.beginTransaction` compiles to the same two register writes on this
+architecture, so hand-rolling them buys exactly nothing and gives up the one
+thing the library call exists for.
+
+Of the 191 us that remain, about 39 are the bus clocking 37 bytes at 8 MHz. Most
+of the rest is `SPI.transfer` polling until each byte is done, and that is
+inherent: the ATmega's SPI is not double-buffered, so every byte is written,
+waited for and read. There is no third layer to peel.
 
 #### How much of it is Arduino
 

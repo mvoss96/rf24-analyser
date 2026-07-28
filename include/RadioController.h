@@ -272,6 +272,20 @@ private:
 
   enum HwState : uint8_t { HW_NONE, HW_CONNECTED, HW_FAILED };
 
+  // CSN, resolved once into the port register and bit it actually is.
+  //
+  // `digitalWrite` walks three PROGMEM lookup tables, checks for a timer on the
+  // pin and masks interrupts, which is about 4 us - and a frame comes out of the
+  // FIFO through four SPI transactions, so eight of them. The pin stays
+  // configurable; only the translation stops happening a hundred thousand times
+  // a second. Nothing in an interrupt writes a port here, so the read-modify-
+  // write below needs no guard of its own.
+  volatile uint8_t *csnOut_ = nullptr;
+  uint8_t csnBit_ = 0;
+
+  inline void csnLow()  { *csnOut_ &= (uint8_t)~csnBit_; }
+  inline void csnHigh() { *csnOut_ |= csnBit_; }
+
   RF24 radio_; // pinless constructor: pins are supplied at begin() time
   RadioConfig cfg_;
   HwConfig hw_;

@@ -44,28 +44,37 @@ constexpr uint8_t STATUS_RX_DR = 0x40;
 // The dongle's SPI is shared with nothing else, so one setting object is fine.
 //
 // 8 MHz is the ATmega's ceiling as a master (F_CPU/2) and well inside the
-// nRF24L01+'s 10. It halves the time a payload spends on the bus: the drain
-// loop's own measurement, `us_in` in `info`, fell from 190 to 143 us a frame,
-// and 360 frames of mixed lengths came through with nothing corrupted,
-// duplicated or invented.
+// nRF24L01+'s 10. What each layer of the Arduino stack costs, by the drain
+// loop's own clock (`us_in` in `info`), per received frame:
 //
-// Worth knowing what that did and did not buy. It changed a transfer's speed
-// by nothing at all - 1.28 ms a frame before and after - because the sending
-// path is bound by the serial line and the air, not by SPI. And of the 143 us
-// that remain, only about 41 are the bus clocking 41 bytes. The other hundred
-// are Arduino: a digitalWrite on CSN costs some 4 us and there are two per
-// transaction, plus beginTransaction, endTransaction and a polling loop per
-// byte. Direct port writes would take most of it back, and would still not be
-// on the critical path of anything measured here.
+//   4 MHz bus                                          190 us
+//   8 MHz bus                                          143 us
+//   ... the same under load, with a 39-byte record     223 us
+//   CSN by direct port write instead of digitalWrite   191 us
+//   SPCR written directly instead of beginTransaction  191 us  - nothing
+//
+// The last of those was tried and reverted. Without a registered interrupt
+// `SPI.beginTransaction` compiles to the same two register writes on this
+// architecture, so hand-rolling them buys exactly zero and gives up the one
+// thing the library call is for.
+//
+// Of the 191 that remain, about 39 are the bus clocking 37 bytes. Most of the
+// rest is `SPI.transfer`'s poll-until-done, which is inherent: the ATmega's SPI
+// is not double-buffered, so every byte is written, waited for, and read.
+//
+// None of this shows on the sending path - a transfer runs at the same
+// milliseconds either way, because that path is bound by the serial line - and
+// all of it shows on the receiving one, where a frame arriving every 850 us has
+// to be read out and written on before the next lands.
 const SPISettings NRF_SPI(8000000, MSBFIRST, SPI_MODE0);
 }  // namespace
 
 uint8_t RadioController::regRead(uint8_t reg) {
   SPI.beginTransaction(NRF_SPI);
-  digitalWrite(hw_.csn, LOW);
+  csnLow();
   SPI.transfer(CMD_R_REGISTER | reg);
   const uint8_t value = SPI.transfer(0xFF);
-  digitalWrite(hw_.csn, HIGH);
+  csnHigh();
   SPI.endTransaction();
   return value;
 }
@@ -76,48 +85,48 @@ uint8_t RadioController::regRead(uint8_t reg) {
 // anyone having to reason about which end is the LSByte.
 void RadioController::regReadBuf(uint8_t reg, uint8_t *buf, uint8_t len) {
   SPI.beginTransaction(NRF_SPI);
-  digitalWrite(hw_.csn, LOW);
+  csnLow();
   SPI.transfer(CMD_R_REGISTER | reg);
   for (uint8_t i = 0; i < len; i++) buf[i] = SPI.transfer(0xFF);
-  digitalWrite(hw_.csn, HIGH);
+  csnHigh();
   SPI.endTransaction();
 }
 
 void RadioController::regWrite(uint8_t reg, uint8_t value) {
   SPI.beginTransaction(NRF_SPI);
-  digitalWrite(hw_.csn, LOW);
+  csnLow();
   SPI.transfer(0x20 | reg);
   SPI.transfer(value);
-  digitalWrite(hw_.csn, HIGH);
+  csnHigh();
   SPI.endTransaction();
 }
 
 void RadioController::spiCommand(uint8_t cmd) {
   SPI.beginTransaction(NRF_SPI);
-  digitalWrite(hw_.csn, LOW);
+  csnLow();
   SPI.transfer(cmd);
-  digitalWrite(hw_.csn, HIGH);
+  csnHigh();
   SPI.endTransaction();
 }
 
 uint8_t RadioController::payloadWidth() {
   SPI.beginTransaction(NRF_SPI);
-  digitalWrite(hw_.csn, LOW);
+  csnLow();
   SPI.transfer(CMD_R_RX_PL_WID);
   const uint8_t width = SPI.transfer(0xFF);
-  digitalWrite(hw_.csn, HIGH);
+  csnHigh();
   SPI.endTransaction();
   return width;
 }
 
 void RadioController::readPayload(uint8_t *out, uint8_t len) {
   SPI.beginTransaction(NRF_SPI);
-  digitalWrite(hw_.csn, LOW);
+  csnLow();
   SPI.transfer(CMD_R_RX_PAYLOAD);
   for (uint8_t i = 0; i < len; i++) {
     out[i] = SPI.transfer(0xFF);
   }
-  digitalWrite(hw_.csn, HIGH);
+  csnHigh();
   SPI.endTransaction();
 }
 
@@ -135,6 +144,11 @@ bool RadioController::setHardware(const HwConfig &hw) {
   hwReady_ = false;
 
   hw_ = hw;
+
+  // Resolve CSN once. radio_.begin() below sets the pin's direction and drives
+  // it, so this only has to survive until the first transaction of our own.
+  csnOut_ = portOutputRegister(digitalPinToPort(hw_.csn));
+  csnBit_ = digitalPinToBitMask(hw_.csn);
 
   // An IRQ pin that cannot raise an interrupt is not fatal - polling works,
   // it just reacts a little later. Say so rather than pretending.
