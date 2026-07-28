@@ -585,11 +585,24 @@ collapsed or shoving the frame table down the window every time it opened.
 state pill, the open port, the tuned bar in the scan chart and the setup fields
 themselves all come from the dongle's own `info`, which the server parses into a
 snapshot, publishes as a `radio` event and answers `/api/state` with. It asks
-after every command it sends and every ten seconds besides — and takes the
+after every command it sends and every five seconds besides — and takes the
 snapshot straight out of the
 [acknowledgements](#acknowledgements-say-what-they-left-behind) of `listen` and
-`hwset`, which carry it in the same grammar. This is not a detail
-of taste: the summary line used to be assembled from the setup fields, so a page
+`hwset`, which carry it in the same grammar.
+
+That poll is also how a dongle that has **stopped answering** is noticed. Two
+unanswered polls and the state becomes `no answer`: the pill turns red and the
+summary line puts what it is showing into the past tense — `no answer for 14s —
+last reported: ch90 …`. It is not a hypothetical. After a suspend and resume,
+one of these servers went on reporting `listening` with a full configuration for
+seven hours while its port had been dead the whole time; every poll in that span
+ran into a timeout and nothing concluded anything from it. The other server
+segfaulted outright in pyserial, which was the kinder of the two failures — a
+dead process is honest. A vanished port is now reported as a disconnection
+rather than left open, and the state clears itself the moment the dongle answers
+again.
+
+None of this is a detail of taste: the summary line used to be assembled from the setup fields, so a page
 that had not configured anything itself described its own form — one freshly
 loaded tab claimed `ch100 … p1=42:54:48:4D:45` while the dongle underneath it
 was listening on channel 90 with `43:…`, and the frames on screen came from a

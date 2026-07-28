@@ -85,15 +85,34 @@ GREETING_TIMEOUT = 4.5
 # command sent from here already triggers one, and the MCP tools and any curl go
 # through /api/command, so this is not the main path - it is the bound on how
 # wrong the display can be when the assumption behind that sentence does not
-# hold. It puts a ceiling of ten seconds on any divergence whose cause nobody
-# anticipated, which is the only kind that has ever actually bitten: what made a
-# page claim ch100 against a dongle on 90 was precisely a state nothing thought
-# to publish.
-INFO_HEARTBEAT = 10.0
+# hold, and it is what notices a dongle that has stopped answering at all. Five
+# seconds because that bound is also the detection delay below; the traffic is
+# twenty short lines and a handful of register reads, which is nothing next to
+# measuring against a radio that is not there.
+INFO_HEARTBEAT = 5.0
 
 # Everything else this process sends may change what the dongle is doing, so it
 # is followed by an `info`. A tx does not, and a burst is dozens of them.
 NO_REFRESH_AFTER = {"tx", "info"}
+
+# How many heartbeats may go unanswered before the dongle counts as gone. The
+# poll was already measuring this and throwing the result away: after a suspend
+# and resume, one of these servers kept saying "listening" with a full
+# configuration for seven hours while its port had been dead the whole time.
+# Every poll in that span ran into a timeout and nobody drew a conclusion.
+#
+# Two, because the dongle answers `info` in milliseconds and waiting for a third
+# would only be caution about nothing: half a minute of measuring against a dead
+# radio is a real cost, and a wrong guess is not - the next answer clears the
+# state by itself. The one thing that can legitimately delay a reply is a tx
+# burst, whose gaps are firmware-side and can run a few seconds; that flags the
+# radio for one poll and heals on the next.
+DEAF_AFTER_POLLS = 2
+
+# Not "listening" and not "not connected": the port is open and the process is
+# fine, the thing on the other end has stopped answering. Naming it separately
+# is the point - the two states it sits between are both reassuring.
+DEAF_STATE = "no answer"
 
 
 def column_spec(parser):
@@ -241,6 +260,7 @@ class Session:
         self._info_block = None     # lines collected since the `info:` header
         self._info_quiet = False    # swallow this block instead of logging it
         self._info_pending = 0      # blocks asked for by this class, not a user
+        self._unanswered = 0        # heartbeats the dongle has not answered
         self._pump = None
         self._beat = None
         self._stop = threading.Event()
@@ -308,6 +328,7 @@ class Session:
         self.radio_at = None
         self._info_block = None
         self._info_pending = 0
+        self._unanswered = 0
         self.hub.publish(self.status_event())
         self.hub.publish(self.radio_event())
 
@@ -318,7 +339,14 @@ class Session:
         # capture underneath it came from COM18.
         return {"type": "status", "connected": self.dongle is not None,
                 "port": self.dongle.port if self.dongle else None,
-                "state": self.state_text, "greeting": self.greeting}
+                "state": self.state_text, "greeting": self.greeting,
+                # How long the dongle has been silent, once it counts as gone.
+                # Computed here rather than from the snapshot's timestamp in the
+                # browser: the two clocks need not agree, and this one is the
+                # clock the silence was measured against.
+                "silentFor": (round(time.time() - self.radio_at, 1)
+                              if self.state_text == DEAF_STATE and self.radio_at
+                              else None)}
 
     def radio_event(self):
         return {"type": "radio", "radio": self.radio, "at": self.radio_at}
@@ -371,19 +399,48 @@ class Session:
             # the session holds now rather than trusting the flag alone.
             if self.dongle is not owner:
                 return
+            # The reader thread ends only when the port broke away underneath
+            # it; a port that was closed properly took the whole session with
+            # it. Nothing else will notice - writes to the dead handle can go on
+            # succeeding - so this is where a vanished dongle is reported.
+            if not owner.reading:
+                self._port_lost("the serial port went away "
+                                "(unplugged, or the host suspended)")
+                return
             # A sweep retunes the radio across the band and reports as it goes;
             # asking it about itself in the middle of that interleaves with the
             # report and tells us only that it is scanning, which we know.
             if self.state_text == "scanning":
                 continue
+            # Counted before the question is asked, cleared when an answer
+            # arrives. Silence is the only evidence available: the write can
+            # succeed against a handle whose device is long gone.
+            self._unanswered += 1
+            if self._unanswered == DEAF_AFTER_POLLS:
+                self.hub.publish({
+                    "type": "line", "kind": "warn",
+                    "text": f"WARN no answer to {DEAF_AFTER_POLLS} status polls "
+                            f"({DEAF_AFTER_POLLS * INFO_HEARTBEAT:.0f}s) - the "
+                            f"configuration shown is the last one it reported"})
+            if self._unanswered >= DEAF_AFTER_POLLS:
+                self.set_state(DEAF_STATE)
             try:
                 self.refresh_info()
             except Exception:
                 pass   # disconnected between the check and the write
 
+    def _port_lost(self, why):
+        self.hub.publish({"type": "line", "kind": "error",
+                          "text": f"ERR {why} - disconnected"})
+        self.disconnect()
+
     def _set_radio(self, info):
         self.radio = info
         self.radio_at = time.time()
+        # It answered, so it is not deaf - whatever it was that answered, a poll
+        # or a command's acknowledgement. The state below comes from the dongle
+        # itself and replaces "no answer" without any special case for it.
+        self._unanswered = 0
         state = info.get("state")
         # The dongle's own word for what it is doing outranks the inference from
         # OK lines: that one only knows about the commands this process saw.

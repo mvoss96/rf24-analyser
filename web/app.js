@@ -15,6 +15,11 @@ let selected = -1;
 // what let a freshly loaded page claim ch100 while the dongle sat on ch90.
 let deviceRadio = null;
 
+// Seconds since the dongle last answered, once it has stopped answering at all;
+// null while it is answering. The server measures it, because the silence was
+// timed against its clock and not the browser's.
+let silentFor = null;
+
 // --- helpers ---------------------------------------------------------------
 
 async function post(path, body) {
@@ -72,7 +77,9 @@ function setState(text, cls) {
 function stateClass(text, isConnected) {
   if (!isConnected) return "idle";
   if (text === "listening" || text === "scanning") return "live";
-  if (/no greeting|failed|mismatch|error/.test(text)) return "bad";
+  // "no answer" belongs here rather than among the amber states: the port is
+  // open and the process is fine, which is exactly what makes it deceptive.
+  if (/no greeting|no answer|failed|mismatch|error/.test(text)) return "bad";
   return "warn";
 }
 
@@ -129,27 +136,41 @@ function renderSummary() {
   const el = $("summary");
   const r = deviceRadio;
   el.classList.toggle("unknown", !r || !r.configured);
+  el.classList.toggle("silent", silentFor !== null);
   if (!connected) { el.textContent = "no dongle connected"; return; }
   if (!r) { el.textContent = "asking the dongle…"; return; }
-  if (!r.hwReady) { el.textContent = "no wiring — Setup…, then Apply"; return; }
-
-  const wiring = `ce=${r.wiring.ce} csn=${r.wiring.csn}`;
-  if (!r.configured) {
-    el.textContent = `${wiring}  |  radio not configured — Setup…, then Apply`;
+  // A dongle that stopped answering leaves a configuration on screen that was
+  // true at some earlier time. Showing it is still the most useful thing to do
+  // - it is what the radio was doing - but only said as the past tense it is.
+  if (silentFor !== null) {
+    el.textContent = `no answer for ${Math.round(silentFor)}s — last reported: `
+                   + summaryText(r);
+    el.title = "The port is open and the server is running; the dongle has "
+             + "stopped answering. Reconnect, or check the cable.";
     return;
   }
-  // Pipes 2-5 are reported as the full address they listen on, which is what
-  // the old line showed too - the radio joins their one byte to pipe 1's rest.
-  const pipes = Object.keys(r.pipes).map(Number).sort((a, b) => a - b)
-    .map((n) => `p${n}=${r.pipes[n]}`).join(" ");
-  el.textContent = `${wiring}  |  ch${r.channel} ${r.rate}k crc${r.crc} ` +
-                   `aw${r.aw} pa=${r.pa}  |  ${pipes}`;
+  el.textContent = summaryText(r);
   // Measured or merely intended - the difference is worth having, but not worth
   // a badge in the toolbar of a tool whose radio is normally listening.
   el.title = r.src === "chip"
     ? "read back from the chip's registers"
     : "as the firmware holds it — the registers describe the configuration only "
       + "while the radio is listening";
+}
+
+// One snapshot in one line. Separate from the framing above so the same words
+// can be shown as the present tense and, when the dongle has gone quiet, as the
+// past one - the values do not change with the reason for showing them.
+function summaryText(r) {
+  if (!r.hwReady) return "no wiring — Setup…, then Apply";
+  const wiring = `ce=${r.wiring.ce} csn=${r.wiring.csn}`;
+  if (!r.configured) return `${wiring}  |  radio not configured — Setup…, then Apply`;
+  // Pipes 2-5 are reported as the full address they listen on, which is what
+  // the old line showed too - the radio joins their one byte to pipe 1's rest.
+  const pipes = Object.keys(r.pipes).map(Number).sort((a, b) => a - b)
+    .map((n) => `p${n}=${r.pipes[n]}`).join(" ");
+  return `${wiring}  |  ch${r.channel} ${r.rate}k crc${r.crc} `
+       + `aw${r.aw} pa=${r.pa}  |  ${pipes}`;
 }
 
 // The setup fields hold the dongle's configuration, so that opening the dialog
@@ -612,6 +633,7 @@ function handle(event) {
     }
   } else if (event.type === "status") {
     connected = event.connected;
+    silentFor = event.silentFor ?? null;
     $("connect").textContent = connected ? "Disconnect" : "Connect";
     setLinkControls(connected);
     showPort(event.port);

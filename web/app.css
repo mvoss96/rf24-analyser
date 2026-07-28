@@ -200,6 +200,10 @@ input[type="text"], input:not([type]) {
 /* Not a configuration but a sentence about why there is none. Italic so it does
    not read as one at a glance. */
 .summary.unknown { font-style: italic; }
+/* Still a configuration, but one from the past: the dongle has stopped
+   answering. Coloured like the state pill it belongs to, because the two are
+   saying the same thing about the same thing. */
+.summary.silent { color: var(--danger); }
 
 /* --- setup dialog --- */
 
