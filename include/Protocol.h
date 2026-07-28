@@ -29,5 +29,13 @@
 // reads the api= in it either. The version moves anyway, because it is the
 // record of what is and is not interchangeable - but what a host actually sees
 // against older firmware is no greeting at all, and the answer is to reflash.
-#define FW_VERSION "3.6.0"
+// 3.7.0 makes the command path honest under load. The serial receive buffer
+// is 256 bytes, because loop() does not read the port while transmit() runs and
+// an 85-character `tx` line does not fit the default 64 - a command arriving
+// during a transmit lost its tail and was answered as a bad payload. An
+// overlong line now says so instead of having its tail dispatched as a command
+// of its own. And `tx` distinguishes an acknowledgement from the absence of
+// anyone to give one: ack=off says the radio was never going to wait, where it
+// used to say yes. Additive, so api stayed at 5.
+#define FW_VERSION "3.7.0"
 #define API_VERSION 5

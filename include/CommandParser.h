@@ -22,6 +22,7 @@ private:
   RadioController &radio_;
   char buf_[BUF_SIZE];
   uint8_t len_ = 0;
+  bool overlong_ = false;   // this line outgrew the buffer; say so at its end
 
   void dispatch(char *line);
   void handleHwset(char *args);

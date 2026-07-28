@@ -99,13 +99,22 @@ void CommandParser::feed(char c) {
   // unconfigured (PuTTY sends CR on Enter, miniterm CRLF). The trailing empty
   // line a CRLF produces is dispatched too, but dispatch() ignores it.
   if (c == '\n' || c == '\r') {
-    buf_[len_] = '\0';
-    dispatch(buf_);
+    // An overlong line is reported, not quietly repaired. Resetting the buffer
+    // mid-line used to turn the tail into a line of its own, which was then
+    // dispatched as a command nobody sent - and the answer described that
+    // wreckage rather than the length that caused it.
+    if (overlong_) {
+      err(F("line too long"));
+      overlong_ = false;
+    } else {
+      buf_[len_] = '\0';
+      dispatch(buf_);
+    }
     len_ = 0;
   } else if (len_ < BUF_SIZE - 1) {
     buf_[len_++] = c;
   } else {
-    len_ = 0; // overlong line: reset to stay in sync
+    overlong_ = true;   // keep reading to the terminator, then say so
   }
 }
 
@@ -258,6 +267,16 @@ void CommandParser::handleListen(char *args) {
     } else if (strcmp(tok, "dpl") == 0) {
       int x = atoi(v); if (x != 0 && x != 1) { err(F("dpl 0|1")); return; }
       c.dpl = (x == 1); have |= K_DPL;
+    } else if (strcmp(tok, "retries") == 0) {
+      // retries=<ard_us>,<arc> - optional, so a listen line that never mentions
+      // it keeps the values the radio already had.
+      char *comma = strchr(v, ',');
+      if (comma == nullptr) { err(F("retries=<ard_us>,<count>")); return; }
+      *comma = '\0';
+      int ard = atoi(v), arc = atoi(comma + 1);
+      if (ard < 250 || ard > 4000 || ard % 250) { err(F("ard 250..4000 in steps of 250")); return; }
+      if (arc < 0 || arc > 15) { err(F("retry count 0..15")); return; }
+      c.ardUs = (uint16_t)ard; c.arc = (uint8_t)arc;
     } else if (strcmp(tok, "plsize") == 0) {
       int x = atoi(v); if (x < 1 || x > 32) { err(F("plsize 1..32")); return; }
       c.plSize = (uint8_t)x; havePlsize = true;
@@ -353,17 +372,34 @@ void CommandParser::handleTx(char *args) {
   }
   if (plen == 0) { err(F("empty payload")); return; }
 
-  uint8_t sent = radio_.transmit(addr, payload, plen, noack, count, gapMs);
+  const RadioController::TxResult r =
+      radio_.transmit(addr, payload, plen, noack, count, gapMs);
   Serial.print(F("OK tx sent="));
-  Serial.print(sent);
+  Serial.print(r.sent);
   // The single-frame reply keeps its exact historic shape; only a burst gets
   // the /n suffix, so an old host parsing "sent=1" never sees anything new.
   if (count > 1) {
     Serial.print('/');
     Serial.print(count);
   }
+  // Three states, not two. `yes` means the receiver acknowledged; `no` means
+  // none was asked for; `off` means one was asked for and the radio was never
+  // going to wait for it, because auto-ack is disabled in the configuration.
+  // That last case used to report `yes` and read as proof of delivery to an
+  // address nobody was listening on.
   Serial.print(F(" ack="));
-  Serial.println(noack ? F("no") : F("yes"));
+  if (noack) {
+    Serial.print(F("no"));
+  } else if (!r.acking) {
+    Serial.print(F("off"));
+  } else {
+    Serial.print(F("yes"));
+    Serial.print(F(" failed="));
+    Serial.print(r.failed);
+    Serial.print(F(" retries="));
+    Serial.print(r.retries);
+  }
+  Serial.println();
 }
 
 void CommandParser::dispatch(char *line) {

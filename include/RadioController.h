@@ -41,6 +41,13 @@ struct RadioConfig {
   bool     dpl       = false; // dynamic payloads
   uint8_t  plSize    = 32;    // static payload size when dpl == false
   uint8_t  paLevel   = 0;     // 0=min 1=low 2=high 3=max
+  // Auto-retransmit: how long the chip waits for an acknowledgement and how
+  // often it tries again. Only in play when autoAck is on. The defaults are
+  // what RF24::begin() writes, not the chip's own reset values (250 us / 3) -
+  // worth saying, because a report of "no acknowledgement" reads differently
+  // depending on how long the radio was willing to wait for one.
+  uint16_t ardUs     = 1500;  // 250..4000, in steps of 250
+  uint8_t  arc       = 15;    // 0..15; 0 disables retransmission entirely
   bool     pipeEn[6] = {false, false, false, false, false, false};
   uint8_t  pipeAddr[6][MAX_ADDR_WIDTH] = {{0}, {0}, {0}, {0}, {0}, {0}};
 };
@@ -140,13 +147,27 @@ public:
   // Drains any pending RX frames to serial. Cheap to call every loop.
   void poll();
 
+  // What a transmission actually did, as opposed to what it was asked to do.
+  //
+  // `sent` used to be the whole answer and it could not tell "the receiver
+  // acknowledged" from "the radio was never expecting one to". Asking for `ack`
+  // while the configuration has auto-ack off reports success for every frame,
+  // with nobody listening on the address - true, and read as the opposite.
+  struct TxResult {
+    uint8_t attempted = 0;   // frames handed to the radio
+    uint8_t sent = 0;        // left the FIFO: acknowledged, or emitted if no ack
+    uint8_t failed = 0;      // gave up after the configured retransmissions
+    uint16_t retries = 0;    // summed ARC_CNT, the retransmissions it did make
+    bool acking = false;     // was an acknowledgement actually going to be waited for
+  };
+
   // Transmits `count` copies of one payload to `addr`, `gapMs` apart. noack=true
   // sends with the NO_ACK flag (per-packet), matching a broadcast sender - which
   // repeats each event a few ms apart, exactly what count/gap emulate. The radio
   // stays in TX between the copies, so gap=0 spaces them only by the air time.
   // Returns how many copies the radio reported as sent.
-  uint8_t transmit(const uint8_t *addr, const uint8_t *data, uint8_t len,
-                   bool noack, uint8_t count = 1, uint16_t gapMs = 0);
+  TxResult transmit(const uint8_t *addr, const uint8_t *data, uint8_t len,
+                    bool noack, uint8_t count = 1, uint16_t gapMs = 0);
 
   // Energy scan across all 126 channels, `passes` sweeps. Prints hits.
   void scan(uint16_t passes);

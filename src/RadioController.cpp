@@ -193,6 +193,11 @@ void RadioController::reconfigure() {
   radio_.setAddressWidth(cfg_.addrWidth);
   radio_.setPALevel((rf24_pa_dbm_e)cfg_.paLevel);
   radio_.setAutoAck(cfg_.autoAck);
+  // How long to wait for an acknowledgement and how often to try again. Set
+  // here rather than left at whatever begin() wrote, so that what `info`
+  // reports is what the chip was told - and so a run can widen it when the
+  // link is marginal instead of guessing why frames were given up on.
+  radio_.setRetries((uint8_t)(cfg_.ardUs / 250 - 1), cfg_.arc);
 
   if (cfg_.dpl) {
     radio_.enableDynamicPayloads();
@@ -439,12 +444,19 @@ void RadioController::poll() {
   }
 }
 
-uint8_t RadioController::transmit(const uint8_t *addr, const uint8_t *data,
-                                  uint8_t len, bool noack, uint8_t count,
-                                  uint16_t gapMs) {
+RadioController::TxResult RadioController::transmit(const uint8_t *addr,
+                                                    const uint8_t *data,
+                                                    uint8_t len, bool noack,
+                                                    uint8_t count,
+                                                    uint16_t gapMs) {
   radio_.stopListening();
   radio_.openWritingPipe(addr);
   led(hw_.ledTx, true);
+  TxResult result;
+  result.attempted = count;
+  // Asking for an acknowledgement only means one when the chip is set up to
+  // expect it. EN_AA is the chip's own answer to that, not the configuration's.
+  result.acking = !noack && regRead(0x01) != 0;
   uint8_t sent = 0;
   for (uint8_t i = 0; i < count; i++) {
     // Bounded, deliberately not RF24::write(): if the CE pin is not actually
@@ -456,16 +468,21 @@ uint8_t RadioController::transmit(const uint8_t *addr, const uint8_t *data,
     if (radio_.txStandBy(TX_TIMEOUT_MS)) {
       sent++;
     } else {
+      result.failed++;
       radio_.flush_tx();
     }
+    // ARC_CNT counts the retransmissions of the packet just handled; it resets
+    // with each new one, so it has to be read here and summed.
+    result.retries += regRead(0x08) & 0x0F;   // OBSERVE_TX
     if (gapMs != 0 && i + 1 < count) delay(gapMs);
   }
+  result.sent = sent;
   led(hw_.ledTx, false);
   // openWritingPipe clobbers pipe 0; restore reading pipes and listen state.
   // Done once after the whole burst - reconfiguring between copies would add
   // milliseconds of SPI traffic exactly where the burst is meant to be tight.
   reconfigure();
-  return sent;
+  return result;
 }
 
 // The sweep runs at 2 Mbps whatever the radio is configured for. The RPD fires
@@ -622,6 +639,9 @@ RadioController::ConfigSource RadioController::readConfig(RadioConfig &out) {
   out.autoAck = regRead(0x01) != 0;              // EN_AA, all pipes together
   const uint8_t enRx = regRead(0x02);            // EN_RXADDR
   out.addrWidth = (uint8_t)((regRead(0x03) & 0x03) + 2);   // SETUP_AW
+  const uint8_t retr = regRead(0x04);                     // SETUP_RETR
+  out.ardUs = (uint16_t)(((retr >> 4) & 0x0F) + 1) * 250;
+  out.arc = retr & 0x0F;
   out.channel = regRead(0x05) & 0x7F;            // RF_CH
 
   const uint8_t rf = regRead(0x06);              // RF_SETUP
@@ -661,6 +681,8 @@ void RadioController::printConfig(const RadioConfig &c, ConfigSource src, bool b
   sep(); Serial.print(F("ack="));    Serial.print(c.autoAck ? 1 : 0);
   sep(); Serial.print(F("dpl="));    Serial.print(c.dpl ? 1 : 0);
   sep(); Serial.print(F("plsize=")); Serial.print(c.plSize);
+  sep(); Serial.print(F("retries=")); Serial.print(c.ardUs);
+  Serial.print(','); Serial.print(c.arc);
   for (uint8_t p = 0; p < 6; p++) {
     if (!c.pipeEn[p]) continue;
     sep();
