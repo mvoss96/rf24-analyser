@@ -585,11 +585,24 @@ collapsed or shoving the frame table down the window every time it opened.
 state pill, the open port, the tuned bar in the scan chart and the setup fields
 themselves all come from the dongle's own `info`, which the server parses into a
 snapshot, publishes as a `radio` event and answers `/api/state` with. It asks
-after every command it sends and every ten seconds besides — and takes the
+after every command it sends and every five seconds besides — and takes the
 snapshot straight out of the
 [acknowledgements](#acknowledgements-say-what-they-left-behind) of `listen` and
-`hwset`, which carry it in the same grammar. This is not a detail
-of taste: the summary line used to be assembled from the setup fields, so a page
+`hwset`, which carry it in the same grammar.
+
+That poll is also how a dongle that has **stopped answering** is noticed. Two
+unanswered polls and the state becomes `no answer`: the pill turns red and the
+summary line puts what it is showing into the past tense — `no answer for 14s —
+last reported: ch90 …`. It is not a hypothetical. After a suspend and resume,
+one of these servers went on reporting `listening` with a full configuration for
+seven hours while its port had been dead the whole time; every poll in that span
+ran into a timeout and nothing concluded anything from it. The other server
+segfaulted outright in pyserial, which was the kinder of the two failures — a
+dead process is honest. A vanished port is now reported as a disconnection
+rather than left open, and the state clears itself the moment the dongle answers
+again.
+
+None of this is a detail of taste: the summary line used to be assembled from the setup fields, so a page
 that had not configured anything itself described its own form — one freshly
 loaded tab claimed `ch100 … p1=42:54:48:4D:45` while the dongle underneath it
 was listening on channel 90 with `43:…`, and the frames on screen came from a
@@ -606,12 +619,22 @@ already has (a bare `listen`), and falls back to configuring from the fields
 only for a dongle that has none, fresh off a reset.
 
 Top right stands **which build is answering, at both ends of the serial link**:
-the dongle's `fw 3.5.0 · api 4` from its greeting, and this server's own
+the dongle's `fw 3.6.0 · api 5` from its greeting, and this server's own
 version. Each turns into a warning on its own terms — an `api` the UI does not
 speak, and a source file whose mtime has moved past the running process, which
 Python will not reload. That second one is not hypothetical: a padding fix sat
 on disk for hours while the UI, running the older import, kept flagging correct
 frames as malformed.
+
+While it is warning, **the version is a button**: clicking it restarts the
+server into the code on disk. The successor inherits the port that was open and
+reopens it, so the click is the whole procedure rather than the first step of
+one. It is deliberately not automatic and deliberately not clickable at any
+other time — a restart pulls DTR, which resets the dongle, so the radio
+configuration and every captured frame go with it. That is a price for the
+person watching to agree to, not for a file watcher to decide. The setup fields
+keep what the dongle last reported, so `Start` puts the radio back where it was
+rather than on the page's defaults.
 
 Frames arrive with **millisecond timestamps and a Δ column** — the
 three repeats of one event sit ~4 ms apart, which per-second resolution hides.
@@ -670,6 +693,7 @@ client's resume point backwards.
 | `GET /api/state` | one synchronous snapshot: connected, open port, state, decoder, `radio` (the parsed `info` block) with its `radioAge` in seconds, wiring, and `firmware` (the dongle's `fw`/`api` from the greeting, against the `api` this host speaks) |
 | `POST /api/connect`, `/api/disconnect`, `/api/command` | control; `command` with `"wait": true` blocks for and returns the firmware's OK/ERR reply |
 | `POST /api/burst` | transmit a frame sequence (`{"address", "frames": [{"payload", "repeat", "gap_ms", …}]}`), one awaited reply per entry |
+| `POST /api/restart` | answer, then replace this process with one running the code on disk, handing it the open port. Resets the dongle |
 | `POST /api/capture` | block for `seconds`, return the window's frames + stats |
 | `POST /api/parser` | switch decoder, returns the history re-decoded |
 

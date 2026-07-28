@@ -15,6 +15,11 @@ let selected = -1;
 // what let a freshly loaded page claim ch100 while the dongle sat on ch90.
 let deviceRadio = null;
 
+// Seconds since the dongle last answered, once it has stopped answering at all;
+// null while it is answering. The server measures it, because the silence was
+// timed against its clock and not the browser's.
+let silentFor = null;
+
 // --- helpers ---------------------------------------------------------------
 
 async function post(path, body) {
@@ -72,7 +77,9 @@ function setState(text, cls) {
 function stateClass(text, isConnected) {
   if (!isConnected) return "idle";
   if (text === "listening" || text === "scanning") return "live";
-  if (/no greeting|failed|mismatch|error/.test(text)) return "bad";
+  // "no answer" belongs here rather than among the amber states: the port is
+  // open and the process is fine, which is exactly what makes it deceptive.
+  if (/no greeting|no answer|failed|mismatch|error/.test(text)) return "bad";
   return "warn";
 }
 
@@ -129,27 +136,41 @@ function renderSummary() {
   const el = $("summary");
   const r = deviceRadio;
   el.classList.toggle("unknown", !r || !r.configured);
+  el.classList.toggle("silent", silentFor !== null);
   if (!connected) { el.textContent = "no dongle connected"; return; }
   if (!r) { el.textContent = "asking the dongle…"; return; }
-  if (!r.hwReady) { el.textContent = "no wiring — Setup…, then Apply"; return; }
-
-  const wiring = `ce=${r.wiring.ce} csn=${r.wiring.csn}`;
-  if (!r.configured) {
-    el.textContent = `${wiring}  |  radio not configured — Setup…, then Apply`;
+  // A dongle that stopped answering leaves a configuration on screen that was
+  // true at some earlier time. Showing it is still the most useful thing to do
+  // - it is what the radio was doing - but only said as the past tense it is.
+  if (silentFor !== null) {
+    el.textContent = `no answer for ${Math.round(silentFor)}s — last reported: `
+                   + summaryText(r);
+    el.title = "The port is open and the server is running; the dongle has "
+             + "stopped answering. Reconnect, or check the cable.";
     return;
   }
-  // Pipes 2-5 are reported as the full address they listen on, which is what
-  // the old line showed too - the radio joins their one byte to pipe 1's rest.
-  const pipes = Object.keys(r.pipes).map(Number).sort((a, b) => a - b)
-    .map((n) => `p${n}=${r.pipes[n]}`).join(" ");
-  el.textContent = `${wiring}  |  ch${r.channel} ${r.rate}k crc${r.crc} ` +
-                   `aw${r.aw} pa=${r.pa}  |  ${pipes}`;
+  el.textContent = summaryText(r);
   // Measured or merely intended - the difference is worth having, but not worth
   // a badge in the toolbar of a tool whose radio is normally listening.
   el.title = r.src === "chip"
     ? "read back from the chip's registers"
     : "as the firmware holds it — the registers describe the configuration only "
       + "while the radio is listening";
+}
+
+// One snapshot in one line. Separate from the framing above so the same words
+// can be shown as the present tense and, when the dongle has gone quiet, as the
+// past one - the values do not change with the reason for showing them.
+function summaryText(r) {
+  if (!r.hwReady) return "no wiring — Setup…, then Apply";
+  const wiring = `ce=${r.wiring.ce} csn=${r.wiring.csn}`;
+  if (!r.configured) return `${wiring}  |  radio not configured — Setup…, then Apply`;
+  // Pipes 2-5 are reported as the full address they listen on, which is what
+  // the old line showed too - the radio joins their one byte to pipe 1's rest.
+  const pipes = Object.keys(r.pipes).map(Number).sort((a, b) => a - b)
+    .map((n) => `p${n}=${r.pipes[n]}`).join(" ");
+  return `${wiring}  |  ch${r.channel} ${r.rate}k crc${r.crc} `
+       + `aw${r.aw} pa=${r.pa}  |  ${pipes}`;
 }
 
 // The setup fields hold the dongle's configuration, so that opening the dialog
@@ -612,6 +633,7 @@ function handle(event) {
     }
   } else if (event.type === "status") {
     connected = event.connected;
+    silentFor = event.silentFor ?? null;
     $("connect").textContent = connected ? "Disconnect" : "Connect";
     setLinkControls(connected);
     showPort(event.port);
@@ -631,6 +653,10 @@ function handle(event) {
     // clear we were disconnected across. What follows is a full replay, so
     // the table has to be empty to receive it.
     rebuild([]);
+    // A different process is the one case where the build badge is certainly
+    // out of date, and it is polled only once a minute. Left alone it would go
+    // on inviting a restart that has already happened.
+    showBuild();
   } else if (event.type === "scan") {
     renderScan(event);
   } else if (event.type === "parser") {
@@ -829,6 +855,17 @@ function init() {
   stream.onmessage = (e) => handle(JSON.parse(e.data));
   stream.onerror = () => setState("server lost", "bad");
 
+  // Only while it is warning: a restart resets the dongle and throws the
+  // capture away, so it must not be one stray click away at any other time.
+  $("build").addEventListener("click", async () => {
+    if (!$("build").classList.contains("stale")) return;
+    setState("restarting…", "warn");
+    await post("/api/restart");
+    // Nothing else to do: the successor binds the same port, EventSource
+    // reconnects on its own, and the new process's run token makes the replay
+    // a reset rather than a duplicate.
+  });
+
   showBuild();
   // Polled, not pushed: the answer changes when a file on disk changes, which
   // the server has no event for. A minute is soon enough to catch an edit
@@ -872,11 +909,13 @@ async function showBuild() {
   if (app.stale && app.stale.length) {
     el.classList.add("stale");
     el.classList.remove("dim");
-    el.textContent = `v${app.version} — restart to load changes`;
+    el.textContent = `v${app.version} — click to restart`;
     el.title = `Changed on disk since this server started (${started}):\n` +
                app.stale.join("\n") +
                "\n\nPython keeps imported modules in memory, so what you see " +
-               "is the older code.";
+               "is the older code. Click to restart into it — the port that is " +
+               "open is reopened, but the dongle resets, so the radio " +
+               "configuration and the captured frames are lost.";
     if (!staleWarned) {
       staleWarned = true;
       log(`[warning] source changed since start (${app.stale.join(", ")}) - ` +

@@ -255,6 +255,17 @@ class Dongle:
     def is_open(self):
         return self._serial is not None
 
+    @property
+    def reading(self):
+        """True while the reader thread is alive.
+
+        It ends on its own only when the port broke away underneath it - a port
+        that was closed properly took the whole session with it. Nothing else
+        notices that: writes to the dead handle can go on succeeding, so the
+        caller would keep talking to a device that is not there.
+        """
+        return self._thread is not None and self._thread.is_alive()
+
     def open(self):
         if serial is None:
             raise RuntimeError("pyserial is required: pip install -r requirements.txt")
