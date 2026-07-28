@@ -441,22 +441,43 @@ that stops the same idea being tried a second time.
 acknowledgement 73 more; the serial line's own limit is a 34-byte record at
 20 us a byte, so 0.68 ms a frame - **47 kB/s whatever the radio does**.
 
-Now at **fw 3.14.0**, against **fw 3.12.0**. Receiving side in `format bin`, so
-that what arrived can be checked:
+Now at **fw 3.14.0**, re-measured against itself after three attempts to close
+the last quarter of the wire, all of which failed. Receiving side in
+`format bin`, so that what arrived can be checked:
 
 | air rate | | measured | Δ ms | air used | wire used | seen by observer | Δ |
 |---|---|---|---|---|---|---|---|
-| 250 kbps | acknowledged | 1.96 ms, 16.0 kB/s | −0.03 | 89 % | 35 % | 512/512 | +0 |
-| 250 kbps | not | 1.33 ms, 23.5 kB/s | −0.02 | 99 % | 51 % | 506/512 | −6 |
+| 250 kbps | acknowledged | 1.98 ms, 15.8 kB/s | +0.02 | 88 % | 34 % | 512/512 | +0 |
+| 250 kbps | not | 1.31 ms, 23.9 kB/s | −0.02 | at the limit | 52 % | 512/512 | +6 |
 | 1 Mbps | acknowledged | 1.00 ms, 31.1 kB/s | +0.00 | 53 % | 68 % | 512/512 | +0 |
-| 1 Mbps | not | 0.85 ms, 36.6 kB/s | +0.02 | 39 % | 80 % | 426/512 | +8 |
-| 2 Mbps | acknowledged | 1.01 ms, 31.1 kB/s | −0.02 | 33 % | 68 % | 512/512 | +0 |
-| 2 Mbps | not | 0.87 ms, 36.1 kB/s | −0.01 | 19 % | 79 % | 423/512 | +8 |
+| 1 Mbps | not | 0.89 ms, 34.9 kB/s | +0.04 | 37 % | 76 % | 427/512 | +1 |
+| 2 Mbps | acknowledged | 1.04 ms, 30.1 kB/s | +0.03 | 32 % | 65 % | 512/512 | +0 |
+| 2 Mbps | not | 0.85 ms, 36.8 kB/s | −0.02 | 19 % | 80 % | 424/512 | +1 |
 
-Nothing moved beyond noise, and nothing should have: 3.14.0 repeats a lost
-confirmation, which costs nothing when none is lost.
+#### The last quarter of the wire, and three things that do not get it
 
-**That repeat is a real fix even though it moved no number here.** A host whose
+A record needs 0.68 ms on the line and a run measures about 0.88. That quarter
+resisted everything aimed at it:
+
+| tried | result |
+|---|---|
+| window from 7 to 14 records | 0.88 → 0.87 ms |
+| serial receive buffer 256 → 512 bytes | 0.90 → 0.89 ms |
+| one `write` per window instead of per record | 0.88 → 0.87 ms |
+
+All three are within the noise of the six rows above, and all three were
+reverted rather than kept: a 512-byte buffer is a quarter of the ATmega's RAM,
+and batching is code with nothing to show for itself. Confirming *less* often
+is actively worse - at `conf=16` a run takes 4.2 ms a frame, because the host
+then sits with a full window waiting.
+
+What is left is most likely host-side scheduling - Python's reaction to a
+confirmation, and the USB frame the CH340 is served in - neither of which this
+protocol can reach. The sending path is therefore treated as finished at
+**75-80 % of the serial line**, which is itself a fifth of what the radio can
+do.
+
+**The confirmation repeat is a real fix even though it moved no number here.** A host whose
 window is full cannot write another payload until one is confirmed, so a
 confirmation damaged on the wire used to deadlock the run until the dongle's
 500 ms quiet timer killed it - one bad byte on the return path costing an entire
