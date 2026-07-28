@@ -48,7 +48,7 @@
 // `sent=44` and a 512-frame run `sent=0` - after transmitting all of them. A
 // count that lies about a completed transfer reads exactly like a truncated
 // one. `txseq` also tells `ack=off` from `ack=no` now, as `tx` already did.
-#define FW_VERSION "3.9.1"
+#define FW_VERSION "3.10.0"
 #define API_VERSION 5
 
 // The rate a dongle always boots at. `baud` can raise it for a session, but a

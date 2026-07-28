@@ -102,7 +102,11 @@ MAX_FRAMES = 5000
 #       the host outrun 250 kbps air and overrun the dongle's input buffer -
 #       runs ended at frame 23 with `stopped=bad payload`. Hex lines had hidden
 #       it by being nearly as slow as the air.
-APP_VERSION = "1.6.1"
+#
+# 1.7.0 needs firmware 3.10.0, which flushes the RX FIFO only after a payload
+#       shorter than the slot. A dongle receiving 32-byte frames went from 50%
+#       to 99% of them; short payloads keep the protection they had.
+APP_VERSION = "1.7.0"
 
 # Python imports a module once and keeps it: editing nrf24_parsers.py while the
 # server runs changes nothing until the process is restarted. That cost a real

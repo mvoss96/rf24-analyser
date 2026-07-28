@@ -540,6 +540,24 @@ With `dpl=0` every frame is padded to `plsize`, so a transfer's last frame
 carries filler and the receiver has to know the real length. With `dpl=1` the
 lengths are exact and a file comes back out at its original size.
 
+### The flush, and why it is now conditional
+
+`rxmode 2` flushed the RX FIFO after **every** payload, which discards whatever
+arrived while the firmware was busy and so limits a dongle to one frame per
+drain pass - measured, half the reception rate. It exists for the duplicate
+fault, and that fault has one stated condition, quoted from the section below:
+a payload that fills the 32-byte slot comes out exactly once; one that does not
+leaves the FIFO a payload out of step.
+
+So the flush is now spent where that condition holds and not where it does not.
+**A full 32-byte slot skips it**; anything shorter is flushed as before.
+
+| | before | after |
+|---|---|---|
+| 512 frames of 32 bytes, `bin`, `rxmode 2` | 50 % | **99 %** |
+| 60 events x 3 copies at `plsize` 8 and 16 | 180/180, no duplicates | 180/180, no duplicates |
+| RotRemote, 20 clicks | 20 ids, no duplicates | 20 ids, no duplicates |
+
 ### The duplicate fault, re-measured — and not reproduced
 
 The flush in `rxmode 2` costs half the reception rate (see
@@ -565,9 +583,24 @@ misalignment, so a bench on which it comes out clean is a bench that cannot
 currently reproduce the fault at all. The negative result says the test is
 blind, not that the fault is gone.
 
-What is missing is the sender it was found with: a real
-[`RotRemote_BTHome`](../../active/RotRemote_BTHome), not a second analyser
-dongle. Until it has been reproduced there, the flush stays.
+It has since been tried against the sender it was found with - a real
+`RotRemote_BTHome`, triggered by toggling DTR on its port - and does not appear
+there either: 25 clicks, 25 packet ids, no excess copies, in every `rxmode`
+including the one documented as worst. That sender emits **static 32-byte**
+payloads, so short and dynamic ones still have to come from a dongle, which is
+how they were measured above.
+
+Two false alarms are worth recording, because they were the same mistake twice.
+A third device transmits on this channel and address, and counting frames
+rather than identifying them attributed its traffic to the device under test -
+once as "515 frames for 512 sent", once as "9 excess copies from the remote".
+Both vanished on filtering by sender. **Any measurement of invented frames has
+to identify payloads.**
+
+The fault therefore stays unreproduced, which is why the flush was made
+conditional rather than removed: a fault living in the chip's FIFO RAM, which
+outlives a reset, is not disproved by a bench that cannot summon it - and the
+payloads it was stated for are exactly the ones still protected.
 
 **Beware of a third device.** Frames arriving on channel 90 at address
 `43:54:48:4D:45` that nobody on the bench sent are not necessarily invented -

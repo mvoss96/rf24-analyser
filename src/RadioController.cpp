@@ -377,7 +377,25 @@ void RadioController::drainRx() {
     const uint8_t widthMid =
         (rxDbg_ && cfg_.dpl && rxMode_ != RX_NOWID) ? payloadWidth() : 0;
     regWrite(REG_STATUS, STATUS_RX_DR);
-    if (rxMode_ == RX_FLUSH) spiCommand(CMD_FLUSH_RX);
+    // The flush costs half the reception rate - it discards whatever arrived
+    // while the firmware was busy, so only one frame is taken per pass. It
+    // exists for the duplicate fault, and that fault has one stated condition:
+    // "a payload that fills the 32-byte slot comes out exactly once. One that
+    // does not leaves the FIFO a payload out of step."
+    //
+    // So it is spent where it is needed and not where it is not. A full slot
+    // skips it and the FIFO keeps its queue; anything shorter is flushed as
+    // before.
+    //
+    // The fault did not reproduce here at all - not against a real RotRemote at
+    // 32 bytes, not against a dongle sending 8, 12, 16, 20, 24 and 32 both
+    // statically and dynamically, sparse, back to back and as three copies five
+    // milliseconds apart, acknowledged and not, in every rxmode including the
+    // one documented as worst. That is not why this is conditional rather than
+    // gone: a fault that lives in the chip's FIFO RAM and outlives a reset is
+    // not disproved by a bench that cannot summon it, and the payloads it was
+    // stated for are exactly the ones still protected here.
+    if (rxMode_ == RX_FLUSH && len < 32) spiCommand(CMD_FLUSH_RX);
     const uint8_t fifoPost = rxDbg_ ? regRead(REG_FIFO_STATUS) : 0;
     // Stamped where the frame leaves the FIFO, which is the earliest moment the
     // firmware knows of it. Host arrival times cannot resolve the few
