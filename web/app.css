@@ -14,15 +14,31 @@
   --ok: #3b6d11;
   --warn: #854f0b;
   --row-alt: #faf9f7;
-  /* Telling one pipe or one sender from another at a glance. Six, because the
-     seventh would have to start repeating and a repeated colour is worse than
-     no colour. Red is left out: a flagged row already owns it. */
-  --tag-0: #1f6fb2;
-  --tag-1: #3f7d2f;
-  --tag-2: #7a4bbd;
-  --tag-3: #0f7d80;
-  --tag-4: #a5651a;
-  --tag-5: #a33a86;
+  /* Telling one sender from another at a glance, as the colour of the text
+     naming it. Six, because a seventh would have to repeat one, and a repeated
+     colour is worse than no colour. Red is left out: a flagged row owns it. */
+  --sender-0: #1f6fb2;
+  --sender-1: #3f7d2f;
+  --sender-2: #7a4bbd;
+  --sender-3: #0f7d80;
+  --sender-4: #a5651a;
+  --sender-5: #a33a86;
+  /* Pipes are told apart on a different channel, not just in different colours:
+     a tint behind the cell rather than the colour of a glyph. Sharing one
+     palette made blue mean "pipe 1" and "this sender" in the same row, which
+     reads as a relation between two things that have nothing to do with each
+     other. As a tint the hue is barely nameable anyway - what carries is that
+     two pipes look unlike, and unlike a sender. */
+  /* Ordered to start furthest from the senders' first colours: both lists are
+     handed out in order of appearance, so the common case - one or two of each
+     - is the one that must not collide. First pipe amber against first sender
+     blue, second pipe pink against second sender green. */
+  --pipe-0: 234 179 8;
+  --pipe-1: 236 72 153;
+  --pipe-2: 20 184 166;
+  --pipe-3: 168 85 247;
+  --pipe-4: 60 130 246;
+  --pipe-5: 34 197 94;
   --mono: ui-monospace, "Cascadia Mono", Consolas, "SF Mono", monospace;
 }
 
@@ -43,12 +59,12 @@
     --ok: #97c459;
     --warn: #efa93f;
     --row-alt: #1f1f1e;
-    --tag-0: #7fb6e8;
-    --tag-1: #96c96f;
-    --tag-2: #b79bea;
-    --tag-3: #62c4c2;
-    --tag-4: #e0a95f;
-    --tag-5: #e28fc4;
+    --sender-0: #7fb6e8;
+    --sender-1: #96c96f;
+    --sender-2: #b79bea;
+    --sender-3: #62c4c2;
+    --sender-4: #e0a95f;
+    --sender-5: #e28fc4;
   }
 }
 
@@ -388,20 +404,26 @@ td.c-pipe, td.c-len, td.c-rep { color: var(--text-dim); }
    removed. It was correct and unreadable: on the outer edge of a scrolling
    table, with most rows sharing one colour, it marked the row without saying
    which of the row's two colourable things it meant. */
-td[data-source="0"] { color: var(--tag-0); }
-td[data-source="1"] { color: var(--tag-1); }
-td[data-source="2"] { color: var(--tag-2); }
-td[data-source="3"] { color: var(--tag-3); }
-td[data-source="4"] { color: var(--tag-4); }
-td[data-source="5"] { color: var(--tag-5); }
+td[data-source="0"] { color: var(--sender-0); }
+td[data-source="1"] { color: var(--sender-1); }
+td[data-source="2"] { color: var(--sender-2); }
+td[data-source="3"] { color: var(--sender-3); }
+td[data-source="4"] { color: var(--sender-4); }
+td[data-source="5"] { color: var(--sender-5); }
 tbody tr.flagged td[data-source] { color: var(--danger); }
-td.c-pipe[data-pipe="0"] { color: var(--tag-0); }
-td.c-pipe[data-pipe="1"] { color: var(--tag-1); }
-td.c-pipe[data-pipe="2"] { color: var(--tag-2); }
-td.c-pipe[data-pipe="3"] { color: var(--tag-3); }
-td.c-pipe[data-pipe="4"] { color: var(--tag-4); }
-td.c-pipe[data-pipe="5"] { color: var(--tag-5); }
-/* A flagged row is about the frame being wrong, which outranks whose it was. */
+
+/* The pipe as a tint behind its number, so the two never read as the same kind
+   of statement. Kept weak: it sits under alternating row backgrounds and a
+   selection highlight, and it is a label, not a warning. */
+td.c-pipe[data-pipe] { color: var(--text); border-radius: 3px; }
+td.c-pipe[data-pipe="0"] { background: rgb(var(--pipe-0) / 22%); }
+td.c-pipe[data-pipe="1"] { background: rgb(var(--pipe-1) / 22%); }
+td.c-pipe[data-pipe="2"] { background: rgb(var(--pipe-2) / 22%); }
+td.c-pipe[data-pipe="3"] { background: rgb(var(--pipe-3) / 22%); }
+td.c-pipe[data-pipe="4"] { background: rgb(var(--pipe-4) / 22%); }
+td.c-pipe[data-pipe="5"] { background: rgb(var(--pipe-5) / 22%); }
+/* A flagged row is about the frame being wrong, which outranks which pipe
+   heard it. */
 tbody tr.flagged td.c-pipe { color: var(--danger); }
 
 .empty { padding: 24px; color: var(--text-faint); text-align: center; }

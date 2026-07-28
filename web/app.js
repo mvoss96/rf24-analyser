@@ -18,9 +18,11 @@ let groups = [];      // table rows: frames folded by event identity
 const seenPipes = new Map();
 const seenSources = new Map();
 
-// Six colours are defined; a seventh value would have to reuse one, and a
-// repeated colour is worse than no colour because it asserts a sameness that is
-// not there.
+// Six slots each for pipes and senders; a seventh value goes uncoloured rather
+// than reusing one, because a repeated colour asserts a sameness that is not
+// there. The two are drawn on different channels - the sender as the colour of
+// its own text, the pipe as a tint behind its number - so that one row carrying
+// both does not read as a relation between them.
 const TAGS = 6;
 
 // The colour slot for a value, or null when there is nothing to tell apart.

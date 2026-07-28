@@ -646,10 +646,15 @@ rather than `3`, because a filtered count that looks like a total is a quiet lie
 about how much traffic there was. When nothing matches, the table says that
 instead of looking like a dead radio.
 
-Pipes and senders are also **coloured apart**, each on the cell that names it —
-the decoder declares which of its columns holds the sender, the same way it
-declares which one holds the packet number, so the table never has to guess from
-the contents. A three-pixel stripe down the left edge came first and was
+Pipes and senders are also **coloured apart**, each on the cell that names it,
+and on **different channels**: the sender as the colour of its own text, the
+pipe as a tint behind its number. One palette for both made blue mean "pipe 1"
+and "this sender" in the same row, which reads as a relation between two things
+that have nothing to do with each other. The two lists are also ordered to start
+far apart, because both are handed out in order of appearance and the common
+case — one or two of each — is the one that must not collide. Which column holds
+the sender, the decoder declares, the same way it declares which one holds the
+packet number, so the table never has to guess from the contents. A three-pixel stripe down the left edge came first and was
 removed: it was correct and unreadable, and it marked the whole row without
 saying which of the row's two colourable things it meant. Two things worth
 telling apart need two places to say it, not one place and a stripe. Only once
