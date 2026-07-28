@@ -317,6 +317,46 @@ With `dpl=0` every frame is padded to `plsize`, so a transfer's last frame
 carries filler and the receiver has to know the real length. With `dpl=1` the
 lengths are exact and a file comes back out at its original size.
 
+### The duplicate fault, re-measured — and not reproduced
+
+The flush in `rxmode 2` costs half the reception rate (see
+[`format bin`](#and-after-that-the-flush)), so whether it is still needed is
+worth money. It was re-measured on **both dongles**, each as receiver with the
+other sending, classifying every received payload as correct, a duplicate of
+one already seen, one from an *earlier* run (the FIFO-RAM signature), or
+foreign:
+
+| varied | values |
+|---|---|
+| receiver | COM18, COM25 |
+| `rxmode` | 0, 1, 2 |
+| payloads | static 8/16/32, dynamic mixed 4..32 |
+| timing | 20 ms apart, back to back (1.5 ms), 3 copies 5 ms apart |
+| auto-ack | off, on |
+
+**Every one of those returned zero duplicates and zero stale payloads.**
+
+That is not permission to remove the flush. `rxmode 0` returned zero too — and
+`rxmode 0` is the mode documented above as producing duplicates *and*
+misalignment, so a bench on which it comes out clean is a bench that cannot
+currently reproduce the fault at all. The negative result says the test is
+blind, not that the fault is gone.
+
+What is missing is the sender it was found with: a real
+[`RotRemote_BTHome`](../../active/RotRemote_BTHome), not a second analyser
+dongle. Until it has been reproduced there, the flush stays.
+
+**Beware of a third device.** Frames arriving on channel 90 at address
+`43:54:48:4D:45` that nobody on the bench sent are not necessarily invented -
+listening for 60 seconds with both dongles silent produced 36 of them, in
+groups of three, decoding as ordinary BTHome sensor readings. An earlier
+"515 frames for 512 sent" here was three of those, and was wrongly read as the
+duplicate fault. Any measurement of invented frames has to identify payloads,
+not count them.
+
+Both boards measured the same throughout, within one or two frames of each
+other on every run.
+
 ### The CE self-test
 
 `chip=connected` comes from `isChipConnected()`, which exercises **SPI only** —
