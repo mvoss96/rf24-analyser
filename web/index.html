@@ -166,7 +166,8 @@
       <div class="checks">
         <label class="check"><input type="checkbox" id="ack"> ack</label>
         <label class="check"><input type="checkbox" id="dpl" checked> dpl</label>
-        <label class="check"><input type="checkbox" id="repeats" checked> show repeats</label>
+        <label class="check" title="On: every frame, including a sender's repeats of one event — needed for a transfer, where identical payloads in a row are data. Off: the dongle sends the first of a run only, which is a third of the traffic for a sender that repeats each event three times, and triples the headroom before frames start being dropped.">
+          <input type="checkbox" id="repeats" checked> show repeats</label>
       </div>
 
       <h3 class="group">Pipe addresses</h3>

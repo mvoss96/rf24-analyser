@@ -526,6 +526,34 @@ FIFO; `p<pipe>` is the pipe number, `len=<n>` the payload length, then `2*n` hex
 chars. A sender that repeats each event emits several identical frames;
 `repeats 0` prints only the first of a run (identical payload within 500 ms).
 
+That switch is also the cheapest throughput lever there is, and it was measured
+rather than assumed. A hundred events, each sent three times back to back:
+
+| | frames through | events seen |
+|---|---|---|
+| `repeats 1`, `text` | 34 % | 98-99 % |
+| `repeats 1`, `bin` | 50 % | 99-100 % |
+| `repeats 0` | one per event, all of them | **100 %** |
+
+Read that carefully, because it is not the result one expects. With `repeats 1`
+two thirds of the frames never arrive - and almost every event is still seen,
+because three copies of it were sent and only one has to survive. **Turning
+repeats off does not recover events that were being missed.** The redundancy
+was already covering the loss.
+
+What it does is remove two thirds of the traffic at no cost to what is
+observed, which is three times the headroom before anything starts being
+dropped for real - a second sender, a denser burst, a slower decoder.
+
+The cost is exact and worth stating: a run of identical payloads is
+indistinguishable from a sender repeating one event, so **a transfer must run
+with `repeats 1`**. In the measurement above `repeats 0` turned 300 frames into
+101. If those had been a file, two thirds of it would be gone.
+
+No such lever exists for the padding. A `dpl=0` frame is padded to `plsize` on
+the *sender's* side - the BTHome frames on this bench end in twelve `FF` bytes
+because their sender pads them - so a receiver cannot decline to carry it.
+
 > Why the firmware timestamps: host arrival times cannot resolve the gap between
 > a sender's repeats. Measured on the host the same three repeats came out 0.5
 > and 0.3 ms apart; on the dongle's clock they are **5 and 6 ms**. The host was
