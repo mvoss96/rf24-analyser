@@ -710,15 +710,56 @@ break the working direction as well. C++ sees identical damage. And the lockstep
 says the same thing from a third angle, by stalling - what comes back damaged is
 the acknowledgements.
 
-Where the missing 9-11 % goes is still open. It is not our code, not Python, and
-not the write pattern, and the driver is WCH's own 3.9.2024.9. Two experiments
-would separate what is left, and neither has been run: a **CP210x on the same
-host** - different bridge chip, different vendor's driver, so reaching 100 %
-would convict the CH340 side and stopping at 91 % would convict the host's USB
-stack - and the device **attached to WSL2 through usbipd**, where Linux's
-`ch341` driver takes over. Note that the second one is one-sided: being faster
-under WSL would convict the Windows driver, but being equal or slower proves
-nothing, because usbip inserts a layer of its own.
+#### The Windows driver, cleared - and the trap in clearing it
+
+The dongle was bound with usbipd and attached to WSL2, where Linux's `ch341`
+driver takes over and WCH's Windows driver is out of the path entirely. The same
+`bench/serialtest.py`, unchanged, against the same dongle.
+
+Read naively, the result says Linux wins:
+
+| | Windows | WSL2 / `ch341` |
+|---|---|---|
+| write, host's clock | 721 ms (91 %) | **675 ms (97 %)** |
+| read, host's clock | 655 ms (100 %) | **617 ms (106 %)** |
+
+**That 106 % is the tell.** Reading 32768 bytes off a 500000-baud line cannot take
+less than 655 ms, so the second column is not a faster wire, it is a worse clock.
+usbip returns from `write()` once the request is queued rather than once the
+bytes have left, and it hands reads over in batches.
+
+The dongle's own clock settles it, and it is the reason `serialbench` reports its
+own timing at all:
+
+| device says | Windows | WSL2 |
+|---|---|---|
+| write 32 kB at 500000 | 723-724 ms | **723 ms** |
+| write 32 kB at 1 MBaud | 428 ms | **428 ms** |
+| read 32 kB at 500000 | 655 ms | **655 ms** |
+
+Identical, to the millisecond. The bytes cross the wire exactly as they did
+before; only the host's idea of when it finished changed. And 1 MBaud corrupts
+the same way under Linux - every read run damaged, 14700 to 30300 bytes wrong out
+of 32768, with the write direction clean at the same 428 ms.
+
+So **the Windows driver is not the cause**, of either finding. The missing 9-11 %
+in the write direction and the 1 MBaud corruption are below both drivers: the
+CH340 itself, or the USB scheduling underneath it. Two operating systems, three
+host programs, one answer.
+
+usbip's own cost is worth recording so nobody mistakes it for a result: a
+one-byte round trip goes from 1.33 ms to 2.09 ms, and the lockstep figures under
+WSL are noise for the same reason the throughput ones are.
+
+What remains untried is a **CP210x on the same host** - a different bridge chip
+with a different vendor's driver, where reaching 100 % would convict the CH340
+and stopping at 91 % would convict the host's USB stack.
+
+> Binding a device with usbipd makes Windows re-enumerate it, and it comes back
+> with a **new COM number** each time - COM18 became COM35, then COM36. The
+> number is set in the device's `PortName` under
+> `HKLM\SYSTEM\CurrentControlSet\Enum\...\Device Parameters`, or through Device
+> Manager under Port Settings, Advanced.
 
 #### How much of it is Arduino
 
