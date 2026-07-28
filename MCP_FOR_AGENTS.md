@@ -45,6 +45,12 @@ unconfigured radio) raises instead of pretending success. The dongle cannot
 receive its own transmissions — a capture never contains them; point a second
 receiver at the channel to see them land.
 
+A dongle receiving faster than about 230 frames a second starts dropping them,
+because writing each frame out as a readable line costs it ~4.3 ms. If you are
+capturing a burst that dense, `nrf24_command("format bin")` switches the frames
+to a binary record and lifts that to ~400/s. Nothing you see changes — the
+frames still arrive as ordinary decoded records — and a reset puts it back.
+
 `nrf24_send_file` is for a transfer rather than a stimulus. It cuts the bytes
 into `size`-byte frames and sends them in order, and it adds nothing: no
 sequence number, no length, no checksum. Only you know what your receiver

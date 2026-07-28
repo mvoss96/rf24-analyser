@@ -125,6 +125,18 @@ public:
   void setRxMode(uint8_t mode) { rxMode_ = mode; }
   uint8_t rxMode() const { return rxMode_; }
 
+  // How a received frame leaves: as the readable `RX t=... ` line, or as a
+  // binary record. Measured, the readable line costs about 4 ms a frame and
+  // caps reception at some 250 frames a second - and only 1.7 ms of that is
+  // the serial line. The rest is printing 32 bytes as 64 hex characters one
+  // Serial.print at a time, about a thousand clock cycles per byte. A binary
+  // record removes both halves at once, so this is worth a switch rather than
+  // a compile-time choice. Readable is the default and a reset returns to it:
+  // whoever opens a terminal expecting to read along is not surprised, and
+  // only a host that asked for throughput gets bytes it has to decode.
+  void setBinaryOut(bool on) { binaryOut_ = on; }
+  bool binaryOut() const { return binaryOut_; }
+
   // Per-pass FIFO trace. Off by default and deliberately so: it adds SPI reads
   // and a serial line to every drain pass, which is milliseconds in exactly the
   // window being measured.
@@ -242,6 +254,7 @@ private:
   bool configured_ = false;
   bool listening_ = false;
   bool showRepeats_ = true;
+  bool binaryOut_ = false;
   uint8_t rxMode_ = RX_FLUSH;
   bool rxDbg_ = false;
   uint32_t rxPass_ = 0;   // drain passes since boot, to line traces up

@@ -114,6 +114,7 @@ NRF24ANALYSER fw=3.6.0 api=5 state=nohw hw=failed ce=8 csn=10 irq=2 led_rx=8 led
 | `scan live [passes]` | keep scanning, one report per N sweeps (default 8) |
 | `scan off` | stop a live scan and resume whatever was running |
 | `repeats <0\|1>` | `0` suppresses identical back-to-back frames |
+| `format <bin\|text>` | how received frames leave: readable lines (default) or [binary records](#format-bin-the-same-frames-in-half-the-time) |
 | `tx <addr> <hex...> [ack\|noack] [x<n>] [gap=<ms>]` | transmit a payload (default `noack`), optionally `n` copies `gap` ms apart |
 | `txseq <addr> <count> [ack\|noack]` | read the next `count` lines as payloads and transmit them in order — [see below](#sending-more-than-one-frame-txseq) |
 | `rxmode <0..4>` | how a payload is taken out of the RX FIFO — diagnosis only, see below |
@@ -490,6 +491,58 @@ chars. A sender that repeats each event emits several identical frames;
 > timing how fast it drained three lines the OS had already buffered, not the
 > air. Anything that reasons about repeat spacing or burst timing has to use
 > `t=`.
+
+### `format bin`: the same frames, in half the time
+
+A readable frame line costs about **4.3 ms**, which caps a dongle at some 230
+frames a second — measured as the closest spacing at which nothing is lost, by
+sending firmware-timed bursts at a decreasing gap. Only about 1.7 ms of that is
+the serial line at 500 kBaud; the rest is a 32-byte payload becoming 64 hex
+characters, one `Serial.print` per byte.
+
+`format bin` sends each frame as a record instead:
+
+| offset | | |
+|---|---|---|
+| 0 | 1 byte | `0x01`, which begins a record |
+| 1 | 1 byte | payload length, 1..32 |
+| 2 | 1 byte | pipe |
+| 3 | 4 bytes | `millis()`, little-endian |
+| 7 | *len* bytes | the payload |
+| 7+*len* | 1 byte | CRC-8 over the payload |
+
+Forty bytes against ninety-odd characters, assembled once and handed over in a
+single `Serial.write`. The checksum covers **exactly** the bytes that `crc=`
+covers in the readable line, so `intact` means the same thing either way.
+
+`0x01` can introduce a record unambiguously because nothing else this firmware
+prints lies outside printable ASCII — replies, warnings and the greeting stay
+readable in binary mode, and only frames change shape. The length says where a
+record ends, so a payload byte that happens to be `0x01` or a newline is data
+like any other. A reader that mis-syncs takes a wrong length, fails the
+checksum, and hunts for the next `0x01`.
+
+Measured, same 320-frame bursts at a decreasing gap:
+
+| spacing | `text` | `bin` |
+|---|---|---|
+| 1.3 ms | 43 % | 50 % |
+| 2.3 ms | 62 % | 99 % |
+| 3.3 ms | 82 % | **100 %** |
+| 4.3 ms | **100 %** | 100 % |
+
+So the ceiling moves from ~230 to ~400 frames a second — a real 1.7×, and less
+than halving the bytes might suggest. What is left is no longer the protocol:
+about 1.7 ms per frame goes on work that does not depend on the output shape at
+all (the SPI read at 4 MHz, the per-payload `FLUSH_RX` that `rxmode 2`
+performs, the repeat check, the LED writes).
+
+**It is off after every reset, and it is not hidden**: `info` reports
+`format=bin|text`. The default stays readable because that is what makes this
+dongle debuggable with nothing but a terminal — turn it on when throughput
+matters, and `nrf24_dongle.py` turns the records back into the very lines the
+firmware would have printed, so nothing above the driver can tell the
+difference.
 
 If the RX FIFO was already full, frames were dropped by the chip:
 

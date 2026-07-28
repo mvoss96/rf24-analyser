@@ -1,4 +1,5 @@
 #include "RadioController.h"
+#include "Protocol.h"
 
 // RX-ready interrupt flag. The IRQ pin is masked to fire on received data only
 // (see reconfigure()), so any edge means "a frame is waiting".
@@ -396,6 +397,38 @@ void RadioController::drainRx() {
 
     if (rxCount_ < 0xFFFFFFFF) rxCount_++;
     led(hw_.ledRx, true);
+
+    if (binaryOut_) {
+      // Sync, length, pipe, timestamp, payload, checksum - assembled here and
+      // handed over in one Serial.write, so the per-byte cost is a copy into
+      // the ring buffer instead of a number being formatted. 0x01 can start a
+      // record unambiguously because nothing else this firmware prints is
+      // outside printable ASCII, and the length says where the record ends, so
+      // a payload byte that happens to be 0x01 or a newline decodes as data.
+      //
+      // The checksum covers exactly the bytes the readable line's `crc=` does -
+      // the payload as it left the FIFO, nothing else. That keeps the two
+      // shapes saying the same thing about the same bytes, so a host can turn
+      // one into the other and everything above it goes on meaning what it
+      // meant. The header rides unprotected, which costs nothing in practice: a
+      // reader that mis-syncs takes a wrong length, and a wrong length fails
+      // this checksum, so it hunts for the next sync byte instead of believing
+      // a shifted frame.
+      uint8_t rec[7 + 32 + 1];
+      rec[0] = RX_BIN_SYNC;
+      rec[1] = len;
+      rec[2] = pipe;
+      rec[3] = (uint8_t)(stamp);
+      rec[4] = (uint8_t)(stamp >> 8);
+      rec[5] = (uint8_t)(stamp >> 16);
+      rec[6] = (uint8_t)(stamp >> 24);
+      for (uint8_t i = 0; i < len; i++) rec[7 + i] = buf[i];
+      rec[7 + len] = crc8(buf, len);
+      Serial.write(rec, (size_t)(8 + len));
+      led(hw_.ledRx, false);
+      continue;
+    }
+
     // Compact hex (no separators) keeps the line short - the serial link is
     // the bottleneck during fast bursts.
     Serial.print(F("RX t="));
@@ -781,6 +814,11 @@ void RadioController::printInfo() {
   Serial.print(F("  "));         printWiring();
   Serial.println();
   Serial.print(F("  repeats=")); Serial.println(showRepeats_ ? 1 : 0);
+  // Which shape frames are leaving in. Asked for at runtime and gone after a
+  // reset, so it would otherwise be the one thing a dongle does that nothing
+  // it says accounts for - and the one most likely to be mistaken for a broken
+  // link, because in binary the frames stop looking like anything.
+  Serial.print(F("  format="));  Serial.println(binaryOut_ ? F("bin") : F("text"));
   Serial.print(F("  rxmode="));  Serial.println(rxMode_);
   // No newline yet: in block layout printConfig() opens each field with one, so
   // the last line printed here is the one it continues from.

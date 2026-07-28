@@ -37,5 +37,15 @@
 // of its own. And `tx` distinguishes an acknowledgement from the absence of
 // anyone to give one: ack=off says the radio was never going to wait, where it
 // used to say yes. Additive, so api stayed at 5.
-#define FW_VERSION "3.7.1"
+// 3.8.0 adds `format bin`, a second shape for received frames. The readable
+// line costs about 4 ms a frame, of which only 1.7 ms is the serial line -
+// the rest is formatting 32 bytes into 64 hex characters, roughly a thousand
+// clock cycles apiece. A binary record removes both. Additive and off by
+// default, so api stays at 5: a host that never asks sees exactly what it saw
+// before, and a reset returns a dongle to the readable form.
+#define FW_VERSION "3.8.0"
 #define API_VERSION 5
+
+// Starts a binary frame record. Outside printable ASCII, which nothing else
+// this firmware prints ever is, so a reader can tell the two apart mid-stream.
+#define RX_BIN_SYNC 0x01

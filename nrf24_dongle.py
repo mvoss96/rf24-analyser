@@ -149,6 +149,27 @@ def crc8(data):
     return crc
 
 
+# A frame under `format bin`: sync, length, pipe, four bytes of millis, the
+# payload, and the same checksum over the same bytes the readable line carries.
+RX_BIN_SYNC = b"\x01"
+RX_BIN_HEADER = 7
+
+
+def _rx_line(record):
+    """Writes a binary frame record out as the line the firmware would print.
+
+    The saving is on the wire - 40 bytes against about 95 characters, and no
+    number formatted a byte at a time - so it belongs on the wire. Above this,
+    one shape: everything that reads frames goes on reading `RX ...` lines and
+    never learns which way they arrived.
+    """
+    length = record[1]
+    payload = record[RX_BIN_HEADER:RX_BIN_HEADER + length]
+    return (f"RX t={int.from_bytes(record[3:7], 'little')} p{record[2]} "
+            f"len={length} crc={record[RX_BIN_HEADER + length]:02X} "
+            f"{payload.hex().upper()}")
+
+
 def parse_rx(line):
     """Parses 'RX t=<ms> p<pipe> len=<n> crc=<XX> <hex>' into
     (stamp_ms, pipe, data, intact).
@@ -330,6 +351,51 @@ class Dongle:
             if not chunk:
                 continue
             buffer += chunk
-            while b"\n" in buffer:
-                raw, buffer = buffer.split(b"\n", 1)
+            buffer = self._drain(buffer)
+
+    def _drain(self, buffer):
+        """Pulls whole lines and whole binary records out, leaves the remainder.
+
+        Two shapes share this stream. Replies, warnings and - unless `format
+        bin` was asked for - frames arrive as newline-terminated ASCII. A frame
+        under `format bin` arrives as a record introduced by RX_BIN_SYNC, which
+        is outside printable ASCII and so cannot begin a line.
+
+        A record is turned into the very line the firmware would have printed
+        for it. That is the whole trick: the binary shape is a transport saving
+        on the wire and nothing above this method can tell which one arrived.
+        """
+        while buffer:
+            start = buffer.find(RX_BIN_SYNC)
+            end = buffer.find(b"\n")
+
+            if start < 0 or (0 <= end < start):
+                # Nothing binary before the next line end: ordinary line.
+                if end < 0:
+                    return buffer
+                raw, buffer = buffer[:end], buffer[end + 1:]
                 self.lines.put(raw.decode("ascii", errors="replace").rstrip("\r"))
+                continue
+
+            if start:
+                # ASCII ahead of the record with no newline of its own. The
+                # firmware does not emit that, so it is a fragment of something
+                # already broken; hand it up rather than dropping it silently.
+                raw, buffer = buffer[:start], buffer[start:]
+                text = raw.decode("ascii", errors="replace").strip()
+                if text:
+                    self.lines.put(text)
+                continue
+
+            if len(buffer) < RX_BIN_HEADER:
+                return buffer                      # header still in flight
+            length = buffer[1]
+            if not 1 <= length <= 32:
+                buffer = buffer[1:]                # not a header; resync
+                continue
+            size = RX_BIN_HEADER + length + 1
+            if len(buffer) < size:
+                return buffer                      # payload still in flight
+            record, buffer = buffer[:size], buffer[size:]
+            self.lines.put(_rx_line(record))
+        return buffer

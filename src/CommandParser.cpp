@@ -548,6 +548,15 @@ void CommandParser::dispatch(char *line) {
     }
     radio_.setRxMode((uint8_t)v);
     ok();
+  } else if (strcmp(cmd, "format") == 0) {
+    // Answered in ASCII either way, including the one that switches to binary:
+    // the reply belongs to the command stream, which stays readable.
+    if (rest == nullptr) { err(F("format bin|text")); return; }
+    if (strcmp(rest, "bin") == 0)       radio_.setBinaryOut(true);
+    else if (strcmp(rest, "text") == 0) radio_.setBinaryOut(false);
+    else { err(F("format bin|text")); return; }
+    Serial.print(F("OK format="));
+    Serial.println(radio_.binaryOut() ? F("bin") : F("text"));
   } else if (strcmp(cmd, "rxdbg") == 0) {
     int v = rest ? atoi(rest) : -1;
     if (v != 0 && v != 1) { err(F("rxdbg 0|1")); return; }
@@ -582,6 +591,7 @@ void CommandParser::dispatch(char *line) {
     Serial.println(F("hwclear | listen | stop | info | scan [passes] | repeats <0|1>"));
     Serial.println(F("txseq <addr> <count> [ack|noack] then <count> hex lines"));
     Serial.println(F("tx <addr> <hex...> [ack|noack] [x<n>] [gap=<ms>]"));
+    Serial.println(F("format bin|text  (bin: frames as binary records, faster, unreadable)"));
     Serial.println(F("rxmode <0|1|2> | rxdbg <0|1> | regs | reg <addr> [val]  (diagnosis)"));
     ok();
   } else {
