@@ -41,13 +41,28 @@ def post(base, path, body):
     req = urllib.request.Request(
         base + path, data=json.dumps(body).encode(),
         headers={"Content-Type": "application/json"}, method="POST")
-    with urllib.request.urlopen(req, timeout=30) as r:
-        return json.load(r)
+    try:
+        with urllib.request.urlopen(req, timeout=30) as r:
+            return json.load(r)
+    except (urllib.error.URLError, ConnectionError) as err:
+        # The dongle service is restarted from time to time while it is being
+        # worked on. One retry, said out loud - a bench that hides a lost
+        # connection would report the receiver at fault for the silence.
+        print(f"      note: {base} did not answer ({err}); retrying once", flush=True)
+        time.sleep(3)
+        with urllib.request.urlopen(req, timeout=30) as r:
+            return json.load(r)
+
+
+# What each dongle was last told to be, so it can be told again after the
+# service restarts and comes back with no configuration.
+_setup = {}
 
 
 def configure(base, dpl=0, plsize=32, ack=0, channel=90, pipe1=ADDR_FIXED):
     """Put a dongle on the air. dpl=0/plsize=32 makes it a fixed-length sender
     like a converted remote; dpl=1/ack=1 is what the dynamic pipe needs."""
+    _setup[base] = dict(dpl=dpl, plsize=plsize, ack=ack, channel=channel, pipe1=pipe1)
     parts = [f"listen ch={channel}", "rate=250", "crc=16", "aw=5", "pa=low",
              f"ack={ack}", f"dpl={dpl}"]
     if not dpl:
@@ -65,6 +80,13 @@ def tx(base, body, address=ADDR_FIXED, repeat=1, gap=0, ack=False, pad=True):
     if gap:
         line += f" gap={gap}"
     reply = post(base, "/api/command", {"line": line, "wait": True})
+    # A dongle that came back from a service restart has forgotten what it was.
+    # Told again once, out loud, and the transmit repeated - the alternative is
+    # a run that blames the receiver for hearing nothing.
+    if not reply.get("ok", False) and "unconfigured" in str(reply.get("reply", "")):
+        print(f"      note: {base} lost its configuration; setting it up again", flush=True)
+        configure(base, **_setup.get(base, {}))
+        reply = post(base, "/api/command", {"line": line, "wait": True})
     # A refused command is not a test result. The dongle rejects an over-long
     # payload with "ERR bad payload byte", and a bench that ignores that reads
     # the resulting silence at the receiver as a fault in the receiver - which

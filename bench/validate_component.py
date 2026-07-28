@@ -360,5 +360,36 @@ verdict("G16b an object after an 0xFF-ending value is still read",
         bool(temp) and bool(hum),
         f"temperature {'ok' if temp else 'LOST'}, humidity {'ok' if hum else 'LOST'}")
 
+# --- G17: a payload with no packet id at all ---------------------------------
+# BTHome makes the packet id optional. Without it there is nothing by which a
+# repeat can be told from a new press, so every copy a NO_ACK sender broadcasts
+# fires again - three events from one press. That is what the receiver does, and
+# it is worth having on the record over the air rather than only in a host test.
+#
+# The warning that goes with it is raised once per device for the lifetime of
+# the firmware, so it cannot be asserted here without making this bench depend
+# on a freshly booted hub; that the warning comes exactly once is checked in
+# tests/test_device_logic.py.
+hub_clear()
+no_pid = f"{SENDER_A}{HDR}3A01"
+tx(WEB_A, no_pid, repeat=3, gap=8)
+settle(2.0)
+# Counted by payload, not by pipe: the sensor node broadcasts on the same pipe
+# every five seconds, and counting every frame on it made this case depend on
+# whether one of those landed inside the window.
+frames = hub_grep(rf"RX p2 len=32 {no_pid}")
+events = hub_grep(r"DEV=A button 1: press")
+# One event per frame that arrived, not per frame that was sent: a copy lost to
+# the channel is not the property under test, and demanding all three would fail
+# this case for the wrong reason. Two are enough to show that nothing is being
+# deduplicated.
+verdict("G17 without a packet id every copy of a frame fires again",
+        len(events) == len(frames) and len(events) >= 2,
+        f"{len(frames)} frames -> {len(events)} events (a packet id would make it 1)")
+
+# Leave the dedup state where the rest of the bench expects it.
+tx(WEB_A, click(SENDER_A, next_pid()))
+settle(1.0)
+
 # ---- teardown ---------------------------------------------------------------
 exit_with_summary()

@@ -217,6 +217,21 @@ lab.verdict("X a changed text publishes once, the same string again does not",
             before == 1 and after == 1,
             f"{before} publish(es) for the new string, {after - before} for the repeat")
 
+# --- X+1b: the device name and the firmware version ---------------------------
+# Both are built by hand from the frame - the name out of the first text object,
+# the version out of two different widths - and both only ever reached Home
+# Assistant, never a test.
+send(encoded(0x53, "096C61622D70726F6265"))  # "lab-probe", nine characters
+name = published_text("P device_name")
+lab.verdict("X the first text object also names the device",
+            name == "lab-probe", f"device_name {name!r}")
+
+for label, objects, want in (("0xF2, three parts", encoded(0xF2, "030201"), "1.2.3"),
+                             ("0xF1, four parts", encoded(0xF1, "04030201"), "1.2.3.4")):
+    send(objects)
+    got = published_text("P firmware_version")
+    lab.verdict(f"X firmware version {label}", got == want, f"published {got!r}, expected {want!r}")
+
 # --- X+2: a second text object is instance 2 ----------------------------------
 send(encoded(0x53, "0161") + encoded(0x53, "0162"))  # prime both: "a", "b"
 send(encoded(0x53, "0178") + encoded(0x53, "0179"))
