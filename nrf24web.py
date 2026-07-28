@@ -51,7 +51,8 @@ MAX_FRAMES = 5000
 #       answering is reported instead of shown as listening; the stale-build
 #       warning restarts into the new code when clicked; the frame list filters
 #       by pipe and by sender, colours them apart once there are two to tell
-#       apart, and stopped taking minutes to redraw a full history.
+#       apart, hides columns that are in the way, and stopped taking minutes to
+#       redraw a full history.
 APP_VERSION = "1.1.0"
 
 # Python imports a module once and keeps it: editing nrf24_parsers.py while the

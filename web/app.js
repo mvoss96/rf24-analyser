@@ -324,19 +324,79 @@ function setColumns(columns) {
   if (columns) decoderColumns = columns;
   const head = $("head");
   head.replaceChildren();
-  for (const { label, cls, title } of radioColumns()) {
+  for (const { key, label, cls, title } of radioColumns()) {
     const th = document.createElement("th");
     th.className = cls;
+    th.dataset.col = key;
     th.textContent = label;
     if (title) th.title = title;
     head.appendChild(th);
   }
   for (const column of decoderColumns) {
     const th = document.createElement("th");
+    th.dataset.col = column.key;
     th.textContent = column.label;
     if (column.width) th.style.width = `${column.width}px`;
     head.appendChild(th);
   }
+  paintColumnMenu();
+  applyHiddenColumns();
+}
+
+// --- showing and hiding columns ---------------------------------------------
+
+// Hidden by CSS rather than by leaving the cells out. The row is addressed by
+// position in several places - which cell carries the pipe, which one the
+// sender - and a table whose column count depends on what is switched on would
+// have every one of those doing arithmetic about it.
+const HIDDEN_COLUMNS = "nrf24.hiddenColumns";
+const hiddenColumns = new Set(JSON.parse(localStorage.getItem(HIDDEN_COLUMNS) || "[]"));
+
+function applyHiddenColumns() {
+  const rules = [...hiddenColumns].map((key) =>
+    `#frame-table [data-col="${CSS.escape(key)}"] { display: none; }`);
+  $("colstyle").textContent = rules.join("\n");
+  localStorage.setItem(HIDDEN_COLUMNS, JSON.stringify([...hiddenColumns]));
+}
+
+function allColumns() {
+  return [...radioColumns().map(({ key, label }) => ({ key, label })),
+          ...decoderColumns.map(({ key, label }) => ({ key, label }))];
+}
+
+function paintColumnMenu() {
+  const list = $("colmenu-list");
+  list.replaceChildren();
+  for (const { key, label } of allColumns()) {
+    const wrap = document.createElement("label");
+    wrap.className = "check";
+    const box = document.createElement("input");
+    box.type = "checkbox";
+    box.dataset.col = key;
+    box.checked = !hiddenColumns.has(key);
+    box.addEventListener("change", () => {
+      if (box.checked) hiddenColumns.delete(key);
+      else hiddenColumns.add(key);
+      applyHiddenColumns();
+      lockLastColumn();
+    });
+    wrap.append(box, " " + label);
+    list.appendChild(wrap);
+  }
+  lockLastColumn();
+}
+
+// The last column standing cannot be switched off: a table with no columns is
+// not a view of anything, and finding the way back out means guessing which
+// invisible thing to click.
+//
+// Only the disabled flags are touched, never the boxes themselves. Rebuilding
+// the menu on every toggle replaces the very checkbox that was just clicked,
+// which loses keyboard focus and swaps elements out from under the pointer.
+function lockLastColumn() {
+  const boxes = [...$("colmenu-list").querySelectorAll("input")];
+  const shown = boxes.filter((box) => box.checked);
+  for (const box of boxes) box.disabled = box.checked && shown.length === 1;
 }
 
 // A row is one event, not one frame. A sender repeating an event three times
@@ -392,27 +452,31 @@ function paintRow(group) {
     repeats: count > 1 ? `×${count}` + (ms !== null ? `  ${ms} ms` : "") : "",
   };
   const pipeTag = tagOf(seenPipes, head.pipe);
-  // [text, class, missing count, colour marker as [attribute, slot]]
   const cells = radioColumns().map(({ key, cls }) =>
-    [values[key], cls, null, key === "pipe" ? ["pipe", pipeTag] : null]);
+    ({ key, text: values[key], cls, marker: key === "pipe" ? ["pipe", pipeTag] : null }));
   const senderTag = tagOf(seenSources, head.source);
   for (const column of decoderColumns) {
-    // Skipped counter values are marked on the packet number itself: a row of
-    // its own said the same thing in far more space, and pushed the frames
-    // apart to say it.
-    const lost = column.packet && group.missing ? group.missing : null;
-    // The sender's colour goes on the cell that names the sender. The decoder
-    // says which column that is, the same way it says which one holds the
-    // packet number - the table has no business guessing from the contents.
-    cells.push([head.cells[column.key] ?? "", "", lost,
-                column.source ? ["source", senderTag] : null]);
+    cells.push({
+      key: column.key,
+      text: head.cells[column.key] ?? "",
+      cls: "",
+      // Skipped counter values are marked on the packet number itself: a row of
+      // its own said the same thing in far more space, and pushed the frames
+      // apart to say it.
+      lost: column.packet && group.missing ? group.missing : null,
+      // The sender's colour goes on the cell that names the sender. The decoder
+      // says which column that is, the same way it says which one holds the
+      // packet number - the table has no business guessing from the contents.
+      marker: column.source ? ["source", senderTag] : null,
+    });
   }
 
   const tds = group.tr.children;
   while (tds.length > cells.length) group.tr.removeChild(group.tr.lastChild);
-  cells.forEach(([text, cls, lost, marker], i) => {
+  cells.forEach(({ key, text, cls, lost, marker }, i) => {
     const td = tds[i] || group.tr.appendChild(document.createElement("td"));
     td.className = cls;
+    td.dataset.col = key;      // what the column menu hides it by
     td.textContent = text;
     td.title = "";
     // Both cleared first: a cell is reused when the decoder changes, and the
@@ -1016,6 +1080,12 @@ function init() {
   for (const id of ["f-pipe", "f-source"]) {
     $(id).addEventListener("change", () => rebuild(allFrames.slice()));
   }
+
+  // Esc and the summary itself come free with <details>; clicking past it does
+  // not, and a menu that stays open over the table it is about is in the way.
+  document.addEventListener("click", (e) => {
+    if (!$("colmenu").contains(e.target)) $("colmenu").open = false;
+  });
 
   document.addEventListener("keydown", (e) => {
     if (e.key === "ArrowDown" || e.key === "ArrowUp") {

@@ -528,6 +528,40 @@ pre.log { padding-bottom: 4px; }
 
 .check { display: inline-flex; align-items: center; gap: 5px; font-size: 12px; color: var(--text-dim); }
 
+/* Which columns to show. A native details element, so it opens, closes on Esc
+   and takes keyboard focus without a line of script. */
+.colmenu { position: relative; }
+.colmenu > summary {
+  cursor: pointer;
+  list-style: none;
+  user-select: none;
+  padding: 5px 10px;
+}
+.colmenu > summary::-webkit-details-marker { display: none; }
+.colmenu > summary::after { content: " ▾"; color: var(--text-dim); }
+.colmenu[open] > summary { border-color: var(--border-strong); }
+.colmenu-list {
+  position: absolute;
+  z-index: 5;
+  top: calc(100% + 4px);
+  left: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  padding: 10px 12px;
+  background: var(--surface);
+  border: 1px solid var(--border-strong);
+  border-radius: 8px;
+  box-shadow: 0 6px 20px rgb(0 0 0 / 18%);
+  white-space: nowrap;
+}
+/* The last visible column cannot be switched off; say so rather than let the
+   click do nothing. */
+.colmenu-list input:disabled + * , .colmenu-list label:has(input:disabled) {
+  color: var(--text-faint);
+  cursor: not-allowed;
+}
+
 /* --- narrow windows --- */
 
 @media (max-width: 760px) {

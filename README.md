@@ -636,6 +636,15 @@ person watching to agree to, not for a file watcher to decide. The setup fields
 keep what the dongle last reported, so `Start` puts the radio back where it was
 rather than on the page's defaults.
 
+**Columns** switch off individually, from a menu next to the filters, and the
+choice is remembered. They are hidden by a stylesheet rule rather than by
+leaving the cells out: the row is addressed by position in several places —
+which cell carries the pipe, which one the sender — and a table whose column
+count depended on what was switched on would have every one of those doing
+arithmetic about it. The last visible column cannot be switched off, because a
+table with no columns is not a view of anything and finding the way back out
+means guessing which invisible thing to click.
+
 The list **filters by pipe, and by sender where the decoder names one**. Both
 pickers offer only values this capture has actually shown — six pipes where one
 is in use is a list of five wrong answers — and the sender picker stays away

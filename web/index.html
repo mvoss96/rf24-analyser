@@ -5,6 +5,9 @@
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <title>nRF24 Analyser</title>
 <link rel="stylesheet" href="/app.css">
+<!-- Written by app.js: one rule per hidden column. Cheaper and steadier than
+     touching every cell, and it survives rows being rebuilt underneath it. -->
+<style id="colstyle"></style>
 </head>
 <body>
 
@@ -45,6 +48,13 @@
            sender picker only appears when the decoder names one. -->
       <select id="f-pipe" class="control" aria-label="Filter by pipe"></select>
       <select id="f-source" class="control" aria-label="Filter by sender" hidden></select>
+      <!-- A native details element: it opens, closes on Esc and takes keyboard
+           focus without a line of script. The checkboxes are built in app.js,
+           because which columns exist is the decoder's answer. -->
+      <details id="colmenu" class="colmenu">
+        <summary class="control">Columns</summary>
+        <div id="colmenu-list" class="colmenu-list"></div>
+      </details>
       <span class="spacer"></span>
       <span id="count" class="dim">0 frames</span>
       <label class="check" title="Fold a sender's retransmissions of one event into a single row">
