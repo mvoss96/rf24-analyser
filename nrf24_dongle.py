@@ -294,7 +294,21 @@ class Dongle:
         buffer = b""
         while not self._stop.is_set():
             try:
-                chunk = self._serial.read(512)
+                # One byte, blocking, then whatever else is already buffered.
+                #
+                # read(512) does not mean "up to 512": pyserial waits for 512
+                # bytes or the port timeout, whichever comes first. A reply is
+                # twenty bytes, so every single one of them sat in the driver
+                # for the whole 100 ms timeout before this loop saw it. That was
+                # the cost of a command: measured at 129 ms for a `tx` that the
+                # radio finishes in under two, and it was paid by every awaited
+                # command in the program - each frame of a burst, each Apply in
+                # the browser, each MCP call.
+                chunk = self._serial.read(1)
+                if chunk:
+                    waiting = self._serial.in_waiting
+                    if waiting:
+                        chunk += self._serial.read(waiting)
             except Exception as exc:
                 self.lines.put(f"[serial error: {exc}]")
                 break
