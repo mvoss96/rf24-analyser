@@ -550,6 +550,43 @@ indistinguishable from a sender repeating one event, so **a transfer must run
 with `repeats 1`**. In the measurement above `repeats 0` turned 300 frames into
 101. If those had been a file, two thirds of it would be gone.
 
+#### Why a sender repeats at all, when the chip can acknowledge
+
+Worth separating, because they are easy to confuse: the repeats above are the
+*sender's*, three separate packets carrying one event. The chip's auto-retransmit
+is a different mechanism - it resends until acknowledged and then stops.
+
+If both are available, acknowledgement wins outright. Measured over a
+deliberately poor link (2 Mbps at `pa=min`, where a single packet lands 46 % of
+the time):
+
+| | events delivered | packets on air |
+|---|---|---|
+| one blind packet | 46/100 | 100 |
+| three blind copies | 96/100 | 300 |
+| one packet, acknowledged | **100/100** | **191** (91 retransmissions) |
+
+Complete delivery for a third fewer packets than blind repetition, and on a good
+link the same run cost **zero** retransmissions and 100 packets - a third of the
+traffic for the same result. Blind repeats pay their price always;
+acknowledgement pays only when the air makes it necessary.
+
+So why do the senders this tool exists to watch repeat blindly? Because
+acknowledgement needs **exactly one** receiver that owns the address and answers
+for it. A sender broadcasting to several listeners cannot use it - two receivers
+answering would collide - and this analyser is very often a third party
+overhearing somebody else's traffic, which is a role that cannot acknowledge
+anything.
+
+That has a consequence for reading the table above: our receiving dongle *was*
+the acknowledging party, which is why it saw 100/100. An analyser merely
+listening in on an acknowledged link gets no benefit from those acknowledgements
+at all - it would be back at the 46 %. Confirming that wants a third dongle, and
+this bench has two, so it is reasoning rather than measurement.
+
+The practical upshot: `repeats 0` is a filter for senders that repeat blindly. A
+sender that acknowledges has no repeats to filter, and the switch does nothing.
+
 No such lever exists for the padding. A `dpl=0` frame is padded to `plsize` on
 the *sender's* side - the BTHome frames on this bench end in twelve `FF` bytes
 because their sender pads them - so a receiver cannot decline to carry it.
