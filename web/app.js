@@ -11,6 +11,14 @@ let allFrames = [];
 let frames = [];      // the frames the filter lets through, in arrival order
 let groups = [];      // table rows: frames folded by event identity
 
+// How far into allFrames the table has been drawn. It stops advancing while
+// paused, which is the whole of what pausing is: frames keep arriving and keep
+// being kept, they just wait their turn. Nothing is dropped and the radio is
+// not touched - stopping reception to read a row would change what you are
+// reading about.
+let shownUpTo = 0;
+let paused = false;
+
 // The pipes and senders this capture has actually shown, each mapped to the
 // order it first appeared in. The pickers offer these rather than every pipe a
 // radio has - six choices where one is in use is a list of five wrong answers -
@@ -544,8 +552,40 @@ function addRow(frame) {
     // The second sender is exactly the moment the first one needs its colour.
     repaintTags();
   }
+  if (paused) {
+    updateCount();        // it arrived and is kept; it is only not drawn yet
+    paintPause();
+    return;
+  }
+  shownUpTo = allFrames.length;
   if (passesFilter(frame)) renderFrame(frame);
   else updateCount();     // the total moved even though the screen did not
+}
+
+// --- pausing ----------------------------------------------------------------
+
+function setPaused(on) {
+  paused = on;
+  if (!paused) {
+    // Everything held back, in arrival order, so grouping and the packet-loss
+    // accounting see the same sequence they would have seen live.
+    for (const frame of allFrames.slice(shownUpTo)) {
+      if (passesFilter(frame)) renderFrame(frame);
+    }
+    shownUpTo = allFrames.length;
+  }
+  paintPause();
+  updateCount();
+  if (!paused) scrollToEnd();
+}
+
+function paintPause() {
+  const waiting = allFrames.length - shownUpTo;
+  const button = $("pause");
+  button.classList.toggle("primary", paused);
+  button.textContent = !paused ? "Pause"
+                     : waiting ? `Resume · ${waiting} waiting`
+                               : "Resume";
 }
 
 // --- filtering --------------------------------------------------------------
@@ -652,7 +692,13 @@ function renderFrame(frame) {
                     tr: document.createElement("tr") };
     const index = groups.length;
     groups.push(group);
-    group.tr.addEventListener("click", () => select(index));
+    // Ctrl or Cmd picks a second row to compare against the selected one.
+    // Comparing two receptions is what this tool is for, and until now it
+    // happened by reading two hex dumps in turn and remembering the first.
+    group.tr.addEventListener("click", (e) => {
+      if (e.ctrlKey || e.metaKey) compareWith(index);
+      else select(index);
+    });
     paintRow(group);
     tbody.appendChild(group.tr);
     while (tbody.children.length > MAX_ROWS) tbody.removeChild(tbody.firstChild);
@@ -700,9 +746,11 @@ function updateCount() {
   $("count").textContent = parts.join(" · ");
   $("count").classList.toggle("has-loss", missingTotal > 0);
 
-  // Nothing on screen has two very different reasons, and the difference is
-  // the whole value of saying it.
-  $("empty").hidden = shown > 0;
+  // Nothing on screen has three very different reasons, and telling them apart
+  // is the whole value of saying anything: nothing has arrived, nothing here
+  // matches, or everything that arrived is waiting behind a pause.
+  const waiting = allFrames.length - shownUpTo;
+  $("empty").hidden = shown > 0 || (paused && waiting > 0);
   $("empty-none").hidden = total > 0;
   $("empty-filtered").hidden = total === 0;
 }
@@ -711,10 +759,8 @@ function select(index) {
   const group = groups[index];
   if (!group) return;
   selected = index;
-  // The row is held on the group rather than found by index: gap rows sit in
-  // the same tbody, so the two no longer line up.
-  for (const tr of $("rows").children) tr.classList.remove("sel");
-  group.tr.classList.add("sel");
+  compared = -1;          // a plain click starts a new comparison, not a third row
+  paintSelection();
 
   const [head] = group.frames;
   const lines = [...head.detail];
@@ -724,9 +770,111 @@ function select(index) {
         ? `${f.deviceMs - group.frames[i].deviceMs} ms` : "?");
     lines.push("", `  repeats   : ${group.frames.length} frames, ${gaps.join(" + ")} apart`);
   }
+  lines.push("", "  ctrl-click another row to compare it with this one");
   $("detail").textContent = lines.join("\n");
   $("raw").textContent = head.hex.join("\n");
+  setPaneTitles("decoded", "raw");
   showTab("detail");
+}
+
+// --- comparing two frames ---------------------------------------------------
+
+let compared = -1;
+
+function paintSelection() {
+  for (const tr of $("rows").children) tr.classList.remove("sel", "cmp");
+  if (groups[selected]) groups[selected].tr.classList.add("sel");
+  if (groups[compared]) groups[compared].tr.classList.add("cmp");
+}
+
+function compareWith(index) {
+  if (index === selected) return;          // a frame is not different from itself
+  if (!groups[index] || !groups[selected]) return;
+  compared = compared === index ? -1 : index;
+  paintSelection();
+  if (compared < 0) return void select(selected);
+  renderCompare(groups[selected].frames[0], groups[compared].frames[0]);
+  showTab("detail");
+}
+
+function setPaneTitles(left, right) {
+  const titles = document.querySelectorAll(".pane-title");
+  titles[0].textContent = left;
+  titles[1].textContent = right;
+}
+
+// Bytes of the two frames, side by side, with the ones that differ marked.
+// Padded with -- where one frame is shorter: a length difference is a finding,
+// not a reason to stop comparing.
+function renderCompare(a, b) {
+  const bytes = (frame) => (frame.raw.match(/../g) || []);
+  const A = bytes(a);
+  const B = bytes(b);
+  const width = Math.max(A.length, B.length);
+  const differs = (i) => A[i] !== B[i];
+
+  const out = document.createDocumentFragment();
+  const line = (text, cls) => {
+    const span = document.createElement("span");
+    if (cls) span.className = cls;
+    span.textContent = text;
+    return span;
+  };
+  const hexRow = (label, list, off) => {
+    out.append(line(`  ${label}  ${String(off).padStart(4, "0")}  `));
+    for (let i = off; i < Math.min(off + 8, width); i++) {
+      out.append(line((list[i] ?? "--") + " ", differs(i) ? "diff" : null));
+    }
+    out.append(line("\n"));
+  };
+
+  for (let off = 0; off < width; off += 8) {
+    hexRow("A", A, off);
+    hexRow("B", B, off);
+    let marks = "        " + " ".repeat(6);
+    for (let i = off; i < Math.min(off + 8, width); i++) marks += differs(i) ? "^^ " : "   ";
+    out.append(line(marks.trimEnd() + "\n\n", "diff"));
+  }
+  $("raw").replaceChildren(out);
+
+  const offsets = [];
+  for (let i = 0; i < width; i++) if (differs(i)) offsets.push(i);
+  const rows = [
+    ["time", a.time, b.time],
+    ["pipe", a.pipe, b.pipe],
+    ["len", a.len, b.len],
+    ["sender", a.source ?? "—", b.source ?? "—"],
+    ["packet", a.packetId ?? "—", b.packetId ?? "—"],
+    // The decoder's own columns, minus the two it shares with the lines above:
+    // the sender and the packet number are already there, and saying them twice
+    // makes the reader check whether the second pair is a different fact.
+    ...decoderColumns.filter((c) => !c.packet && !c.source)
+      .map((c) => [c.label.toLowerCase(), a.cells[c.key] ?? "", b.cells[c.key] ?? ""]),
+  ];
+  // Side by side while both fit, stacked when they do not. One long field -
+  // measurements, usually - would otherwise push every short one so far apart
+  // that the pair is no longer read as a pair.
+  const SIDE_BY_SIDE = 34;
+  const wide = Math.min(SIDE_BY_SIDE,
+                        Math.max(...rows.map(([, left]) => String(left).length)));
+  const text = [`  ${"".padEnd(9)}${"A".padEnd(wide + 2)}B`, ""];
+  for (const [label, left, right] of rows) {
+    const mark = String(left) === String(right) ? "" : "   ←";
+    if (String(left).length <= SIDE_BY_SIDE && String(right).length <= SIDE_BY_SIDE) {
+      text.push(`  ${label.padEnd(9)}${String(left).padEnd(wide + 2)}${right}${mark}`);
+    } else {
+      text.push(`  ${label}${mark}`, `    A  ${left}`, `    B  ${right}`);
+    }
+  }
+  $("detail").textContent = [
+    `  ${offsets.length} of ${width} bytes differ`
+    + (offsets.length ? `, at ${offsets.join(", ")}` : " — the two are identical"),
+    "",
+    ...text,
+    "",
+    "  ctrl-click the marked row again to stop comparing",
+  ].join("\n");
+  setPaneTitles("A vs B", "bytes");
 }
 
 function rebuild(list) {
@@ -743,11 +891,21 @@ function rebuild(list) {
   // frame, because at that point the chosen value has not been seen yet.
   for (const frame of allFrames) noteSeen(frame);
   paintFilters();
-  for (const frame of allFrames) if (passesFilter(frame)) renderFrame(frame);
+  // A pause survives a rebuild: changing the filter must not smuggle in the
+  // frames the pause is holding back.
+  shownUpTo = paused ? Math.min(shownUpTo, allFrames.length) : allFrames.length;
+  for (const frame of allFrames.slice(0, shownUpTo)) {
+    if (passesFilter(frame)) renderFrame(frame);
+  }
   updateCount();
+  paintPause();
   scrollToEnd();
+  // The rows are new objects, so the two indices point at nothing meaningful.
+  selected = -1;
+  compared = -1;
   $("detail").textContent = "";
   $("raw").textContent = "";
+  setPaneTitles("decoded", "raw");
 }
 
 function showTab(name) {
@@ -1067,6 +1225,7 @@ function init() {
   // empties this table on the same path as every other tab's. Doing it here as
   // well would be the one tab that clears for a different reason than the rest.
   $("clear").addEventListener("click", () => post("/api/clear"));
+  $("pause").addEventListener("click", () => setPaused(!paused));
 
   // Regrouping and filtering are both pure view changes, so they work on what
   // is already here - on everything that arrived, not on what the last filter

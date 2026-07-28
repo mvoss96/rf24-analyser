@@ -374,6 +374,12 @@ tbody td {
 tbody tr:nth-child(even) { background: var(--row-alt); }
 tbody tr:hover { background: var(--accent-bg); cursor: default; }
 tbody tr.sel { background: var(--accent-bg); box-shadow: inset 2px 0 0 var(--accent); }
+/* The row being compared against the selected one. Same shape, other colour:
+   the two are a pair, and which is which has to stay obvious. */
+tbody tr.cmp { background: var(--surface-2); box-shadow: inset 2px 0 0 var(--warn); }
+/* Bytes and fields that differ between the two. Amber rather than red: a
+   difference is the thing being looked for, not a fault. */
+.diff { color: var(--warn); font-weight: 600; }
 tbody tr.flagged td { color: var(--danger); }
 /* The one piece of metadata worth reading at full contrast: it says this row
    stands for more than one frame. */

@@ -60,6 +60,10 @@
       <label class="check" title="Fold a sender's retransmissions of one event into a single row">
         <input type="checkbox" id="group" checked> Group repeats</label>
       <label class="check"><input type="checkbox" id="follow" checked> Follow</label>
+      <!-- Holds the table still without touching the radio: frames keep
+           arriving and keep being kept, they just wait their turn. -->
+      <button id="pause" class="btn ghost small"
+              title="Stop the table moving. Reception carries on and nothing is lost.">Pause</button>
       <button id="clear" class="btn ghost small">Clear</button>
     </div>
 
