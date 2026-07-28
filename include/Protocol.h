@@ -72,8 +72,24 @@
 // the peak is unchanged while the resting state is 126 bytes better. The
 // register-name table moves to flash, where it always belonged. Additive: only
 // `scan live` gains a way to fail, and it says so. api stays at 6.
-#define FW_VERSION "3.16.0"
-#define API_VERSION 6
+// api=7 makes the binary frames a stream rather than a sequence of self-contained
+// records. What every record repeated - a sync byte, the pipe, two bytes of
+// timestamp and a newline - is stated once for a run of them, and each frame
+// carries a one-byte offset from that. Fixed cost per frame goes from 7 bytes to
+// 3, and a run costs 7 to open and 2 to close.
+//
+// The timestamp is still not a delta between frames. It is an offset from the
+// run's own base, so every frame in a run remains independently placed and a
+// lost one shifts nothing - which is the property that made a delta to the
+// previous frame unusable.
+//
+// What this gives up is immediate resynchronisation: only a run's first byte is
+// a sync marker, so a reader thrown off by a damaged byte waits for the next run
+// rather than the next frame. In this direction, at 500000 baud, no damaged byte
+// has ever been measured; at 1 MBaud they are constant, and 1 MBaud does not
+// work for other reasons.
+#define FW_VERSION "3.17.0"
+#define API_VERSION 7
 
 // The rate a dongle always boots at. `baud` can raise it for a session, but a
 // reset must come back here: a host that does not know the command - or a
@@ -95,9 +111,29 @@ inline uint8_t nrf24_crc8(const uint8_t *data, uint8_t len) {
   return crc;
 }
 
-// Starts a binary frame record. Outside printable ASCII, which nothing else
-// this firmware prints ever is, so a reader can tell the two apart mid-stream.
-#define RX_BIN_SYNC 0x01
+// A run of binary frames. All three are outside printable ASCII, which nothing
+// else this firmware prints ever is, so a reader can tell a run from a reply
+// wherever one begins.
+//
+//   RX_RUN_NEW    pipe, default length, four bytes of millis - a new epoch
+//   RX_RUN_MORE   the epoch before it still holds; frames follow directly
+//   RX_RUN_END    no more frames; whatever comes next is readable again
+//
+// A run ends at every pass of the drain loop, so a reply can only ever be
+// printed between runs and never inside one.
+#define RX_RUN_NEW  0x01
+#define RX_RUN_MORE 0x02
+#define RX_RUN_END  0xFF
+
+// In a frame record's first byte: how many payload bytes it carries, and
+// whether the byte after it states what the payload really was.
+//
+// The two differ when a repeated tail has been suppressed, and the true length
+// is usually the one the run announced - a sender's payload size rarely changes
+// mid-run, and with dynamic payloads off it cannot. So the record carries what
+// it stores, and says "the true length follows" only when it has to.
+#define RX_LEN_MASK  0x3F
+#define RX_LEN_LONG  0x40
 
 // A tail shorter than this is left alone: suppressing n bytes costs one byte to
 // say what they were, so two saves a single byte and is not worth the branch.

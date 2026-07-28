@@ -34,7 +34,12 @@ except ImportError:  # pragma: no cover - reported by the entry points
 # as one fill byte. A host reading the old layout would take the pipe byte for
 # part of the timestamp and the payload for the rest, so this one the version
 # does have to announce.
-EXPECTED_API = 6
+#
+# api=7 turns those records into a stream. What each one repeated - a sync byte,
+# the pipe, the timestamp, a newline - is stated once for a run of frames, and
+# each frame carries an offset from that. There is nothing left in common between
+# the two layouts, so a host on either side of this reads the other as noise.
+EXPECTED_API = 7
 
 DEFAULT_BAUD = 500000
 
@@ -157,43 +162,60 @@ def crc8(data):
     return crc
 
 
-# A frame under `format bin`: sync, the length before suppression, the pipe and
-# suppressed-run count sharing a byte, two bytes of millis, the payload with any
-# repeated tail replaced by one fill byte, and the same checksum over the same
-# bytes the readable line carries.
-RX_BIN_SYNC = b"\x01"
-RX_BIN_HEADER = 5
+# Frames under `format bin` arrive in runs. A run opens with either a new epoch -
+# pipe, the payload length to assume, and four bytes of millis - or with a byte
+# saying the last epoch still holds, and closes with RX_RUN_END and a newline.
+#
+# Between those, each frame costs three bytes: how many payload bytes it carries,
+# how many milliseconds past the epoch's base it arrived, and a checksum. The
+# offset is to the base and not to the frame before it, so every frame is placed
+# independently and one lost in between costs nothing.
+RX_RUN_NEW = 0x01
+RX_RUN_MORE = 0x02
+RX_RUN_END = 0xFF
+RX_RUN_NEW_LEN = 7          # marker, pipe, default length, four bytes of base
 
-# The wrap of the two-byte timestamp, and the furthest the host's estimate of the
-# dongle's clock may be out before it picks the wrong one.
-STAMP_WRAP = 1 << 16
-STAMP_HALF = STAMP_WRAP // 2
+RX_LEN_MASK = 0x3F
+RX_LEN_LONG = 0x40
+
+# Named because it is easy to lose in an editor and impossible to see in a diff.
+LF = b"\n"
 
 
-def rx_record_size(header):
-    """How long the record starting with these bytes is, or None if it cannot be one.
+def rx_frame_size(head, default_len):
+    """How long the frame record starting here is, or None if more bytes are needed.
 
-    Needs the first three bytes. Returns the length up to and including the
-    checksum; the newline after it is not part of the record.
+    Returns (size, true_len, stored) so the caller does not decode twice.
+    Raises ValueError if these bytes cannot begin a frame at all.
     """
-    if len(header) < 3:
+    if not head:
         return None
-    length, run = header[1], header[2] >> 3
-    pipe = header[2] & 0x07
-    if not 1 <= length <= 32 or pipe > 5 or run >= length:
-        return None
-    stored = length - run
-    return RX_BIN_HEADER + stored + (1 if run else 0) + 1
+    b0 = head[0]
+    if b0 == RX_RUN_END:
+        raise ValueError("end of run")
+    stored = b0 & RX_LEN_MASK
+    at = 1
+    if b0 & RX_LEN_LONG:
+        if len(head) < 2:
+            return None
+        true_len = head[1]
+        at = 2
+    else:
+        true_len = default_len
+    if not 1 <= true_len <= 32 or stored > true_len or b0 & 0x80:
+        raise ValueError(f"not a frame record: {b0:#04x}")
+    # the offset byte, the payload, a fill byte if a tail was suppressed, the crc
+    size = at + 1 + stored + (1 if stored < true_len else 0) + 1
+    return (size, true_len, stored) if len(head) >= size else None
 
 
-def rx_payload(record):
+def rx_frame_payload(record, true_len, stored):
     """The payload as it left the FIFO, with any suppressed tail put back."""
-    length, run = record[1], record[2] >> 3
-    stored = length - run
-    body = record[RX_BIN_HEADER:RX_BIN_HEADER + stored]
-    if not run:
-        return body
-    return body + bytes([record[RX_BIN_HEADER + stored]]) * run
+    at = 2 if record[0] & RX_LEN_LONG else 1
+    at += 1                                     # past the offset byte
+    body = record[at:at + stored]
+    run = true_len - stored
+    return body if not run else body + bytes([record[at + stored]]) * run
 
 
 def seq_record(payload):
@@ -313,13 +335,15 @@ class Dongle:
         self._thread = None
         self._stop = threading.Event()
         self._write_lock = threading.Lock()   # one writer at a time - see send()
-        # A binary record's trailing newline can arrive in the next read, so
-        # whether one is still owed outlives a single pass over the buffer.
+        # The newline that closes a run can arrive in the next read, so whether
+        # one is still owed outlives a single pass over the buffer.
         self._pending_lf = False
-        # Where the dongle's clock was, and when we heard that, so the two bytes
-        # a record carries can be put back into a full millisecond count.
-        self._stamp_full = None
-        self._stamp_heard = 0.0
+        # The open run of binary frames, and the epoch it counts from. The epoch
+        # outlives the run: a later one can refer back to it with a single byte.
+        self._run_open = False
+        self._run_pipe = 0
+        self._run_len = 32
+        self._run_base = None
 
     @property
     def is_open(self):
@@ -429,106 +453,111 @@ class Dongle:
             buffer = self._drain(buffer)
 
     def _drain(self, buffer):
-        """Pulls whole lines and whole binary records out, leaves the remainder.
+        """Pulls whole lines and whole frame runs out, leaves the remainder.
 
-        Two shapes share this stream. Replies, warnings and - unless `format
-        bin` was asked for - frames arrive as newline-terminated ASCII. A frame
-        under `format bin` arrives as a record introduced by RX_BIN_SYNC, which
-        is outside printable ASCII and so cannot begin a line.
+        Two shapes share this stream. Replies, warnings and - unless `format bin`
+        was asked for - frames arrive as newline-terminated ASCII. Under
+        `format bin` frames arrive in runs, opened by a byte outside printable
+        ASCII so that a run can never be mistaken for a line.
 
-        A record is turned into the very line the firmware would have printed
+        Each frame is turned into the very line the firmware would have printed
         for it. That is the whole trick: the binary shape is a transport saving
         on the wire and nothing above this method can tell which one arrived.
         """
         while buffer:
-            # The firmware writes a newline after each record so that a reply
-            # printed mid-stream starts on its own line in a terminal. It
-            # terminates nothing - the length already said where the record
-            # ended - so swallow it rather than reporting a blank line. It may
-            # arrive in the read after the record it belongs to.
+            if self._run_open:
+                buffer, done = self._drain_run(buffer)
+                if not done:
+                    return buffer
+                continue
+
+            # The newline that closed the last run terminates nothing - the end
+            # marker before it already did - so swallow it rather than reporting
+            # a blank line. It may arrive in the read after the marker.
             if self._pending_lf:
                 self._pending_lf = False
-                if buffer[:1] == b"\n":
+                if buffer[:1] == LF:
                     buffer = buffer[1:]
                     continue
 
-            start = buffer.find(RX_BIN_SYNC)
-            end = buffer.find(b"\n")
+            start = min((i for i in (buffer.find(bytes([RX_RUN_NEW])),
+                                     buffer.find(bytes([RX_RUN_MORE])))
+                         if i >= 0), default=-1)
+            end = buffer.find(LF)
 
             if start < 0 or (0 <= end < start):
                 # Nothing binary before the next line end: ordinary line.
                 if end < 0:
                     return buffer
                 raw, buffer = buffer[:end], buffer[end + 1:]
-                self.lines.put(raw.decode("ascii", errors="replace").rstrip("\r"))
+                self.lines.put(raw.decode("ascii", errors="replace").rstrip())
                 continue
 
             if start:
-                # ASCII ahead of the record with no newline of its own. The
-                # firmware does not emit that, so it is a fragment of something
-                # already broken; hand it up rather than dropping it silently.
+                # ASCII ahead of the run with no newline of its own. The firmware
+                # does not emit that, so it is a fragment of something already
+                # broken; hand it up rather than dropping it silently.
                 raw, buffer = buffer[:start], buffer[start:]
                 text = raw.decode("ascii", errors="replace").strip()
                 if text:
                     self.lines.put(text)
                 continue
 
-            if len(buffer) < 3:
-                return buffer                      # header still in flight
-            size = rx_record_size(buffer)
-            if size is None:
-                buffer = buffer[1:]                # not a header; resync
-                continue
-            if len(buffer) < size:
-                return buffer                      # payload still in flight
-            record, buffer = buffer[:size], buffer[size:]
-            self._pending_lf = True     # swallowed at the top, this pass or next
-            self.lines.put(self._rx_line(record))
+            if buffer[0] == RX_RUN_NEW:
+                if len(buffer) < RX_RUN_NEW_LEN:
+                    return buffer                  # the epoch is still in flight
+                self._run_pipe = buffer[1]
+                self._run_len = buffer[2]
+                # The epoch carries the whole of millis(), so there is nothing to
+                # reconstruct - the byte a frame spends is spent on the offset.
+                self._run_base = int.from_bytes(buffer[3:7], "little")
+                buffer = buffer[RX_RUN_NEW_LEN:]
+            else:
+                if self._run_base is None:
+                    # A run that leans on an epoch this host never heard - the
+                    # dongle was already talking when we connected. Nothing can
+                    # be placed in time, so skip to the end of it.
+                    buffer = buffer[1:]
+                    continue
+                buffer = buffer[1:]
+            self._run_open = True
+
         return buffer
 
-    def stamp_anchor(self, device_ms):
-        """Takes the dongle's own `ms=` as the truth about where its clock is.
+    def _drain_run(self, buffer):
+        """Frames until the run ends. Returns (remainder, run_finished)."""
+        while buffer:
+            if buffer[0] == RX_RUN_END:
+                buffer = buffer[1:]
+                self._run_open = False
+                self._pending_lf = True
+                return buffer, True
+            try:
+                sized = rx_frame_size(buffer, self._run_len)
+            except ValueError as exc:
+                # Not a frame and not the end: the run is not where we think it
+                # is. Say so and go back to hunting for a run marker.
+                self.lines.put(f"[binary stream lost: {exc}]")
+                self._run_open = False
+                return buffer[1:], True
+            if sized is None:
+                return buffer, False               # frame still in flight
+            size, true_len, stored = sized
+            record, buffer = buffer[:size], buffer[size:]
+            self.lines.put(self._rx_line(record, true_len, stored))
+        return buffer, False
 
-        `info` reports it, so a host that has just connected does not have to
-        assume the dongle booted a moment ago, and one that has heard nothing for
-        hours cannot have drifted into the wrong wrap.
+    def _rx_line(self, record, true_len, stored):
+        """Writes a frame out as the line the firmware would print for it.
+
+        The saving is on the wire - three bytes of frame against a `t=`, a pipe,
+        a length and a checksum spelled out in decimal and hex - so it belongs on
+        the wire. Above this, one shape: everything that reads frames goes on
+        reading `RX ...` lines and never learns which way they arrived.
         """
-        self._stamp_full = int(device_ms)
-        self._stamp_heard = time.monotonic()
+        at = 2 if record[0] & RX_LEN_LONG else 1
+        stamp = self._run_base + record[at]
+        payload = rx_frame_payload(record, true_len, stored)
+        return (f"RX t={stamp} p{self._run_pipe} len={true_len} "
+                f"crc={record[-1]:02X} {payload.hex().upper()}")
 
-    def _unwrap_stamp(self, low):
-        """Puts the high bits back on a two-byte timestamp.
-
-        The record carries the low 16 bits of the dongle's millisecond clock,
-        which wrap every 65.536 s. The host knows roughly what that clock reads -
-        it knew a moment ago and its own clock has run since - so it picks the
-        value congruent to those 16 bits that lies nearest the estimate. Being
-        wrong needs the estimate to be out by more than 32.7 s.
-
-        Each record carries an absolute value, so this cannot accumulate: frames
-        lost in between cost nothing, and one bad reconstruction does not poison
-        the next. That is the whole reason the wire does not carry a delta.
-        """
-        now = time.monotonic()
-        if self._stamp_full is None:
-            self._stamp_full, self._stamp_heard = low, now
-            return low
-        estimate = self._stamp_full + int((now - self._stamp_heard) * 1000)
-        full = estimate + ((low - estimate) % STAMP_WRAP)
-        if full - estimate > STAMP_HALF:
-            full -= STAMP_WRAP
-        self._stamp_full, self._stamp_heard = full, now
-        return full
-
-    def _rx_line(self, record):
-        """Writes a binary frame record out as the line the firmware would print.
-
-        The saving is on the wire - 28 to 39 bytes against about 95 characters,
-        and no number formatted a byte at a time - so it belongs on the wire.
-        Above this, one shape: everything that reads frames goes on reading
-        `RX ...` lines and never learns which way they arrived.
-        """
-        payload = rx_payload(record)
-        return (f"RX t={self._unwrap_stamp(record[3] | (record[4] << 8))} "
-                f"p{record[2] & 0x07} len={record[1]} "
-                f"crc={record[len(record) - 1]:02X} {payload.hex().upper()}")

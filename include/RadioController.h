@@ -328,6 +328,18 @@ private:
   void led(uint8_t pin, bool on);
   void accrue(uint32_t usEnter, uint32_t usRead);
 
+  // The open run of binary frames, if there is one. `streamOpen_` is true only
+  // inside a pass of the drain loop; the rest holds the epoch a later run can
+  // still refer to, so a quiet dongle re-opens with one byte instead of seven.
+  bool     streamOpen_ = false;
+  bool     streamEpoch_ = false;   // the fields below have ever been set
+  uint8_t  streamPipe_ = 0;
+  uint8_t  streamLen_ = 0;         // the true length the run announced
+  uint32_t streamBase_ = 0;
+
+  void streamFrame(const uint8_t *buf, uint8_t len, uint8_t pipe, uint32_t stamp);
+  void streamEnd();
+
   // Last frame seen, for the repeat filter.
   uint8_t lastFrame_[32] = {0};
   uint8_t lastLen_ = 0;

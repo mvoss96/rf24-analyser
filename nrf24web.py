@@ -609,11 +609,6 @@ class Session:
     def _set_radio(self, info):
         self.radio = info
         self.radio_at = time.time()
-        # Frame records carry two bytes of the dongle's clock; `ms=` is the whole
-        # of it, so every info reply re-anchors the reconstruction rather than
-        # letting it lean on the last frame heard.
-        if "ms" in info and self.dongle is not None:
-            self.dongle.stamp_anchor(info["ms"])
         # It answered, so it is not deaf - whatever it was that answered, a poll
         # or a command's acknowledgement. The state below comes from the dongle
         # itself and replaces "no answer" without any special case for it.
