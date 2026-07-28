@@ -74,6 +74,12 @@ def configure(base, dpl=0, plsize=32, ack=0, channel=90, pipe1=ADDR_FIXED):
 def tx(base, body, address=ADDR_FIXED, repeat=1, gap=0, ack=False, pad=True):
     if pad:
         body = pad32(body)
+    # Checked here rather than left to the dongle. The radio's slot is 32 bytes,
+    # so an over-long frame is a fault in the test that built it, and saying so
+    # locally names the length instead of leaving "ERR bad payload byte" to be
+    # interpreted. It also separates that case from the transport glitch below.
+    if len(body) % 2 or len(body) // 2 > 32:
+        raise ValueError(f"payload is {len(body) / 2} bytes, the slot holds 32:\n  {body}")
     line = f"tx {address} {body} {'ack' if ack else 'noack'}"
     if repeat > 1:
         line += f" x{repeat}"
@@ -87,10 +93,17 @@ def tx(base, body, address=ADDR_FIXED, repeat=1, gap=0, ack=False, pad=True):
         print(f"      note: {base} lost its configuration; setting it up again", flush=True)
         configure(base, **_setup.get(base, {}))
         reply = post(base, "/api/command", {"line": line, "wait": True})
-    # A refused command is not a test result. The dongle rejects an over-long
-    # payload with "ERR bad payload byte", and a bench that ignores that reads
-    # the resulting silence at the receiver as a fault in the receiver - which
-    # is how a miscounted frame length came to look like a decoding bug.
+    # The dongle refuses a well-formed 32-byte frame now and then - measured, ten
+    # identical repeats of a line it had just rejected all went out. The payload
+    # was checked above, so this is the serial path rather than the frame; one
+    # retry, out loud. A refusal that survives it is a real result and stops the
+    # run, because a bench that ignores a refused stimulus reads the receiver's
+    # silence as a fault in the receiver.
+    if not reply.get("ok", False):
+        print(f"      note: {base} refused a checked payload "
+              f"({reply.get('reply')!r}); retrying once", flush=True)
+        time.sleep(0.3)
+        reply = post(base, "/api/command", {"line": line, "wait": True})
     if not reply.get("ok", False):
         raise RuntimeError(f"dongle refused the transmit: {reply.get('reply')!r}\n  {line}")
     return reply
