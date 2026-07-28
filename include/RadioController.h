@@ -135,8 +135,16 @@ public:
   // whoever opens a terminal expecting to read along is not surprised, and
   // only a host that asked for throughput gets bytes it has to decode.
   void resetTiming() { usIn_ = usOut_ = usFrames_ = 0; }
-  void setBinaryOut(bool on) { binaryOut_ = on; }
-  bool binaryOut() const { return binaryOut_; }
+  // Three shapes, not two. `none` drains the FIFO and counts, and prints
+  // nothing at all - which is what a dongle on the receiving end of a transfer
+  // actually needs. Writing every frame out costs about 800 us, and a receiver
+  // that cannot keep up stops acknowledging, so the sender retransmits: 77
+  // retransmissions in 512 frames, measured. Silence removes that.
+  enum OutMode : uint8_t { OUT_TEXT = 0, OUT_BIN = 1, OUT_NONE = 2 };
+  void setOutMode(uint8_t m) { outMode_ = m; }
+  uint8_t outMode() const { return outMode_; }
+  void setBinaryOut(bool on) { outMode_ = on ? OUT_BIN : OUT_TEXT; }
+  bool binaryOut() const { return outMode_ == OUT_BIN; }
 
   // Per-pass FIFO trace. Off by default and deliberately so: it adds SPI reads
   // and a serial line to every drain pass, which is milliseconds in exactly the
@@ -269,7 +277,7 @@ private:
   bool configured_ = false;
   bool listening_ = false;
   bool showRepeats_ = true;
-  bool binaryOut_ = false;
+  uint8_t outMode_ = 0;   // OutMode
   uint32_t usIn_ = 0, usOut_ = 0, usFrames_ = 0;
   uint8_t rxMode_ = RX_FLUSH;
   bool rxDbg_ = false;

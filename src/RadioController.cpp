@@ -433,7 +433,13 @@ void RadioController::drainRx() {
     if (rxCount_ < 0xFFFFFFFF) rxCount_++;
     led(hw_.ledRx, true);
 
-    if (binaryOut_) {
+    if (outMode_ == OUT_NONE) {
+      led(hw_.ledRx, false);
+      accrue(usEnter, usRead);
+      continue;
+    }
+
+    if (outMode_ == OUT_BIN) {
       // Sync, length, pipe, timestamp, payload, checksum - assembled here and
       // handed over in one Serial.write, so the per-byte cost is a copy into
       // the ring buffer instead of a number being formatted. 0x01 can start a
@@ -913,7 +919,9 @@ void RadioController::printInfo(long baud) {
   // it says accounts for - and the one most likely to be mistaken for a broken
   // link, because in binary the frames stop looking like anything.
   Serial.print(F("  baud="));    Serial.println(baud);
-  Serial.print(F("  format="));  Serial.println(binaryOut_ ? F("bin") : F("text"));
+  Serial.print(F("  format="));
+  Serial.println(outMode_ == OUT_BIN ? F("bin")
+                 : outMode_ == OUT_NONE ? F("none") : F("text"));
   // Averages, in microseconds, over the frames since the last `listen`. This is
   // the one number that says whether a dongle is keeping up and where its time
   // goes - guessing at it from component costs was off by a factor of five.

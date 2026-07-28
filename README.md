@@ -437,46 +437,51 @@ times in this project purely because a number moved. And the delta is the half
 that matters: several changes measured as *exactly zero*, which is the finding
 that stops the same idea being tried a second time.
 
-512 frames of 32 bytes, both dongles, receiving side in `format bin`,
-`rxmode 2`. A packet is 329 bits on air and its acknowledgement 73 more; the
-serial line's own limit is a 34-byte record at 20 us a byte, so 0.68 ms a frame
-- **47 kB/s whatever the radio does**.
+512 frames of 32 bytes, both dongles. A packet is 329 bits on air and its
+acknowledgement 73 more; the serial line's own limit is a 34-byte record at
+20 us a byte, so 0.68 ms a frame - **47 kB/s whatever the radio does**.
 
-Now at **fw 3.11.0 / app 1.7.0**, against **fw 3.10.0 / app 1.7.0**:
+Now at **fw 3.12.0**, against **fw 3.11.0**. Receiving side in `format bin`, so
+that what arrived can be checked:
 
 | air rate | | measured | Δ ms | air used | wire used | seen by observer | Δ |
 |---|---|---|---|---|---|---|---|
-| 250 kbps | acknowledged | 2.00 ms, 15.6 kB/s | **−0.77** | 87 % | 34 % | 512/512 | +0 |
-| 250 kbps | not | 1.31 ms, 23.9 kB/s | −0.00 | at the limit | 52 % | 511/512 | −1 |
-| 1 Mbps | acknowledged | 1.00 ms, 31.3 kB/s | **−0.48** | 53 % | **68 %** | 512/512 | +0 |
-| 1 Mbps | not | 0.84 ms, 37.4 kB/s | −0.01 | 39 % | 81 % | 426/512 | +5 |
-| 2 Mbps | acknowledged | 1.05 ms, 29.8 kB/s | **−0.23** | 32 % | 65 % | 512/512 | +0 |
-| 2 Mbps | not | 0.84 ms, 37.4 kB/s | +0.01 | 20 % | 81 % | 417/512 | +4 |
+| 250 kbps | acknowledged | 1.99 ms, 15.7 kB/s | −0.01 | 87 % | 34 % | 512/512 | +0 |
+| 250 kbps | not | 1.35 ms, 23.2 kB/s | +0.04 | at the limit | 50 % | 512/512 | +1 |
+| 1 Mbps | acknowledged | 1.00 ms, 31.2 kB/s | 0.00 | 53 % | 68 % | 512/512 | +0 |
+| 1 Mbps | not | 0.83 ms, 37.5 kB/s | −0.01 | 40 % | 82 % | 418/512 | −8 |
+| 2 Mbps | acknowledged | 1.03 ms, 30.5 kB/s | −0.02 | 33 % | 66 % | 512/512 | +0 |
+| 2 Mbps | not | 0.88 ms, 35.4 kB/s | +0.04 | 19 % | 77 % | 415/512 | −2 |
 
-3.11.0 keeps the transmit FIFO fed under acknowledgement, and the acknowledged
-rows are where it shows: **+38 %, +48 % and +21 %** of throughput. The
-unacknowledged rows moved by 0.01 ms, which is noise and is correct - they were
-already pipelined.
+Nothing moved, and nothing should have: 3.12.0 adds a receive mode and changes
+no path these rows use.
 
-Two things in that table are worth reading twice.
+**But the observer in those rows is itself the constraint**, and `format none`
+is what shows it. A dongle on the receiving end of a transfer does not need to
+write every frame out; writing costs it about 800 us a frame, and a receiver
+that falls behind stops acknowledging, so the sender retransmits.
 
-**2 Mbps is now slower than 1 Mbps acknowledged** (1.05 against 1.00). Sending
-back to back fills the receiver's FIFO, a full FIFO stops acknowledging, and
-the sender retransmits: 144 retransmissions over 512 frames at 2 Mbps against
-77 at 1 Mbps and 1 at 250 kbps. The link is pacing itself to the receiver, and
-past a point a faster air rate only buys more retransmissions.
+| air rate, acknowledged | receiver prints (`bin`) | receiver silent (`none`) |
+|---|---|---|
+| 250 kbps | 1.99 ms, 7 retransmissions | 1.99 ms, 7 |
+| 1 Mbps | 1.00 ms, **78** | **0.87 ms**, **3** |
+| 2 Mbps | 1.03 ms, **141** | **0.87 ms**, **0** |
 
-**250 kbps acknowledged is at 87 % of the air.** That row is nearly finished
-too now; the remaining rows are all bound by the wire or by the receiver.
+So the retransmissions were never the air. They were the receiver's serial
+port, arriving back at the sender as backpressure - which is the acknowledged
+link doing exactly what it should, pacing itself to what the far end can take.
+Against a receiver that is not narrating, an acknowledged transfer runs at
+**0.87 ms a frame, 35.9 kB/s** - within a whisker of the unacknowledged 0.83,
+and at 78 % of the serial line. Acknowledgement has stopped costing anything
+worth measuring.
 
-Read the two "used" columns together, because they say which constraint is
-binding where. Above 250 kbps the air stops binding and the serial line takes
-over, and against *that* ceiling the unacknowledged path reaches 81 % and the
-acknowledged one now 65-68 % - it was 46-53 % before this change.
+At 250 kbps it changes nothing, because there the air binds and no amount of
+silence at the far end helps.
 
-The last column is the observing dongle, not the transfer: every acknowledged
-row was received complete, and the fast unacknowledged rows outrun what a
-dongle can write out, which is a limit of watching rather than of sending.
+Read the two "used" columns together: above 250 kbps the air stops binding and
+the serial line takes over. Both directions are now within a fifth of that
+line, and the one measure that would widen it - a faster serial rate - has been
+measured twice as a net loss, most recently at 1.10 ms a frame against 1.00.
 
 #### How much of it is Arduino
 
