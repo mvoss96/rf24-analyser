@@ -250,6 +250,7 @@ class Dongle:
         self._serial = None
         self._thread = None
         self._stop = threading.Event()
+        self._write_lock = threading.Lock()   # one writer at a time - see send()
 
     @property
     def is_open(self):
@@ -286,9 +287,23 @@ class Dongle:
                 self._serial = None
 
     def send(self, line):
+        """Writes one line. Whole, and never braided with another thread's.
+
+        Four threads reach this: the HTTP handler answering a command, the
+        heartbeat asking `info`, the timers that chase a missing greeting, and
+        the pump thread when a greeting arrives. Without the lock two writes can
+        interleave inside the driver, and what the firmware then reads is one
+        line spliced into another - which it reports as whatever the splice
+        happened to break: `ERR bad payload byte` for an intact payload, `ERR
+        expected key=value` for a correct listen. Both were seen, both were
+        sporadic, and both were blamed on the line that was sent rather than on
+        the one that arrived.
+        """
         if self._serial is None:
             raise RuntimeError("not connected")
-        self._serial.write((line.rstrip("\r\n") + "\n").encode("ascii", errors="replace"))
+        data = (line.rstrip("\r\n") + "\n").encode("ascii", errors="replace")
+        with self._write_lock:
+            self._serial.write(data)
 
     def _read_loop(self):
         buffer = b""
