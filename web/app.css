@@ -494,9 +494,10 @@ tbody tr.flagged td.c-pipe { color: var(--danger); }
 .tab.active { color: var(--text); border-bottom-color: var(--accent); }
 .panel { flex: 1; min-height: 0; display: flex; flex-direction: column; }
 
-.split { flex: 1; min-height: 0; display: flex; }
+/* Only the compare dialog puts two of these side by side now; the bottom strip
+   gives each its own tab, because half of a few lines is not a view of a
+   hexdump. */
 .pane { flex: 1; min-width: 0; display: flex; flex-direction: column; }
-.pane + .pane { border-left: 1px solid var(--border); flex: 0 0 46%; }
 .pane-title {
   font-size: 11px;
   color: var(--text-faint);
@@ -604,13 +605,6 @@ pre.log { padding-bottom: 4px; }
 @media (max-width: 760px) {
   main { padding: 8px; gap: 8px; }
   .topbar, .toolbar { padding-left: 10px; padding-right: 10px; }
-  /* decoded next to raw stops being readable long before this width */
-  .split { flex-direction: column; }
-  .pane + .pane {
-    border-left: 0;
-    border-top: 1px solid var(--border);
-    flex: 1 1 0;
-  }
 }
 @media (max-width: 560px) {
   .brand { display: none; }

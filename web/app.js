@@ -673,12 +673,17 @@ function renderFrame(frame) {
                     missing: frame.jumped || 0, tr: document.createElement("tr") };
     const index = groups.length;
     groups.push(group);
-    // Ctrl or Cmd picks a second row to compare against the selected one.
-    // Comparing two receptions is what this tool is for, and until now it
-    // happened by reading two hex dumps in turn and remembering the first.
+    // Ctrl or Cmd marks a second row; right-click opens the comparison of the
+    // two. Marking and opening are separate on purpose - a window that appears
+    // on the same click that picks a row takes the table away from you just as
+    // you were choosing in it.
     group.tr.addEventListener("click", (e) => {
-      if (e.ctrlKey || e.metaKey) compareWith(index);
+      if (e.ctrlKey || e.metaKey) markCompare(index);
       else select(index);
+    });
+    group.tr.addEventListener("contextmenu", (e) => {
+      e.preventDefault();
+      openCompare(index);
     });
     paintRow(group);
     tbody.appendChild(group.tr);
@@ -737,12 +742,20 @@ function updateCount() {
 }
 
 function select(index) {
-  const group = groups[index];
-  if (!group) return;
+  if (!groups[index]) return;
   selected = index;
   compared = -1;          // a plain click starts a new comparison, not a third row
   paintSelection();
+  renderDetail();
+  showFrameTab();
+}
 
+// Drawing the selected frame, separately from choosing it. Marking a second row
+// has to redraw this - the hint below changes - without also being a new
+// selection, which is what happened when it went through select().
+function renderDetail() {
+  const group = groups[selected];
+  if (!group) return;
   const [head] = group.frames;
   const lines = [...head.detail];
   if (group.frames.length > 1) {
@@ -751,10 +764,11 @@ function select(index) {
         ? `${f.deviceMs - group.frames[i].deviceMs} ms` : "?");
     lines.push("", `  repeats   : ${group.frames.length} frames, ${gaps.join(" + ")} apart`);
   }
-  lines.push("", "  ctrl-click another row to compare it with this one");
+  lines.push("", compared >= 0
+    ? "  a second row is marked — right-click either to open the comparison"
+    : "  ctrl-click another row to mark it, right-click one to compare");
   $("detail").textContent = lines.join("\n");
   $("raw").textContent = head.hex.join("\n");
-  showTab("detail");
 }
 
 // --- comparing two frames ---------------------------------------------------
@@ -767,12 +781,26 @@ function paintSelection() {
   if (groups[compared]) groups[compared].tr.classList.add("cmp");
 }
 
-function compareWith(index) {
+// Ctrl-click: mark the other row, and say so where the detail already is. No
+// window yet - see the click handler above.
+function markCompare(index) {
   if (index === selected) return;          // a frame is not different from itself
   if (!groups[index] || !groups[selected]) return;
-  if (compared === index) return void endCompare();
-  compared = index;
+  compared = compared === index ? -1 : index;
   paintSelection();
+  renderDetail();                          // the hint below changes with it
+}
+
+// Right-click: open it. On a row that is not marked yet, that row becomes the
+// second one - picking and opening in one gesture, for when the intent is
+// already clear.
+function openCompare(index) {
+  if (selected < 0 || !groups[selected]) return void select(index);
+  if (index !== selected && compared < 0) {
+    compared = index;
+    paintSelection();
+  }
+  if (compared < 0 || !groups[compared]) return;
   renderCompare(groups[selected].frames[0], groups[compared].frames[0]);
   $("compare").showModal();
 }
@@ -785,6 +813,7 @@ function compareWith(index) {
 function endCompare() {
   compared = -1;
   paintSelection();
+  renderDetail();
   $("compare").close();
 }
 
@@ -889,9 +918,17 @@ function showTab(name) {
   for (const tab of document.querySelectorAll(".tab")) {
     tab.classList.toggle("active", tab.dataset.tab === name);
   }
-  $("panel-detail").hidden = name !== "detail";
-  $("panel-scan").hidden = name !== "scan";
-  $("panel-terminal").hidden = name !== "terminal";
+  // By the id, so adding a tab means adding a panel and nothing else.
+  for (const panel of document.querySelectorAll(".panel")) {
+    panel.hidden = panel.id !== `panel-${name}`;
+  }
+}
+
+// Selecting a row brings the frame's own tabs forward, but does not choose
+// between them: someone reading hex down a list of rows means to stay in hex.
+function showFrameTab() {
+  const active = document.querySelector(".tab.active");
+  if (!["decoded", "raw"].includes(active?.dataset.tab)) showTab("decoded");
 }
 
 // --- channel scan ----------------------------------------------------------

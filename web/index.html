@@ -83,23 +83,23 @@
   </section>
 
   <div class="bottom">
+    <!-- Tabs rather than two panes side by side: this strip is a few lines
+         tall, and halving its width made both halves too narrow to read a
+         hexdump or a decoded line without wrapping. The comparison dialog is
+         where two things are meant to be seen at once. -->
     <div class="tabs">
-      <button class="tab active" data-tab="detail">Detail</button>
+      <button class="tab active" data-tab="decoded">Decoded</button>
+      <button class="tab" data-tab="raw">Raw</button>
       <button class="tab" data-tab="scan">Scan</button>
       <button class="tab" data-tab="terminal">Terminal</button>
     </div>
 
-    <div class="panel" id="panel-detail">
-      <div class="split">
-        <div class="pane">
-          <div class="pane-title">decoded</div>
-          <pre id="detail" class="mono"></pre>
-        </div>
-        <div class="pane">
-          <div class="pane-title">raw</div>
-          <pre id="raw" class="mono"></pre>
-        </div>
-      </div>
+    <div class="panel" id="panel-decoded">
+      <pre id="detail" class="mono"></pre>
+    </div>
+
+    <div class="panel" id="panel-raw" hidden>
+      <pre id="raw" class="mono"></pre>
     </div>
 
     <div class="panel" id="panel-scan" hidden>

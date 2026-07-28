@@ -699,8 +699,13 @@ stays red throughout — that it is broken outranks whose it was.
 
 Frames arrive with **millisecond timestamps and a Δ column** — the
 three repeats of one event sit ~4 ms apart, which per-second resolution hides.
-Selecting a row shows **decoded fields and the hex dump side by side**; frames the
-decoder objected to are drawn in red. The log and the free-text command line share
+Selecting a row shows its **decoded fields** and its **hex dump**, one tab each
+rather than side by side: the strip is a few lines tall, and halving its width
+left neither half wide enough to read. Frames the decoder objected to are drawn
+in red. Ctrl-click a second row to mark it and right-click to open the
+comparison - marking and opening are separate, because a window that appears on
+the same click that picks a row takes the table away just as you were choosing
+in it. The log and the free-text command line share
 their own tab. A tab opened later is brought up to date: the server replays the
 greeting, the current state and the retained frames.
 
