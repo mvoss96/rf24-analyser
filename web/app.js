@@ -807,6 +807,25 @@ function endCompare() {
   renderDetail();
 }
 
+// One field's value, with the part that differs marked rather than the whole
+// of it. A decoder's line is a list - "Battery 73; Temperature 25.49; Humidity
+// 58.63" - and colouring all of it because one reading moved says only "this
+// line changed", which the reader already knows from it being listed at all.
+// Falls back to the whole value when the two do not line up part for part.
+function markDifference(out, value, other, line) {
+  const parts = String(value).split("; ");
+  const others = String(other).split("; ");
+  if (parts.length < 2 || parts.length !== others.length) {
+    out.append(line(String(value) + "\n", "diff"));
+    return;
+  }
+  parts.forEach((part, i) => {
+    if (i) out.append(line("; "));
+    out.append(line(part, part === others[i] ? null : "diff"));
+  });
+  out.append(line("\n"));
+}
+
 // Bytes of the two frames, side by side, with the ones that differ marked.
 // Padded with -- where one frame is shorter: a length difference is a finding,
 // not a reason to stop comparing.
@@ -878,23 +897,28 @@ function renderCompare(a, b) {
   const same = rows.filter(([, left, right]) => String(left) === String(right));
   const label = Math.max(12, ...differing.map(([name]) => name.length + 2));
 
-  const text = [];
-  if (same.length) {
-    text.push(`  ${"identical".padEnd(label)}`
-              + same.map(([name, value]) => `${name} ${value}`).join(" · "), "");
-  }
-  for (const [name, left, right] of differing) {
-    text.push(`  ${name.padEnd(label)}A  ${left}`,
-              `  ${"".padEnd(label)}B  ${right}`);
-  }
-  if (!differing.length) text.push("  every field is the same in both");
   // The same headline over both panes, so whichever tab is open says how far
   // apart the two are. It no longer names the two times: they are a field like
   // any other and appear below, and saying them twice made the reader check
   // whether the second pair meant something else.
   const headline = `  ${offsets.length} of ${width} bytes differ`
     + (offsets.length ? ` — at ${offsets.join(", ")}` : ", the two are identical");
-  $("detail").textContent = [headline, "", ...text].join("\n");
+
+  const fields = document.createDocumentFragment();
+  fields.append(line(headline + "\n\n"));
+  if (same.length) {
+    fields.append(line(`  ${"identical".padEnd(label)}`
+                       + same.map(([name, value]) => `${name} ${value}`).join(" · ")
+                       + "\n\n"));
+  }
+  for (const [name, left, right] of differing) {
+    fields.append(line(`  ${name.padEnd(label)}A  `));
+    markDifference(fields, left, right, line);
+    fields.append(line(`  ${"".padEnd(label)}B  `));
+    markDifference(fields, right, left, line);
+  }
+  if (!differing.length) fields.append(line("  every field is the same in both\n"));
+  $("detail").replaceChildren(fields);
   out.prepend(document.createTextNode(headline + "\n\n"));
   $("raw").replaceChildren(out);
 }

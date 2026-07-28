@@ -706,7 +706,10 @@ in red.
 
 **Ctrl-click or right-click a second row and those same two tabs compare two
 frames instead of showing one.** Decoded stacks each differing field's two
-values one under the other — never side by side, which put them a field width
+values one under the other and colours the part that moved rather than the whole
+line - a decoder's value is a list, and marking all of "Battery 73; Temperature
+24.59; Humidity 50.74" because one reading changed says only "this line
+differs", which the reader already knows from it being listed at all — never side by side, which put them a field width
 apart and left the eye to travel — and names the fields that match on a single
 `identical` line, because the question a comparison is asked is what differs and
 eight lines of "the same" is where that answer goes to hide. Raw lists the differing bytes as
