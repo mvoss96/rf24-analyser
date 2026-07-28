@@ -430,34 +430,44 @@ at that rate the receiving dongle sees about a seventh of it.
 
 #### Which air rate is actually used
 
-**Re-measured on every change that could move it, and committed with that
-change.** A stale table here is worse than none: which lever is worth pulling
-next has flipped several times in this project purely because a number moved.
+**Re-measured on every change that could move it, committed with that change,
+and always carrying the difference to the previous measurement.** A stale table
+here is worse than none - which lever is worth pulling next has flipped several
+times in this project purely because a number moved. And the delta is the half
+that matters: several changes measured as *exactly zero*, which is the finding
+that stops the same idea being tried a second time.
 
-Measured at firmware 3.10.0 / app 1.7.0, 512 frames of 32 bytes, both dongles,
-receiving side in `format bin`. A packet is 329 bits on air and its
-acknowledgement 73 more; the serial line's own limit is a 34-byte record at
-20 us a byte, so 0.68 ms a frame - **47 kB/s whatever the radio does**.
+512 frames of 32 bytes, both dongles, receiving side in `format bin`,
+`rxmode 2`. A packet is 329 bits on air and its acknowledgement 73 more; the
+serial line's own limit is a 34-byte record at 20 us a byte, so 0.68 ms a frame
+- **47 kB/s whatever the radio does**.
 
-| air rate | | measured | air allows | air used | wire used | seen by observer |
-|---|---|---|---|---|---|---|
-| 250 kbps | acknowledged | 2.77 ms, 11.3 kB/s | 1.74 ms, 18.0 kB/s | 63 % | 25 % | 512/512 |
-| 250 kbps | not | 1.31 ms, 23.9 kB/s | 1.32 ms, 23.7 kB/s | **at the limit** | 52 % | 512/512 |
-| 1 Mbps | acknowledged | 1.48 ms, 21.1 kB/s | 0.53 ms, 58.7 kB/s | 36 % | 46 % | 512/512 |
-| 1 Mbps | not | 0.85 ms, 36.6 kB/s | 0.33 ms, 95.0 kB/s | 39 % | **80 %** | 421/512 |
-| 2 Mbps | acknowledged | 1.28 ms, 24.5 kB/s | 0.33 ms, 94.4 kB/s | 26 % | 53 % | 512/512 |
-| 2 Mbps | not | 0.83 ms, 37.5 kB/s | 0.16 ms, 190 kB/s | 20 % | **82 %** | 413/512 |
+Now at **fw 3.10.0 / app 1.7.0**, against **fw 3.9.1 / app 1.6.1**:
+
+| air rate | | measured | Δ | air allows | air used | wire used | seen by observer | Δ |
+|---|---|---|---|---|---|---|---|---|
+| 250 kbps | acknowledged | 2.77 ms, 11.3 kB/s | −0.01 | 1.74 ms, 18.0 kB/s | 63 % | 25 % | 512/512 | — |
+| 250 kbps | not | 1.31 ms, 23.9 kB/s | −0.03 | 1.32 ms, 23.7 kB/s | **at the limit** | 52 % | 512/512 | — |
+| 1 Mbps | acknowledged | 1.48 ms, 21.1 kB/s | −0.02 | 0.53 ms, 58.7 kB/s | 36 % | 46 % | 512/512 | — |
+| 1 Mbps | not | 0.85 ms, 36.6 kB/s | 0.00 | 0.33 ms, 95.0 kB/s | 39 % | **80 %** | 421/512 | — |
+| 2 Mbps | acknowledged | 1.28 ms, 24.5 kB/s | −0.02 | 0.33 ms, 94.4 kB/s | 26 % | 53 % | 512/512 | — |
+| 2 Mbps | not | 0.83 ms, 37.5 kB/s | 0.00 | 0.16 ms, 190 kB/s | 20 % | **82 %** | 413/512 | — |
+
+The sending side did not move, and should not have: 3.10.0 changed when the RX
+FIFO is flushed, which is the receiving side. The observer column is new here,
+so it carries no delta of its own - its before-and-after was taken directly
+against the change that produced it, **50 % → 99 %** of 512 frames of 32 bytes.
 
 Read the two "used" columns together, because they say which constraint is
-binding at each rate.
+binding where.
 
 **250 kbps is finished.** Unacknowledged it sits at the air's own limit, and
 nothing on the host side can add to that.
 
 **1 and 2 Mbps look badly used and are not.** Above 250 kbps the air stops
 binding and the serial line takes over, and against *that* ceiling
-unacknowledged reaches 80-82 %. What is left there is the acknowledged case at
-about half the wire - the air it refuses to overlap with.
+unacknowledged reaches 80-82 %. What is left is the acknowledged case at about
+half the wire - the air it refuses to overlap with.
 
 The last column is the observing dongle, not the transfer: every acknowledged
 row was received complete, and the two fast unacknowledged rows outrun what a
