@@ -153,6 +153,7 @@ void CommandParser::handleTxSeq(char *args) {
   }
 
   seqLeft_ = (uint16_t)count;
+  seqAcking_ = !noack;
   seqTaken_ = 0;
   seqLastMs_ = millis();
   radio_.beginSequence(addr, noack);
@@ -177,7 +178,7 @@ void CommandParser::feedSeqPayload(char *line) {
   if (seqLeft_ == SEQ_IDLE) { endSeq(nullptr); return; }
   // A progress line every so often: a run of three thousand frames is nearly a
   // minute of silence otherwise, and silence is what a hung dongle looks like.
-  if (seqTaken_ % SEQ_PROGRESS_EVERY == 0) {
+  if (seqTaken_ % (seqAcking_ ? 1 : SEQ_PROGRESS_EVERY) == 0) {
     Serial.print(F("OK txseq at="));
     Serial.println(seqTaken_);
   }

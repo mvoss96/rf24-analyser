@@ -36,6 +36,12 @@ private:
   static constexpr uint16_t SEQ_QUIET_MS = 500;   // silence that ends a run
   static constexpr uint16_t SEQ_PROGRESS_EVERY = 32;
   uint16_t seqLeft_ = SEQ_IDLE;
+  // Acknowledged runs confirm every frame before writing the next, so the
+  // firmware is not reading the port for up to twenty milliseconds at a time.
+  // It therefore answers every payload, and the host waits for that answer -
+  // without the brake the buffer overruns and the run dies on a payload that
+  // was never malformed, which is exactly how it failed the first time.
+  bool seqAcking_ = false;
   uint16_t seqTaken_ = 0;
   uint32_t seqLastMs_ = 0;
 

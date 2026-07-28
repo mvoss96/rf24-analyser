@@ -37,5 +37,5 @@
 // of its own. And `tx` distinguishes an acknowledgement from the absence of
 // anyone to give one: ack=off says the radio was never going to wait, where it
 // used to say yes. Additive, so api stayed at 5.
-#define FW_VERSION "3.7.0"
+#define FW_VERSION "3.7.1"
 #define API_VERSION 5

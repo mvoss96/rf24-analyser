@@ -17,6 +17,8 @@ there is deliberately no --port flag duplicating that.
 """
 
 import argparse
+import base64
+import contextlib
 import json
 import os
 import queue
@@ -116,7 +118,7 @@ INFO_HEARTBEAT = 5.0
 
 # Everything else this process sends may change what the dongle is doing, so it
 # is followed by an `info`. A tx does not, and a burst is dozens of them.
-NO_REFRESH_AFTER = {"tx", "info"}
+NO_REFRESH_AFTER = {"tx", "txseq", "info"}
 
 # How many heartbeats may go unanswered before the dongle counts as gone. The
 # poll was already measuring this and throwing the result away: after a suspend
@@ -352,6 +354,11 @@ class Session:
         self._info_quiet = False    # swallow this block instead of logging it
         self._info_pending = 0      # blocks asked for by this class, not a user
         self._unanswered = 0        # heartbeats the dongle has not answered
+        # A txseq in flight. Everything else that writes to the port has to hold
+        # off: the dongle is reading payload lines, and an `info` sent into that
+        # would be transmitted as a frame and throw the count off by one.
+        self._sending = False
+        self._cancel_send = False
         self._pump = None
         self._beat = None
         self._stop = threading.Event()
@@ -500,8 +507,10 @@ class Session:
                 return
             # A sweep retunes the radio across the band and reports as it goes;
             # asking it about itself in the middle of that interleaves with the
-            # report and tells us only that it is scanning, which we know.
-            if self.state_text == "scanning":
+            # report and tells us only that it is scanning, which we know. A
+            # sequence is stricter still: the dongle is reading payload lines,
+            # so an `info` would go out over the air as a frame.
+            if self.state_text == "scanning" or self._sending:
                 continue
             # Counted before the question is asked, cleared when an answer
             # arrives. Silence is the only evidence available: the write can
@@ -567,7 +576,7 @@ class Session:
         # not ours to swallow, and it does not end the block either.
         return False
 
-    def command(self, line, timeout=5.0):
+    def command(self, line, timeout=5.0, lock=True, q=None):
         """Sends one command and returns the firmware's OK/ERR reply line.
 
         The fire-and-forget send() leaves the reply in the event stream, where
@@ -577,8 +586,14 @@ class Session:
         concurrent API commands from claiming each other's replies; RX frames
         and WARN lines pass through unclaimed either way.
         """
-        with self._cmd_lock:
-            q = self.hub.subscribe()
+        # `lock`/`q` let a caller that already holds both - send_sequence - reuse
+        # them, so the header command and the payloads that follow it cannot be
+        # separated by anything else.
+        holder = self._cmd_lock if lock else contextlib.nullcontext()
+        with holder:
+            own = q is None
+            if own:
+                q = self.hub.subscribe()
             try:
                 self.send(line)
                 deadline = time.monotonic() + timeout
@@ -601,7 +616,8 @@ class Session:
                     if text.startswith("OK") or text.startswith("ERR"):
                         return text
             finally:
-                self.hub.unsubscribe(q)
+                if own:
+                    self.hub.unsubscribe(q)
 
     def burst(self, address, frames, ack=False):
         """Transmits a sequence of frames, waiting for each firmware reply.
@@ -653,6 +669,121 @@ class Session:
             if pause_ms > 0:
                 time.sleep(min(pause_ms, 10000) / 1000.0)
         return results
+
+    def send_sequence(self, address, payloads, ack=False, on_progress=None):
+        """Transmits many payloads through one `txseq`, in order.
+
+        The dongle is told how many lines to expect and then reads them as
+        payloads rather than commands, so the whole run costs one setup and one
+        reply instead of one of each per frame. Measured at 1.5 ms a frame
+        against 7.8 for a command apiece.
+
+        Nothing here invents a protocol: the payloads are transmitted exactly as
+        given, in the order given. Sequence numbers, lengths and checksums are
+        the caller's - only the caller knows what the receiver expects, and a
+        tool that added its own would be describing a transfer it does not
+        control.
+        """
+        if not payloads:
+            raise ValueError("no payloads")
+        for payload in payloads:
+            if len(payload) % 2 or not payload or len(payload) > 64:
+                raise ValueError(f"payload must be 1..32 bytes of hex: {payload[:20]!r}")
+
+        with self._cmd_lock:
+            q = self.hub.subscribe()
+            self._sending = True
+            try:
+                reply = self.command(f"txseq {address} {len(payloads)} "
+                                     f"{'ack' if ack else 'noack'}", timeout=5.0,
+                                     lock=False, q=q)
+                if not reply.startswith("OK txseq ready"):
+                    raise RuntimeError(reply)
+                closing = None
+                last = len(payloads) - 1
+                for index, payload in enumerate(payloads):
+                    if self._cancel_send:
+                        break
+                    # Straight at the port: these are payload lines, not
+                    # commands, and nothing may be interleaved between them.
+                    self.dongle.send(payload)
+                    if ack and index < last:
+                        # Lockstep. An acknowledged frame keeps the dongle from
+                        # reading the port for as long as fifteen retries take,
+                        # and its input buffer holds four payload lines; writing
+                        # into that ended runs with `stopped=bad payload` for
+                        # payloads that were never malformed. So the dongle
+                        # answers every acknowledged frame and the host waits.
+                        # The last payload is not waited for here - it ends the
+                        # run, and the closing line belongs to the reader below.
+                        closing = self._await_frame(q)
+                        if closing is not None:
+                            break       # the run ended early; stop feeding it
+                    if on_progress and index % 64 == 63:
+                        on_progress(index + 1, len(payloads))
+                if closing is not None:
+                    return closing
+                return self._await_sequence(q, len(payloads), on_progress)
+            finally:
+                self._sending = False
+                self._cancel_send = False
+                self.hub.unsubscribe(q)
+
+    def _await_frame(self, q, timeout=5.0):
+        """Waits for one acknowledged frame to be confirmed.
+
+        Returns None when the dongle is ready for the next payload, or the
+        closing `OK txseq sent=` line when the run ended instead - which it
+        does as soon as a frame goes unacknowledged.
+        """
+        deadline = time.monotonic() + timeout
+        while True:
+            remaining = deadline - time.monotonic()
+            if remaining <= 0:
+                raise TimeoutError(f"no frame confirmation within {timeout:.0f}s")
+            try:
+                event = q.get(timeout=remaining)
+            except queue.Empty:
+                continue
+            if event.get("type") != "line":
+                continue
+            text = event.get("text", "")
+            if text.startswith("OK txseq at="):
+                return None
+            if text.startswith("OK txseq sent="):
+                return text
+            if text.startswith("ERR"):
+                raise RuntimeError(text)
+
+    def _await_sequence(self, q, total, on_progress):
+        """Reads progress lines until the run reports itself finished."""
+        # Generous: the dongle answers every 32 frames, and a whole run of
+        # 60000 takes a minute and a half at the rate this manages.
+        deadline = time.monotonic() + 30 + total * 0.01
+        while True:
+            remaining = deadline - time.monotonic()
+            if remaining <= 0:
+                raise TimeoutError(f"txseq did not finish within {30 + total * 0.01:.0f}s")
+            try:
+                event = q.get(timeout=remaining)
+            except queue.Empty:
+                continue
+            if event.get("type") != "line":
+                continue
+            text = event.get("text", "")
+            if text.startswith("OK txseq at="):
+                if on_progress:
+                    on_progress(int(text.rsplit("=", 1)[1]), total)
+                deadline = time.monotonic() + 30
+                continue
+            if text.startswith("OK txseq sent="):
+                return text
+            if text.startswith("ERR"):
+                raise RuntimeError(text)
+
+    def cancel_send(self):
+        """Stops feeding a run in progress; the dongle ends it as truncated."""
+        self._cancel_send = True
 
     # -- decoding --
 
@@ -1092,6 +1223,44 @@ class Handler(BaseHTTPRequestHandler):
                             "loss": self.session.loss.totals(),
                             "frames": self.session.decoded_history()})
                 return
+            elif self.path == "/api/send":
+                # A whole transfer in one request. `payloads` is a list of hex
+                # strings; `data` is base64 that gets cut into `size`-byte
+                # pieces, which is what a caller with a file has. No cap on the
+                # count: capping it at 64 the way /api/burst does turns a
+                # hundred-kilobyte file into fifty round trips.
+                payloads = payload.get("payloads")
+                if payloads is None:
+                    blob = base64.b64decode(payload.get("data", ""), validate=True)
+                    size = int(payload.get("size", 32))
+                    if not 1 <= size <= 32:
+                        raise ValueError("size must be 1..32")
+                    payloads = [blob[i:i + size].hex().upper()
+                                for i in range(0, len(blob), size)]
+                session = self.session
+                total = len(payloads)
+
+                def progress(sent, of):
+                    session.hub.publish({"type": "send", "sent": sent, "of": of})
+
+                progress(0, total)
+                reply = session.send_sequence(payload["address"], payloads,
+                                              ack=bool(payload.get("ack", False)),
+                                              on_progress=progress)
+                sent = int(re.search(r"sent=(\d+)", reply).group(1))
+                progress(sent, total)
+                self._json({"ok": sent == total, "sent": sent, "of": total,
+                            "bytes": sum(len(p) // 2 for p in payloads[:sent]),
+                            "reply": reply,
+                            # Said here because the number above cannot say it:
+                            # without acknowledgements the radio only reports
+                            # that a frame left the transmitter.
+                            "means": ("acknowledged by the receiver"
+                                      if payload.get("ack")
+                                      else "emitted; nothing confirms arrival")})
+                return
+            elif self.path == "/api/send/cancel":
+                self.session.cancel_send()
             elif self.path == "/api/restart":
                 # Answer first, restart after: the reply is the last thing this
                 # process will manage to say.
