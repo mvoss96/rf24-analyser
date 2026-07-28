@@ -471,11 +471,13 @@ and batching is code with nothing to show for itself. Confirming *less* often
 is actively worse - at `conf=16` a run takes 4.2 ms a frame, because the host
 then sits with a full window waiting.
 
-What is left is most likely host-side scheduling - Python's reaction to a
-confirmation, and the USB frame the CH340 is served in - neither of which this
-protocol can reach. The sending path is therefore treated as finished at
-**75-80 % of the serial line**, which is itself a fifth of what the radio can
-do.
+What is left was guessed at as host-side scheduling - Python's reaction to a
+confirmation, and the USB frame the CH340 is served in. Half of that guess was
+wrong, and [measuring the same wire without the analyser on
+it](#the-same-wire-without-the-analyser) is what showed it: Python costs nothing
+measurable, and 0.09 ms of the 0.17 is spent before any of our code runs. The
+sending path is therefore treated as finished at **75-80 % of the serial line**,
+which is itself a fifth of what the radio can do.
 
 **The confirmation repeat is a real fix even though it moved no number here.** A host whose
 window is full cannot write another payload until one is confirmed, so a
@@ -562,6 +564,133 @@ off the radio and out of the FIFO in about 226 us when it prints nothing at all
 zero retransmission counts mean: the link paced itself to the receiver without
 losing anything.
 
+#### Is 250 kbps actually exhausted, with and without acknowledgement
+
+The table above says 250 kbps is where the air binds rather than the wire, which
+makes it the one rate where the question "are we using all of it" has a clean
+answer. Measured on channel 76 at address `42:54:48:4D:45` - away from the
+BTHome sender that transmits on channel 90 continuously, because a third party
+on the same channel and address would be measured along with everything else.
+
+512 frames over the serial line, against `txtest`'s 1000 frames with no serial
+line in the path at all:
+
+| | radio only | over the UART at 500000 baud | the UART costs |
+|---|---|---|---|
+| not acknowledged | 1.287 ms | 1.31 ms | ~25 us, 2 % |
+| acknowledged | 1.95-2.09 ms | 2.05 ms | nothing measurable |
+
+**Unacknowledged, 250 kbps is exhausted.** 1.31 ms a frame against 1.316 ms of
+calculated air time, and the serial line - which needs 0.68 ms for the same
+frame - is not close to binding.
+
+**Acknowledged, what is left is retransmissions rather than anything a program
+can change.** The acknowledged cycle is 1316 us of packet, 292 us of
+acknowledgement and two 130 us turnarounds, so 1868 us; a run measures about
+2050. Fifteen `txtest` runs at five different retransmit delays put a number on
+the difference: per-frame time tracks the retransmission count almost exactly,
+at **2169 us per retransmission**, and extrapolating to none gives **1952 us** -
+within 5 % of the arithmetic.
+
+The auto-retransmit delay looked like a lever and is not. A first pass suggested
+`retries=750,15` was worth 6 % over the default 1500 us; repeating it three
+times per setting showed the retransmission count varying eight-fold *within* a
+setting, and the apparent win disappeared:
+
+| ard | us/frame, three runs | retransmissions |
+|---|---|---|
+| 500 us | 2107, 2104, 2263 | 85, 86, 164 |
+| 750 us | 2178, 2342, 2238 | 109, 184, 134 |
+| 1000 us | 2280, 2213, 2011 | 140, 113, 31 |
+| 1250 us | 2068, 1995, 1956 | 49, 22, 8 |
+| 1500 us | 2285, 2003, 2125 | 117, 23, 64 |
+
+The spread within one setting is larger than the spread between settings, so
+this measures the room, not the parameter. `retries` stays at 1500,15.
+
+> One discrepancy is left open rather than smoothed over. Unacknowledged,
+> `txtest`'s own clock says **1287 us** a frame where 329 bits at 250 kbps needs
+> **1316 us** - 2 % *below* what the arithmetic says is possible, so one of the
+> two is wrong. It is not the ATmega's clock: the serial bench above has the
+> device and the host timing the same 32 kB transfer independently, and they
+> agree to 0.3 %. Either the packet is shorter than 329 bits or the chip's
+> "250 kbps" is not exactly 250 kbps. Two percent does not change any conclusion
+> here, but it is not understood.
+
+#### The same wire without the analyser
+
+`txtest` takes the UART out to measure the radio. This does the opposite. A
+second firmware, `bench/serialbench`, has no radio and no protocol in it at all:
+it sources bytes, sinks bytes, echoes bytes, and acknowledges every k-th byte -
+which is the shape `txseq ... bin conf=` has, minus everything else the analyser
+is doing. Whatever that firmware cannot do, the analyser certainly cannot.
+
+Driven from `bench/serialtest.py` at 500000 baud, 32 kB a run:
+
+| | measured | of the line |
+|---|---|---|
+| dongle to host | 50.0 kB/s | **100 %**, not one wrong byte |
+| host to dongle, 34-byte writes | 44.7 kB/s | 89 % |
+| host to dongle, 4096-byte writes | 45.4 kB/s | 91 % |
+
+The direction that carries a transfer is the one that falls short, and it falls
+short by about the same amount whatever it is asked: block size barely moves it,
+and a 64 kB driver buffer moves it not at all - the fourth null result for
+buffer sizes in this file.
+
+Which finally puts a number on the last quarter of the wire:
+
+| | ms per 34-byte record |
+|---|---|
+| what the line needs | 0.68 |
+| an empty firmware | 0.77 |
+| the analyser | 0.85 |
+
+Of the 0.17 ms between the analyser and arithmetic, **0.09 is gone before any of
+our code runs**, and 0.08 is ours. The sending path is at 90 % of a firmware
+that does nothing.
+
+**It is not Python.** The same four measurements, written again in C++ against
+the raw Win32 calls that pyserial wraps, agree to the third digit in every
+row - 50.1 kB/s reading, 44.7 and 45.4 writing, 0.77 ms a record, 1.33 ms for
+the round trip. C++ can also do the one thing pyserial cannot, keeping eight
+writes outstanding so the driver never waits for the next buffer: 44.8 kB/s
+against 44.7. The gap is below the Win32 API, not above it.
+
+**A round trip costs 1.33 ms.** One byte out and one back, and the same at every
+rate - 1.32 ms at 1 MBaud, 1.43 at 250 kbps - against 40 us of actual wire. That
+is USB, and it is why the window matters and the confirmation interval does not:
+a window of 7 records keeps 4.8 ms in flight and hides the round trip
+completely, while a window of 1 pays it every record and takes 2.54 ms instead
+of 0.77.
+
+It also settles the serial rate for the fourth time, now with a cause instead of
+a symptom:
+
+| baud | dongle to host | host to dongle |
+|---|---|---|
+| 250000 | 100 %, clean | 100 %, clean |
+| 500000 | 100 %, clean | 89-91 %, clean |
+| 1000000 | full speed, **23000-31000 damaged bytes in each of five runs** | 70-77 %, clean |
+| 2000000 | unusable | - |
+
+At 1 MBaud the right *number* of bytes arrives - none missing, timing exact -
+with the wrong contents, and only in the direction dongle to host. The other
+direction is faultless, which means the two clocks agree: a rate mismatch would
+break the working direction as well. C++ sees identical damage. And the lockstep
+says the same thing from a third angle, by stalling - what comes back damaged is
+the acknowledgements.
+
+Where the missing 9-11 % goes is still open. It is not our code, not Python, and
+not the write pattern, and the driver is WCH's own 3.9.2024.9. Two experiments
+would separate what is left, and neither has been run: a **CP210x on the same
+host** - different bridge chip, different vendor's driver, so reaching 100 %
+would convict the CH340 side and stopping at 91 % would convict the host's USB
+stack - and the device **attached to WSL2 through usbipd**, where Linux's
+`ch341` driver takes over. Note that the second one is one-sided: being faster
+under WSL would convict the Windows driver, but being equal or slower proves
+nothing, because usbip inserts a layer of its own.
+
 #### How much of it is Arduino
 
 The SPI clock was at 4 MHz where the chip allows 10 and the ATmega can drive 8.
@@ -592,6 +721,7 @@ interesting it is:
 | direct port writes instead of `digitalWrite` | ~60 us a frame | nothing, but it is not binding |
 | a bigger payload | – | 32 bytes is the chip's maximum |
 | a faster serial rate | negative | measured: 1 MBaud costs more than it saves |
+| the write direction's missing 9-11 % | 0.85 → 0.77 ms | not reachable from here: [identical from Python and from C++](#the-same-wire-without-the-analyser) |
 
 The clock stays at 8 MHz because it is free and correct, not because it helped.
 
@@ -1601,7 +1731,7 @@ rather than guessed.
 
 ```
 nRF24-Analyser/
-  platformio.ini              build environments (nano / nano_old)
+  platformio.ini              build environments (nano / nano_old / serialbench)
   include/RadioController.h   radio wrapper, HwConfig + RadioConfig
   include/CommandParser.h     serial command parser
   include/HwStore.h           EEPROM persistence for the wiring
@@ -1616,4 +1746,16 @@ nRF24-Analyser/
   nrf24_parsers.py            decoder registry: raw, bthome, nrf24smart
   nrf24_mcp.py                MCP server: lets another agent drive the dongle
   requirements.txt            pyserial, bthome-ble
+  bench/serialbench/          a dongle with no radio in it, to measure the wire
+  bench/serialtest.py         drives it: read, write, round trip, lockstep
+  bench/serialtest.cpp        the same measurements without Python in the way
+```
+
+`bench/serialbench` replaces the firmware on whichever dongle it is flashed to,
+so a dongle is on loan for as long as it runs and has to be flashed back with
+`pio run -e nano -t upload` afterwards. The C++ twin is built by hand and is not
+in the tree:
+
+```
+g++ -O2 -std=c++17 -o bench/serialtest.exe bench/serialtest.cpp
 ```
