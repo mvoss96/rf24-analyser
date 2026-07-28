@@ -636,6 +636,16 @@ person watching to agree to, not for a file watcher to decide. The setup fields
 keep what the dongle last reported, so `Start` puts the radio back where it was
 rather than on the page's defaults.
 
+The list **filters by pipe, and by sender where the decoder names one**. Both
+pickers offer only values this capture has actually shown — six pipes where one
+is in use is a list of five wrong answers — and the sender picker stays away
+entirely under a decoder that has no notion of one, like the raw view. It is a
+filter on the view and not on the capture: everything received is kept, so
+widening it again brings the frames back, and the count says `3 of 128 frames`
+rather than `3`, because a filtered count that looks like a total is a quiet lie
+about how much traffic there was. When nothing matches, the table says that
+instead of looking like a dead radio.
+
 Frames arrive with **millisecond timestamps and a Δ column** — the
 three repeats of one event sit ~4 ms apart, which per-second resolution hides.
 Selecting a row shows **decoded fields and the hex dump side by side**; frames the

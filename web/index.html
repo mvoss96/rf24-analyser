@@ -40,6 +40,11 @@
     <div class="frames-head">
       <label class="inline-label" for="decoder">Decoder</label>
       <select id="decoder" class="control"></select>
+      <!-- Filled from what has actually arrived, so the choices are the pipes
+           and senders in this capture rather than every pipe a radio has. The
+           sender picker only appears when the decoder names one. -->
+      <select id="f-pipe" class="control" aria-label="Filter by pipe"></select>
+      <select id="f-source" class="control" aria-label="Filter by sender" hidden></select>
       <span class="spacer"></span>
       <span id="count" class="dim">0 frames</span>
       <label class="check" title="Fold a sender's retransmissions of one event into a single row">
@@ -55,7 +60,11 @@
       <thead><tr id="head"></tr></thead>
       <tbody id="rows"></tbody>
     </table>
-    <p id="empty" class="empty">No frames yet — connect, then <b>Start</b>.</p>
+    <p id="empty" class="empty">
+      <span id="empty-none">No frames yet — connect, then <b>Start</b>.</span>
+      <span id="empty-filtered" hidden>Nothing matches the filter — frames are
+      arriving, they are just not these.</span>
+    </p>
     </div>
   </section>
 

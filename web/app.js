@@ -4,8 +4,18 @@ const $ = (id) => document.getElementById(id);
 const MAX_ROWS = 5000;
 
 let connected = false;
-let frames = [];      // every decoded frame, in arrival order
+// Everything that arrived, and the part of it currently on screen. The two are
+// separate because a filter has to be able to give back what it hid: keeping
+// only the visible frames would make every filter a one-way discard.
+let allFrames = [];
+let frames = [];      // the frames the filter lets through, in arrival order
 let groups = [];      // table rows: frames folded by event identity
+
+// The pipes and senders this capture has actually shown. The pickers offer
+// these rather than every pipe a radio has - six choices where one is in use is
+// a list of five wrong answers.
+const seenPipes = new Set();
+const seenSources = new Set();
 let selected = -1;
 
 // What the dongle last said about itself, from the server's `info` snapshot -
@@ -434,6 +444,70 @@ function missingNote(frame, missing) {
 }
 
 function addRow(frame) {
+  allFrames.push(frame);
+  if (noteSeen(frame)) paintFilters();
+  if (passesFilter(frame)) renderFrame(frame);
+  else updateCount();     // the total moved even though the screen did not
+}
+
+// --- filtering --------------------------------------------------------------
+
+// Which values this frame contributes to the pickers; true when it brought one
+// that was not there before.
+function noteSeen(frame) {
+  let fresh = false;
+  if (frame.pipe !== null && frame.pipe !== undefined && !seenPipes.has(frame.pipe)) {
+    seenPipes.add(frame.pipe);
+    fresh = true;
+  }
+  if (frame.source && !seenSources.has(frame.source)) {
+    seenSources.add(frame.source);
+    fresh = true;
+  }
+  return fresh;
+}
+
+// Read straight off the pickers rather than mirrored into state of its own:
+// one place to be wrong is better than two places to disagree.
+function passesFilter(frame) {
+  const pipe = $("f-pipe").value;
+  const source = $("f-source").value;
+  if (pipe !== "" && String(frame.pipe) !== pipe) return false;
+  if (source !== "" && (frame.source || "") !== source) return false;
+  return true;
+}
+
+function paintFilters() {
+  fillPicker($("f-pipe"), "all pipes",
+             [...seenPipes].sort((a, b) => a - b).map((p) => [String(p), `pipe ${p}`]));
+  fillPicker($("f-source"), "all senders",
+             [...seenSources].sort().map((s) => [s, s]));
+  // A decoder that does not name a sender has nothing to offer here - the raw
+  // one does not, and an empty picker would only invite a click that does
+  // nothing.
+  $("f-source").hidden = seenSources.size === 0;
+}
+
+function fillPicker(select, allLabel, entries) {
+  const chosen = select.value;
+  const all = document.createElement("option");
+  all.value = "";
+  all.textContent = allLabel;
+  select.replaceChildren(all);
+  for (const [value, label] of entries) {
+    const option = document.createElement("option");
+    option.value = value;
+    option.textContent = label;
+    select.appendChild(option);
+  }
+  // If what was selected is no longer among the choices - after a Clear, or a
+  // decoder that names senders differently - fall back to showing everything.
+  // A filter kept on a value that cannot occur shows an empty table and blames
+  // the radio for it.
+  select.value = [...select.options].some((o) => o.value === chosen) ? chosen : "";
+}
+
+function renderFrame(frame) {
   frames.push(frame);
 
   const missing = missingBefore(frame);
@@ -463,7 +537,6 @@ function addRow(frame) {
     while (tbody.children.length > MAX_ROWS) tbody.removeChild(tbody.firstChild);
   }
 
-  $("empty").hidden = true;
   updateCount();
   if ($("follow").checked) {
     const wrap = document.querySelector(".table-wrap");
@@ -472,13 +545,26 @@ function addRow(frame) {
 }
 
 function updateCount() {
-  const total = frames.length;
+  const shown = frames.length;
+  const total = allFrames.length;
   const parts = [];
-  if (groups.length && groups.length !== total) parts.push(`${groups.length} events`);
-  parts.push(`${total} frame${total === 1 ? "" : "s"}`);
+  if (groups.length && groups.length !== shown) parts.push(`${groups.length} events`);
+  // "3 of 128" rather than "3": a filtered count that looks like a total is a
+  // quiet lie about how much traffic there was.
+  parts.push(shown === total ? `${total} frame${total === 1 ? "" : "s"}`
+                             : `${shown} of ${total} frames`);
+  // Counted over what is shown. With a sender filter that is exactly right -
+  // every frame of that sender is on screen - and with a pipe filter it is the
+  // loss within that pipe, which is the question the filter was asking.
   if (missingTotal) parts.push(`${missingTotal} missing`);
   $("count").textContent = parts.join(" · ");
   $("count").classList.toggle("has-loss", missingTotal > 0);
+
+  // Nothing on screen has two very different reasons, and the difference is
+  // the whole value of saying it.
+  $("empty").hidden = shown > 0;
+  $("empty-none").hidden = total > 0;
+  $("empty-filtered").hidden = total === 0;
 }
 
 function select(index) {
@@ -505,15 +591,20 @@ function select(index) {
 
 function rebuild(list) {
   $("rows").replaceChildren();
+  allFrames = list.slice();
   frames = [];
   groups = [];
   lastPacket.clear();
   missingTotal = 0;
-  for (const frame of list) addRow(frame);
-  if (!list.length) {
-    $("empty").hidden = false;
-    $("count").textContent = "0 frames";
-  }
+  seenPipes.clear();
+  seenSources.clear();
+  // Every value first, then the pickers once. Repainting them frame by frame
+  // would reset the current selection the moment a rebuild reaches its first
+  // frame, because at that point the chosen value has not been seen yet.
+  for (const frame of allFrames) noteSeen(frame);
+  paintFilters();
+  for (const frame of allFrames) if (passesFilter(frame)) renderFrame(frame);
+  updateCount();
   $("detail").textContent = "";
   $("raw").textContent = "";
 }
@@ -729,6 +820,7 @@ async function loadParsers() {
 function init() {
   loadPorts();
   loadParsers();
+  paintFilters();     // so the pickers say "all pipes" before anything arrives
   renderSummary();
   setLinkControls(false);   // until the first status event says otherwise
 
@@ -835,13 +927,18 @@ function init() {
   // well would be the one tab that clears for a different reason than the rest.
   $("clear").addEventListener("click", () => post("/api/clear"));
 
-  // Regrouping is a pure view change, so it works on what is already here.
-  // The header changes with it: ungrouped, the repeat column has nothing to say.
+  // Regrouping and filtering are both pure view changes, so they work on what
+  // is already here - on everything that arrived, not on what the last filter
+  // happened to let through. The header changes with grouping: ungrouped, the
+  // repeat column has nothing to say.
   $("group").addEventListener("change", () => {
-    const list = frames.slice();
+    const list = allFrames.slice();
     setColumns();
     rebuild(list);
   });
+  for (const id of ["f-pipe", "f-source"]) {
+    $(id).addEventListener("change", () => rebuild(allFrames.slice()));
+  }
 
   document.addEventListener("keydown", (e) => {
     if (e.key === "ArrowDown" || e.key === "ArrowUp") {

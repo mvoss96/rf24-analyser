@@ -39,7 +39,19 @@ HERE = Path(__file__).resolve().parent
 WEB_DIR = HERE / "web"
 MAX_FRAMES = 5000
 
-APP_VERSION = "1.0.0"
+# Version of this web app, shown in the corner so an answer can be told apart
+# from the code on disk. It moves with every change that reaches a user, in the
+# same shape as the firmware's: a feature raises the minor, a fix the patch.
+#
+# 1.1.0 is where it stopped standing still. Since 1.0.0: every status display
+#       reads the dongle rather than the setup form; `listen` and `hwset`
+#       acknowledge with the state they left behind; the project is called
+#       nRF24 Analyser; the event stream is numbered and resumable; the scan
+#       chart reads out the channel under the pointer; a dongle that stops
+#       answering is reported instead of shown as listening; the stale-build
+#       warning restarts into the new code when clicked; the frame list filters
+#       by pipe and by sender.
+APP_VERSION = "1.1.0"
 
 # Python imports a module once and keeps it: editing nrf24_parsers.py while the
 # server runs changes nothing until the process is restarted. That cost a real
