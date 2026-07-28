@@ -6,18 +6,7 @@
 static volatile bool s_rxFlag = false;
 static void onRadioIrq() { s_rxFlag = true; }
 
-// CRC-8/ATM (polynomial 0x07). Small and table-less; it only has to catch
-// corruption on the way to the host, not to be cryptographically anything.
-static uint8_t crc8(const uint8_t *data, uint8_t len) {
-  uint8_t crc = 0;
-  for (uint8_t i = 0; i < len; i++) {
-    crc ^= data[i];
-    for (uint8_t bit = 0; bit < 8; bit++) {
-      crc = (crc & 0x80) ? (uint8_t)((crc << 1) ^ 0x07) : (uint8_t)(crc << 1);
-    }
-  }
-  return crc;
-}
+static inline uint8_t crc8(const uint8_t *d, uint8_t n) { return nrf24_crc8(d, n); }
 
 // --- Register-level RX -------------------------------------------------------
 //
@@ -824,7 +813,7 @@ void RadioController::printAck() {
   Serial.println();
 }
 
-void RadioController::printInfo() {
+void RadioController::printInfo(long baud) {
   Serial.println(F("info:"));
   Serial.print(F("  state="));   Serial.println(stateName());
 
@@ -841,6 +830,7 @@ void RadioController::printInfo() {
   // reset, so it would otherwise be the one thing a dongle does that nothing
   // it says accounts for - and the one most likely to be mistaken for a broken
   // link, because in binary the frames stop looking like anything.
+  Serial.print(F("  baud="));    Serial.println(baud);
   Serial.print(F("  format="));  Serial.println(binaryOut_ ? F("bin") : F("text"));
   // Averages, in microseconds, over the frames since the last `listen`. This is
   // the one number that says whether a dongle is keeping up and where its time

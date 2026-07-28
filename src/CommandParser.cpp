@@ -517,7 +517,7 @@ void CommandParser::dispatch(char *line) {
   } else if (strcmp(cmd, "status") == 0) {
     printStatus();
   } else if (strcmp(cmd, "info") == 0) {
-    radio_.printInfo();
+    radio_.printInfo(baud_);
   } else if (strcmp(cmd, "scan") == 0) {
     // Deliberately does not require a radio configuration: which channels are
     // busy is exactly what you want to know *before* choosing one.
@@ -551,6 +551,21 @@ void CommandParser::dispatch(char *line) {
     }
     radio_.setRxMode((uint8_t)v);
     ok();
+  } else if (strcmp(cmd, "baud") == 0) {
+    // Raised for a session, never stored. The reply goes out at the old rate
+    // and is flushed before the switch, so the host knows exactly when to
+    // follow - and a reset, or simply unplugging it, returns the dongle to a
+    // rate anything can open.
+    long v = rest ? atol(rest) : 0;
+    if (v != 250000L && v != 500000L && v != 1000000L && v != 2000000L) {
+      err(F("baud 250000|500000|1000000|2000000")); return;
+    }
+    Serial.print(F("OK baud="));
+    Serial.println(v);
+    Serial.flush();
+    Serial.end();
+    Serial.begin(v);
+    baud_ = v;
   } else if (strcmp(cmd, "format") == 0) {
     // Answered in ASCII either way, including the one that switches to binary:
     // the reply belongs to the command stream, which stays readable.
@@ -595,6 +610,7 @@ void CommandParser::dispatch(char *line) {
     Serial.println(F("txseq <addr> <count> [ack|noack] then <count> hex lines"));
     Serial.println(F("tx <addr> <hex...> [ack|noack] [x<n>] [gap=<ms>]"));
     Serial.println(F("format bin|text  (bin: frames as binary records, faster, unreadable)"));
+    Serial.println(F("baud 250000|500000|1000000|2000000  (for this session; reset restores)"));
     Serial.println(F("rxmode <0|1|2> | rxdbg <0|1> | regs | reg <addr> [val]  (diagnosis)"));
     ok();
   } else {

@@ -217,7 +217,10 @@ public:
   bool scanning() const { return scanning_; }
 
   // Prints the current state and configuration.
-  void printInfo();
+  // `baud` is passed in rather than held here: the serial port is not the
+  // radio's business, but a session that raised its rate needs that visible in
+  // the one block that claims to describe the whole dongle.
+  void printInfo(long baud);
 
   // Where a reported configuration came from.
   //

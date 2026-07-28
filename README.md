@@ -115,6 +115,7 @@ NRF24ANALYSER fw=3.6.0 api=5 state=nohw hw=failed ce=8 csn=10 irq=2 led_rx=8 led
 | `scan off` | stop a live scan and resume whatever was running |
 | `repeats <0\|1>` | `0` suppresses identical back-to-back frames |
 | `format <bin\|text>` | how received frames leave: readable lines (default) or [binary records](#format-bin-the-same-frames-in-half-the-time) |
+| `baud <rate>` | raise the serial rate for this session; a reset restores 500000 — [and it buys nothing yet](#baud-and-why-it-buys-nothing-yet) |
 | `tx <addr> <hex...> [ack\|noack] [x<n>] [gap=<ms>]` | transmit a payload (default `noack`), optionally `n` copies `gap` ms apart |
 | `txseq <addr> <count> [ack\|noack]` | read the next `count` lines as payloads and transmit them in order — [see below](#sending-more-than-one-frame-txseq) |
 | `rxmode <0..4>` | how a payload is taken out of the RX FIFO — diagnosis only, see below |
@@ -593,6 +594,47 @@ once. Flushing only after a short payload would therefore cost nothing in
 correctness and lift the full-slot case to the air rate. That is a change to
 the one behaviour in this firmware arrived at purely empirically, so it is
 written down here rather than made quietly.
+
+#### `baud`, and why it buys nothing yet
+
+`baud 250000|500000|1000000|2000000` raises the serial rate for a session; a
+reset returns to 500000, so a host that does not know the command - or a
+checkout that predates it - can always open the port. The reply goes out at the
+old rate and is flushed before the switch, so the host knows exactly when to
+follow, and the port is reconfigured rather than reopened (reopening pulls DTR,
+which resets the dongle and loses its configuration).
+
+Measured against the greeting, 100 exchanges each:
+
+| rate | intact |
+|---|---|
+| 500000 | 100/100 |
+| 1000000 | 99/100 |
+| 2000000 | **0/100** |
+
+2 MBaud does not work on this hardware at all. 1 MBaud does, at about one
+corrupted byte in a hundred lines - and **it changes nothing end to end**: a
+512-frame transfer arrived 51 % at 500000 and 50 % at 1000000. That is not a
+disappointment, it is the earlier finding restated. Once `format bin` removed
+the printing, the serial line stopped being what binds; the flush did. Doubling
+a rate that is not the constraint buys exactly nothing, and here it costs 0.8 %
+of frames to their checksum.
+
+The command stays because it is the instrument that established this, and
+because the moment the flush is addressed the line becomes the constraint again
+- 0.66 ms of the remaining 0.83 ms per frame is wire time.
+
+| 512 frames, sender at 1.5 ms/frame | received |
+|---|---|
+| `text`, `rxmode 2` | 35 % |
+| `text`, `rxmode 1` | 35 % |
+| `bin`, `rxmode 2` | 50 % |
+| `bin`, `rxmode 1` | **100 %** |
+
+Both halves have to go for the ceiling to move: the readable line is line-bound
+whether or not it flushes, and the binary record is flush-bound until the flush
+goes. (`rxmode 1` also returned 515 frames for 512 sent - the duplicate fault,
+on full 32-byte slots, where it was not expected. Not a setting to run.)
 
 **It is off after every reset, and it is not hidden**: `info` reports
 `format=bin|text`. The default stays readable because that is what makes this

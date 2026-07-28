@@ -1,6 +1,7 @@
 #pragma once
 #include <Arduino.h>
 #include "RadioController.h"
+#include "Protocol.h"
 
 // Buffers serial input into lines and dispatches the line-based ASCII command
 // protocol. Every command is answered with "OK ..." or "ERR ...".
@@ -22,6 +23,9 @@ public:
   // to one whose adapter did not pull DTR - can ask instead of waiting.
   void printStatus();
 
+  // What the serial port is running at right now, so `info` can say so.
+  long baud() const { return baud_; }
+
 private:
   static constexpr uint8_t BUF_SIZE = 128;
 
@@ -42,6 +46,7 @@ private:
   // without the brake the buffer overruns and the run dies on a payload that
   // was never malformed, which is exactly how it failed the first time.
   bool seqAcking_ = false;
+  long baud_ = BOOT_BAUD;   // what the port is running at, for `info` to report
   uint16_t seqTaken_ = 0;
   uint32_t seqLastMs_ = 0;
 

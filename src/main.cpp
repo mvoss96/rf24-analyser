@@ -30,7 +30,7 @@ static CommandParser g_parser(g_radio);
 void setup() {
   // 500000 baud: an exact divisor at 16 MHz (0% error, cleaner than 115200) and
   // fast enough that printing a burst of frames cannot overrun the RX FIFO.
-  Serial.begin(500000);
+  Serial.begin(BOOT_BAUD);
 
   // A stored wiring is restored, but never silently: the greeting states where
   // the pins came from, and a chip that does not answer on them drops back to

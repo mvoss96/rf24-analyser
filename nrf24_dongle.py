@@ -67,7 +67,8 @@ INFO_HEADER = "info:"
 # without wiring reports state and nothing else), so a caller has to ask what is
 # there rather than index into a fixed shape.
 INFO_INT_FIELDS = ("channel", "crc", "aw", "plsize", "ack", "dpl", "repeats",
-                   "rxmode", "rxdbg", "rx", "fifofull")
+                   "rxmode", "rxdbg", "rx", "fifofull", "baud", "us_in",
+                   "us_out", "us_n")
 
 
 def parse_info(lines):
@@ -328,6 +329,21 @@ class Dongle:
         data = (line.rstrip("\r\n") + "\n").encode("ascii", errors="replace")
         with self._write_lock:
             self._serial.write(data)
+
+    def set_baud(self, baud):
+        """Follows the dongle to a rate it has just switched to.
+
+        Only ever called after `OK baud=` has been read, which the firmware
+        sends and flushes before switching, so the change happens on an idle
+        line. The port is reconfigured rather than reopened: reopening pulls
+        DTR, which resets the dongle - and a dongle that reset is back at
+        BOOT_BAUD with its radio configuration gone, which is the one outcome
+        this must not produce.
+        """
+        if self._serial is None:
+            raise RuntimeError("not connected")
+        self._serial.baudrate = baud
+        self.baud = baud
 
     def _read_loop(self):
         buffer = b""

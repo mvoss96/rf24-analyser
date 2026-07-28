@@ -51,6 +51,26 @@
 #define FW_VERSION "3.8.1"
 #define API_VERSION 5
 
+// The rate a dongle always boots at. `baud` can raise it for a session, but a
+// reset must come back here: a host that does not know the command - or a
+// checkout that predates it - has to be able to open the port and be understood.
+#define BOOT_BAUD 500000L
+
+// CRC-8/ATM (polynomial 0x07). Small and table-less; it only has to catch
+// corruption on the way between host and dongle, not to be cryptographically
+// anything. Shared because both directions now use it: the frame records going
+// out, and the payload records coming in.
+inline uint8_t nrf24_crc8(const uint8_t *data, uint8_t len) {
+  uint8_t crc = 0;
+  for (uint8_t i = 0; i < len; i++) {
+    crc ^= data[i];
+    for (uint8_t bit = 0; bit < 8; bit++) {
+      crc = (crc & 0x80) ? (uint8_t)((crc << 1) ^ 0x07) : (uint8_t)(crc << 1);
+    }
+  }
+  return crc;
+}
+
 // Starts a binary frame record. Outside printable ASCII, which nothing else
 // this firmware prints ever is, so a reader can tell the two apart mid-stream.
 #define RX_BIN_SYNC 0x01

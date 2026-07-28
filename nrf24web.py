@@ -627,6 +627,13 @@ class Session:
                         continue
                     text = event.get("text", "")
                     if text.startswith("OK") or text.startswith("ERR"):
+                        # The one reply that changes how the next byte is read.
+                        # The dongle flushed this line and then switched, so
+                        # the line is idle right now and this is the moment to
+                        # follow it - still holding the command lock, so
+                        # nothing else can write at the old rate in between.
+                        if text.startswith("OK baud="):
+                            self.dongle.set_baud(int(text.split("=", 1)[1]))
                         return text
             finally:
                 if own:
