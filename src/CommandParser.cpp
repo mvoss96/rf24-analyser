@@ -127,7 +127,18 @@ void CommandParser::feed(char c) {
 
 void CommandParser::poll() {
   if (seqLeft_ == SEQ_IDLE) return;
-  if (millis() - seqLastMs_ > SEQ_QUIET_MS) endSeq(F("truncated"));
+  const uint32_t now = millis();
+  if (now - seqLastMs_ > SEQ_QUIET_MS) { endSeq(F("truncated")); return; }
+  // Nothing has arrived for a while and the run is not over: either the host
+  // has stopped, in which case the line above will end it shortly, or it is
+  // waiting for a confirmation that never arrived intact. Say the count again -
+  // it is the running total, so hearing it twice is harmless and hearing it
+  // once is what unblocks a full window.
+  if (now - seqNudgeMs_ > SEQ_NUDGE_MS) {
+    seqNudgeMs_ = now;
+    Serial.print(F("OK txseq at="));
+    Serial.println(seqTaken_);
+  }
 }
 
 // --- Sending a run of payloads ---------------------------------------------
@@ -175,6 +186,7 @@ void CommandParser::handleTxSeq(char *args) {
   binLen_ = 0;
   seqTaken_ = 0;
   seqLastMs_ = millis();
+  seqNudgeMs_ = seqLastMs_;
   radio_.beginSequence(addr, noack);
   // Said before the payloads, so a host knows the dongle is listening for them
   // rather than for commands - and so a human who typed it by hand sees why
@@ -267,7 +279,7 @@ void CommandParser::handleTxTest(char *args) {
 }
 
 void CommandParser::feedSeqPayload(char *line) {
-  seqLastMs_ = millis();
+  seqLastMs_ = seqNudgeMs_ = millis();
   if (line[0] == '\0') return;              // a CRLF's second terminator
   uint8_t payload[32];
   int n = parseHexList(line, payload, 0, 32);
@@ -293,7 +305,7 @@ uint16_t CommandParser::confEvery() const {
 }
 
 void CommandParser::feedSeqByte(uint8_t b) {
-  seqLastMs_ = millis();
+  seqLastMs_ = seqNudgeMs_ = millis();
   if (binLen_ == 0) {
     if (b < 1 || b > 32) { endSeq(F("bad length")); return; }
     binLen_ = b;

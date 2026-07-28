@@ -441,20 +441,34 @@ that stops the same idea being tried a second time.
 acknowledgement 73 more; the serial line's own limit is a 34-byte record at
 20 us a byte, so 0.68 ms a frame - **47 kB/s whatever the radio does**.
 
-Now at **fw 3.12.0**, against **fw 3.11.0**. Receiving side in `format bin`, so
+Now at **fw 3.14.0**, against **fw 3.12.0**. Receiving side in `format bin`, so
 that what arrived can be checked:
 
 | air rate | | measured | Δ ms | air used | wire used | seen by observer | Δ |
 |---|---|---|---|---|---|---|---|
-| 250 kbps | acknowledged | 1.99 ms, 15.7 kB/s | −0.01 | 87 % | 34 % | 512/512 | +0 |
-| 250 kbps | not | 1.35 ms, 23.2 kB/s | +0.04 | at the limit | 50 % | 512/512 | +1 |
-| 1 Mbps | acknowledged | 1.00 ms, 31.2 kB/s | 0.00 | 53 % | 68 % | 512/512 | +0 |
-| 1 Mbps | not | 0.83 ms, 37.5 kB/s | −0.01 | 40 % | 82 % | 418/512 | −8 |
-| 2 Mbps | acknowledged | 1.03 ms, 30.5 kB/s | −0.02 | 33 % | 66 % | 512/512 | +0 |
-| 2 Mbps | not | 0.88 ms, 35.4 kB/s | +0.04 | 19 % | 77 % | 415/512 | −2 |
+| 250 kbps | acknowledged | 1.96 ms, 16.0 kB/s | −0.03 | 89 % | 35 % | 512/512 | +0 |
+| 250 kbps | not | 1.33 ms, 23.5 kB/s | −0.02 | 99 % | 51 % | 506/512 | −6 |
+| 1 Mbps | acknowledged | 1.00 ms, 31.1 kB/s | +0.00 | 53 % | 68 % | 512/512 | +0 |
+| 1 Mbps | not | 0.85 ms, 36.6 kB/s | +0.02 | 39 % | 80 % | 426/512 | +8 |
+| 2 Mbps | acknowledged | 1.01 ms, 31.1 kB/s | −0.02 | 33 % | 68 % | 512/512 | +0 |
+| 2 Mbps | not | 0.87 ms, 36.1 kB/s | −0.01 | 19 % | 79 % | 423/512 | +8 |
 
-Nothing moved, and nothing should have: 3.12.0 adds a receive mode and changes
-no path these rows use.
+Nothing moved beyond noise, and nothing should have: 3.14.0 repeats a lost
+confirmation, which costs nothing when none is lost.
+
+**That repeat is a real fix even though it moved no number here.** A host whose
+window is full cannot write another payload until one is confirmed, so a
+confirmation damaged on the wire used to deadlock the run until the dongle's
+500 ms quiet timer killed it - one bad byte on the return path costing an entire
+transfer. The dongle now says the count again after 25 ms of silence, and
+because that count is a running total rather than a tick, hearing it twice is
+harmless. At 1 MBaud, where damaged bytes are common, an acknowledged 512-frame
+run went from ending at 279/512 to completing byte-for-byte.
+
+Which finally closes the serial rate, for the third time and now on its own
+terms: 1 MBaud completes but is *slower* - 1.14 ms a frame against 1.01 - and
+unacknowledged it still dies on a damaged payload record, which has no resume.
+500000 stays.
 
 **But the observer in those rows is itself the constraint**, and `format none`
 is what shows it. A dongle on the receiving end of a transfer does not need to

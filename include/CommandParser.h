@@ -38,6 +38,14 @@ private:
   // have been taken, and when the last one arrived.
   static constexpr uint16_t SEQ_IDLE = 0;
   static constexpr uint16_t SEQ_QUIET_MS = 500;   // silence that ends a run
+  // Silence that gets the confirmation said again. A host with a full window
+  // cannot write another payload until it is confirmed, so a confirmation lost
+  // on the wire deadlocks the run until SEQ_QUIET_MS kills it - one damaged
+  // byte on the return path costing the whole transfer. Saying the count again
+  // costs sixteen bytes and turns that into a hiccup. It carries the running
+  // total rather than a tick, so a repeat is harmless and a host that heard the
+  // first one simply sees the same number twice.
+  static constexpr uint16_t SEQ_NUDGE_MS = 25;
   static constexpr uint16_t SEQ_PROGRESS_EVERY = 32;
   // An acknowledged run is confirmed often, because the host may not write
   // faster than the dongle consumes. Once per frame when the payloads are hex
@@ -65,6 +73,7 @@ private:
   long baud_ = BOOT_BAUD;   // what the port is running at, for `info` to report
   uint16_t seqTaken_ = 0;
   uint32_t seqLastMs_ = 0;
+  uint32_t seqNudgeMs_ = 0;
 
   void dispatch(char *line);
   void handleHwset(char *args);
