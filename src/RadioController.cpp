@@ -440,12 +440,13 @@ void RadioController::drainRx() {
     }
 
     if (outMode_ == OUT_BIN) {
-      // Sync, length, pipe, timestamp, payload, checksum - assembled here and
-      // handed over in one Serial.write, so the per-byte cost is a copy into
-      // the ring buffer instead of a number being formatted. 0x01 can start a
-      // record unambiguously because nothing else this firmware prints is
-      // outside printable ASCII, and the length says where the record ends, so
-      // a payload byte that happens to be 0x01 or a newline decodes as data.
+      // Sync, length, pipe and run count, timestamp, payload, checksum -
+      // assembled here and handed over in one Serial.write, so the per-byte cost
+      // is a copy into the ring buffer instead of a number being formatted. 0x01
+      // can start a record unambiguously because nothing else this firmware
+      // prints is outside printable ASCII, and the length says where the record
+      // ends, so a payload byte that happens to be 0x01 or a newline decodes as
+      // data.
       //
       // The checksum covers exactly the bytes the readable line's `crc=` does -
       // the payload as it left the FIFO, nothing else. That keeps the two
@@ -455,24 +456,46 @@ void RadioController::drainRx() {
       // reader that mis-syncs takes a wrong length, and a wrong length fails
       // this checksum, so it hunts for the next sync byte instead of believing
       // a shifted frame.
-      uint8_t rec[7 + 32 + 2];
+      //
+      // A repeated tail is sent as one byte and a count. Senders that pad a
+      // static payload out to 32 bytes are most of what this dongle ever sees -
+      // the BTHome sender on this bench ends every frame with twelve bytes of
+      // FF - and that costs the same serial time as twelve bytes of data. The
+      // scan runs backwards over at most 31 bytes, which is nothing against the
+      // 240 us those bytes would take on the wire. A payload with no repeated
+      // tail loses nothing by being asked.
+      uint8_t run = 0;
+      if (len >= RX_RUN_MIN) {
+        const uint8_t fill = buf[len - 1];
+        run = 1;
+        while (run < len - 1 && run < RX_RUN_MAX && buf[len - 1 - run] == fill) run++;
+        if (run < RX_RUN_MIN) run = 0;
+      }
+      const uint8_t stored = (uint8_t)(len - run);
+
+      uint8_t rec[5 + 32 + 3];
       rec[0] = RX_BIN_SYNC;
-      rec[1] = len;
-      rec[2] = pipe;
+      rec[1] = len;                                  // the length before suppression
+      rec[2] = (uint8_t)(pipe | (run << 3));
+      // The low 16 bits only. Which minute of the dongle's uptime this belongs
+      // to is something the host can work out and the wire should not carry.
       rec[3] = (uint8_t)(stamp);
       rec[4] = (uint8_t)(stamp >> 8);
-      rec[5] = (uint8_t)(stamp >> 16);
-      rec[6] = (uint8_t)(stamp >> 24);
-      for (uint8_t i = 0; i < len; i++) rec[7 + i] = buf[i];
-      rec[7 + len] = crc8(buf, len);
+      for (uint8_t i = 0; i < stored; i++) rec[5 + i] = buf[i];
+      uint8_t n = (uint8_t)(5 + stored);
+      if (run) rec[n++] = buf[len - 1];
+      // Over the payload as it was, not as it is being sent: the two shapes have
+      // to keep saying the same thing about the same bytes, and a host that
+      // rebuilds the tail wrongly should fail this check rather than pass it.
+      rec[n++] = crc8(buf, len);
       // A newline after the record. It does not make this line-based - a
       // payload byte can be 0x0A and a reader must go by the length - but it
       // guarantees the next readable line starts on a fresh one. Without it a
       // reply printed while frames are arriving comes out glued to the tail of
       // a record, which is precisely the moment somebody has opened a terminal
       // to find out what is wrong. One byte of ninety.
-      rec[8 + len] = '\n';
-      Serial.write(rec, (size_t)(9 + len));
+      rec[n++] = '\n';
+      Serial.write(rec, (size_t)n);
       led(hw_.ledRx, false);
       accrue(usEnter, usRead);
       continue;
@@ -919,6 +942,10 @@ void RadioController::printInfo(long baud) {
   // it says accounts for - and the one most likely to be mistaken for a broken
   // link, because in binary the frames stop looking like anything.
   Serial.print(F("  baud="));    Serial.println(baud);
+  // The clock frame records are stamped against. They carry only its low 16
+  // bits, so a host that has just connected - or has heard nothing for hours -
+  // can anchor itself here instead of guessing which wrap it is in.
+  Serial.print(F("  ms="));      Serial.println(millis());
   Serial.print(F("  format="));
   Serial.println(outMode_ == OUT_BIN ? F("bin")
                  : outMode_ == OUT_NONE ? F("none") : F("text"));

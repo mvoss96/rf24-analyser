@@ -441,18 +441,47 @@ that stops the same idea being tried a second time.
 acknowledgement 73 more; the serial line's own limit is a 34-byte record at
 20 us a byte, so 0.68 ms a frame - **47 kB/s whatever the radio does**.
 
-Now at **fw 3.14.0**, re-measured against itself after three attempts to close
-the last quarter of the wire, all of which failed. Receiving side in
-`format bin`, so that what arrived can be checked:
+Read "air used" against the right denominator: acknowledged, the air's own floor
+is not the packet but the whole exchange - 1316 us of packet, 292 of
+acknowledgement and two 130 us turnarounds, so 1868 us at 250 kbps. There is no
+such thing as "the full 250 kbps with acknowledgement"; 100 % of *that* is what
+the column measures. And even unacknowledged only 256 of the 329 bits are
+payload, so 78 % of the modulation rate is the ceiling on useful data before
+anything else is counted.
+
+**Transmit power is not a lever to reach for.** Measured on one channel, three
+interleaved rounds: `low` 1.96 ms with 1-2 retransmissions, `high` 2.06 with
+16-31, `max` **6.57 with 781-849**, `min` 2.59 with ~105. The dongles sit close
+together and full power overloads the receiver's front end; `low` is both the
+default and the optimum here.
+
+Now at **fw 3.15.0**, three interleaved rounds per row, median. **Each rate on
+its own best channel** — 250 kbps on 14, 1 and 2 Mbps on 88 — because the choice
+turned out to be worth more than anything in the firmware and to differ by rate:
+channel 14 is the quietest for 250 kbps and among the worst for 2 Mbps, the
+faster rates occupying more of the band. Receiving side in `format bin`, so that
+what arrived can be checked. The Δ is against fw 3.14.0 on the same channels.
 
 | air rate | | measured | Δ ms | air used | wire used | seen by observer | Δ |
 |---|---|---|---|---|---|---|---|
-| 250 kbps | acknowledged | 1.98 ms, 15.8 kB/s | +0.02 | 88 % | 34 % | 512/512 | +0 |
-| 250 kbps | not | 1.31 ms, 23.9 kB/s | −0.02 | at the limit | 52 % | 512/512 | +6 |
-| 1 Mbps | acknowledged | 1.00 ms, 31.1 kB/s | +0.00 | 53 % | 68 % | 512/512 | +0 |
-| 1 Mbps | not | 0.89 ms, 34.9 kB/s | +0.04 | 37 % | 76 % | 427/512 | +1 |
-| 2 Mbps | acknowledged | 1.04 ms, 30.1 kB/s | +0.03 | 32 % | 65 % | 512/512 | +0 |
-| 2 Mbps | not | 0.85 ms, 36.8 kB/s | −0.02 | 19 % | 80 % | 424/512 | +1 |
+| 250 kbps | acknowledged | 1.96 ms, 16.3 kB/s | −0.03 | 95 % | 35 % | 512/512 | +0 |
+| 250 kbps | not | 1.33 ms, 24.0 kB/s | +0.00 | 99 % | 51 % | 501/512 | +0 |
+| 1 Mbps | acknowledged | 0.98 ms, 32.8 kB/s | −0.06 | 68 % | 70 % | 512/512 | +0 |
+| 1 Mbps | not | 0.85 ms, 37.7 kB/s | +0.00 | 39 % | 80 % | 440/512 | **+14** |
+| 2 Mbps | acknowledged | 1.01 ms, 31.8 kB/s | −0.03 | 46 % | 68 % | 512/512 | +0 |
+| 2 Mbps | not | 0.87 ms, 36.7 kB/s | +0.02 | 19 % | 78 % | 440/512 | **+18** |
+
+The sending times are unchanged, which is right: 3.15.0 touched the receive path
+only. What moved is the last column — the two rows where the observer was the
+constraint gained 14 and 18 frames from the shorter record, and the acknowledged
+rows needed fewer retransmissions for the same reason (1 Mbps 78 → 71, 2 Mbps
+142 → 133), because a receiver that keeps up goes on acknowledging.
+
+Against a **silent** receiver the same six rows read 1.31 / 1.99 / 0.88 / 0.90 /
+0.87 / 0.89 ms with 512 of 512 seen everywhere except 250 kbps unacknowledged,
+where about ten frames are lost on air rather than in the dongle. Acknowledgement
+costs 4 % at 1 and 2 Mbps once the channel is clean — the 1.04 ms measured on a
+mediocre channel was retransmissions and nothing else.
 
 #### The last quarter of the wire, and three things that do not get it
 
@@ -1102,17 +1131,53 @@ characters, one `Serial.print` per byte.
 | offset | | |
 |---|---|---|
 | 0 | 1 byte | `0x01`, which begins a record |
-| 1 | 1 byte | payload length, 1..32 |
-| 2 | 1 byte | pipe |
-| 3 | 4 bytes | `millis()`, little-endian |
-| 7 | *len* bytes | the payload |
-| 7+*len* | 1 byte | CRC-8 over the payload |
-| 8+*len* | 1 byte | `
+| 1 | 1 byte | payload length before suppression, 1..32 |
+| 2 | 1 byte | pipe in bits 2–0, suppressed run in bits 7–3 |
+| 3 | 2 bytes | the low 16 bits of `millis()`, little-endian |
+| 5 | *stored* bytes | the payload, less any repeated tail |
+| 5+*stored* | 1 byte | the repeated byte — only when the run is not zero |
+| … | 1 byte | CRC-8 over the payload **as it was**, all *len* bytes |
+| … | 1 byte | `
 ` |
 
-Forty bytes against ninety-odd characters, assembled once and handed over in a
-single `Serial.write`. The checksum covers **exactly** the bytes that `crc=`
-covers in the readable line, so `intact` means the same thing either way.
+So 39 bytes for a payload with nothing to suppress and 28 for one padded the way
+this bench's BTHome sender pads — against ninety-odd characters for the readable
+line — assembled once and handed over in a single `Serial.write`. The checksum
+covers **exactly** the bytes that `crc=` covers in the readable line, so `intact`
+means the same thing either way, and a host that rebuilds the tail wrongly fails
+the check rather than passing it.
+
+Three things were paid for here, and the receiver's throughput is what asked for
+each of them:
+
+**The timestamp is two bytes, not four.** The host puts the high bits back from
+its own clock: it knows roughly what the dongle's counter reads, so it takes the
+value congruent to those 16 bits that lies nearest, and would have to be out by
+more than half the 65.536 s wrap to pick wrong. `info` reports `ms=` so a host
+that has just connected — or has heard nothing for hours — anchors on the
+dongle's own answer instead of guessing. **This is deliberately not a delta.**
+Every record still carries an absolute value, so frames lost in between cost
+nothing; a delta would have shifted every timestamp after a lost frame, and
+repeat spacing is the one thing this stamp exists to measure.
+
+**Pipe and run count share a byte**, three bits and five.
+
+**A repeated tail is sent as one byte and a count.** Senders that pad a static
+payload out to 32 bytes are most of what this dongle ever sees. Measured over 54
+real frames off the air, against two synthetic corpora for contrast:
+
+| encoding | sniffed sensor frames | random bytes | English text |
+|---|---|---|---|
+| before | 41.0 B | 41.0 B | 41.0 B |
+| **trailing run suppressed** | **30.0 B** | 41.0 B | 41.0 B |
+| general run-length | 34.0 B | 41.1 B | 41.0 B |
+| both | 32.0 B | 41.1 B | 41.0 B |
+
+General run-length is *worse* than suppressing only the tail, which is why the
+firmware does not do it: an escape byte costs two bytes every time its own value
+appears in the data, and the short runs inside a BTHome payload do not repay it.
+Suppressing only the tail needs no escape and cannot expand a record by more than
+one byte.
 
 `0x01` can introduce a record unambiguously because nothing else this firmware
 prints lies outside printable ASCII — replies, warnings and the greeting stay
@@ -1135,6 +1200,31 @@ than halving the bytes might suggest. What is left is no longer the protocol:
 about 1.7 ms per frame goes on work that does not depend on the output shape at
 all (the SPI read at 4 MHz, the per-payload `FLUSH_RX` that `rxmode 2`
 performs, the repeat check, the LED writes).
+
+#### What the shorter record bought, and where it ran out
+
+512 frames sent unacknowledged with the receiver printing every one of them,
+which is the case where the receive path is the constraint:
+
+| air rate | payload | record | seen before | seen after |
+|---|---|---|---|---|
+| 1 Mbps | random, no tail | 41 → 39 B | 426/512 | 440/512 |
+| 1 Mbps | 20 data + 12 × FF | 41 → 28 B | ~426/512 | **512/512** |
+| 2 Mbps | random, no tail | 41 → 39 B | 422/512 | 440/512 |
+| 2 Mbps | 20 data + 12 × FF | 41 → 28 B | ~422/512 | **512/512** |
+
+The split is the whole point, and the arithmetic predicted it. A frame arrives
+every 850 us; writing a record out costs 20 us a byte plus about 210 us of SPI
+read and drain loop. At 41 bytes that is 1030 us and the dongle falls behind by
+18 %. At 39 it is 950 — better, still behind. At 28 it is 770, and the loss does
+not shrink, it **disappears**.
+
+And the wall behind it: **the payload alone is 640 us**, so with the 210 us of
+work around it a 32-byte frame needs 850 us to be narrated — exactly the arrival
+interval, with nothing left for framing at all. Arbitrary payloads at 1 or
+2 Mbps therefore cannot be printed frame-for-frame at 500000 baud, by this
+firmware or any other. That case is `format none`, or acknowledged transfer,
+which paces the sender to what the far end can take.
 
 **A record is not a line.** It carries no terminator that means anything - the
 length is what says where it ends - and a payload byte may be `0x0A` or `0x01`

@@ -106,7 +106,7 @@ MAX_FRAMES = 5000
 # 1.7.0 needs firmware 3.10.0, which flushes the RX FIFO only after a payload
 #       shorter than the slot. A dongle receiving 32-byte frames went from 50%
 #       to 99% of them; short payloads keep the protection they had.
-APP_VERSION = "1.7.0"
+APP_VERSION = "1.8.0"
 
 # Python imports a module once and keeps it: editing nrf24_parsers.py while the
 # server runs changes nothing until the process is restarted. That cost a real
@@ -609,6 +609,11 @@ class Session:
     def _set_radio(self, info):
         self.radio = info
         self.radio_at = time.time()
+        # Frame records carry two bytes of the dongle's clock; `ms=` is the whole
+        # of it, so every info reply re-anchors the reconstruction rather than
+        # letting it lean on the last frame heard.
+        if "ms" in info and self.dongle is not None:
+            self.dongle.stamp_anchor(info["ms"])
         # It answered, so it is not deaf - whatever it was that answered, a poll
         # or a command's acknowledgement. The state below comes from the dongle
         # itself and replaces "no answer" without any special case for it.
