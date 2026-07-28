@@ -320,9 +320,44 @@ the receiver can absorb. An acknowledged transfer paces itself. That is why the
 250 kbps row above is byte-perfect even with a readable-line observer - the
 sender was being held back to 4.44 ms a frame by the observer's own limit.
 
-What binds now is the serial line to the sending dongle: 69 bytes of payload
-line plus a 16-byte confirmation is 85 bytes a frame, which at 500000 baud is
-1.7 ms - the figure measured. The next gain is fewer bytes, not faster air.
+What bound next was the serial line to the sending dongle, and `txseq ... bin`
+removed it. A payload arrives as a record - one length byte, the payload, one
+checksum - instead of two hex characters per byte. No sync marker, because none
+would help: the dongle knows it is owed a fixed number of records and each
+states its own length, so a failed checksum ends the run rather than
+transmitting a guess. The host asks for `bin` and falls back to hex when the
+firmware answers `ERR unknown key`, which is the whole negotiation.
+
+Halving the payload was worth less than it looks until the confirmations were
+counted too. Measured at 2 Mbps, 512 frames:
+
+| | ms/frame | kB/s |
+|---|---|---|
+| hex, no acknowledgement | 1.50 | 20.8 |
+| **binary**, no acknowledgement | **0.79** | **39.5** |
+| binary, acknowledged, confirmed every frame | 1.55 | 20.2 |
+| binary, acknowledged, confirmed every third | **1.32** | **23.6** |
+
+The payload halved exactly as arithmetic said. But a confirmation the host has
+to wait for cost 0.76 ms on a 0.79 ms frame - it is a round trip, not sixteen
+bytes. Confirming every third frame instead of every one recovers most of that,
+and stays safe because a binary run's window is six records where a hex run's
+is three: the same 256-byte buffer, smaller records.
+
+Where that leaves a transfer, against 5.72 ms a frame and 5.5 kB/s when it was
+first measured:
+
+| | ms/frame | kB/s |
+|---|---|---|
+| 250 kbps | 2.74 | 11.4 |
+| 2 Mbps | **1.32** | **23.6** |
+
+**Do not verify a transfer from the capture.** Sixteen kilobytes sent three
+times at 250 kbps came back `sent=512/512 ack=yes failed=0` every time - the
+radio confirmed every frame - while the observing dongle's own history held 512
+frames twice and 510 once. Acknowledgement is what says the bytes arrived; the
+sniffer's history is a separate and slightly lossy path, and reassembling it is
+a check on the observer, not on the transfer.
 
 **`ack` changes both the speed and the meaning.** Acknowledged, the dongle
 confirms every frame and the host waits for that confirmation before writing

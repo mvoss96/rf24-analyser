@@ -81,7 +81,14 @@ MAX_FRAMES = 5000
 #       that without risking the dongle's input buffer. Measured over 4096
 #       bytes at 2 Mbps: 5.72 ms a frame became 1.74, 5.5 kB/s became 18.0, and
 #       the result is still byte-for-byte identical at the receiver.
-APP_VERSION = "1.4.0"
+#
+# 1.5.0 sends payloads as binary records when the firmware takes them, which is
+#       half the bytes of a hex line, and lets an acknowledged binary run be
+#       confirmed every third frame rather than every one - a confirmation the
+#       host waits for costs a round trip, measured at 0.76 ms on a 0.79 ms
+#       frame. Together: 1.32 ms a frame and 23.6 kB/s, against 5.72 and 5.5
+#       when the transfer was first measured.
+APP_VERSION = "1.5.0"
 
 # Python imports a module once and keeps it: editing nrf24_parsers.py while the
 # server runs changes nothing until the process is restarted. That cost a real
@@ -149,6 +156,10 @@ NO_REFRESH_AFTER = {"tx", "txseq", "info"}
 # simply streamed: while the radio waits for an acknowledgement the firmware is
 # not reading the port at all.
 SEND_WINDOW = 3
+
+# The same bound for a binary run, where a record is 34 bytes rather than 69.
+# Six fit in the 256-byte buffer with room to spare; seven would not.
+SEND_WINDOW_BIN = 6
 
 # How many heartbeats may go unanswered before the dongle counts as gone. The
 # poll was already measuring this and throwing the result away: after a suspend
@@ -731,13 +742,22 @@ class Session:
             q = self.hub.subscribe()
             self._sending = True
             try:
-                reply = self.command(f"txseq {address} {len(payloads)} "
-                                     f"{'ack' if ack else 'noack'}", timeout=5.0,
-                                     lock=False, q=q)
+                # Binary payloads first, and fall back to hex on refusal. That
+                # is the whole negotiation: firmware older than 3.9.0 answers
+                # `ERR unknown key`, which asks and answers the question in one
+                # round trip, and one that has it echoes ` bin` back.
+                head = f"txseq {address} {len(payloads)} {'ack' if ack else 'noack'}"
+                reply = self.command(head + " bin", timeout=5.0, lock=False, q=q)
+                binary = reply.startswith("OK txseq ready") and reply.endswith(" bin")
+                if not binary:
+                    reply = self.command(head, timeout=5.0, lock=False, q=q)
                 if not reply.startswith("OK txseq ready"):
                     raise RuntimeError(reply)
+                # A record is 34 bytes against a hex line's 69, so more of them
+                # fit in the same 256-byte input buffer.
+                window = SEND_WINDOW_BIN if binary else SEND_WINDOW
                 closing = None
-                outstanding = 0
+                written = confirmed = 0
                 for index, payload in enumerate(payloads):
                     if self._cancel_send:
                         break
@@ -754,17 +774,21 @@ class Session:
                     # air. Three fit: the dongle's buffer is 256 bytes and a
                     # payload line is 69, so three unread lines cannot overflow
                     # it, while the fourth might.
-                    while ack and outstanding >= SEND_WINDOW:
-                        closing = self._await_frame(q)
-                        if closing is not None:
+                    while ack and written - confirmed >= window:
+                        answer = self._await_frame(q)
+                        if isinstance(answer, str):
+                            closing = answer      # the run ended on its own
                             break
-                        outstanding -= 1
+                        confirmed = answer
                     if closing is not None:
-                        break           # the run ended early; stop feeding it
-                    # Straight at the port: these are payload lines, not
-                    # commands, and nothing may be interleaved between them.
-                    self.dongle.send(payload)
-                    outstanding += 1
+                        break           # stop feeding a run that has ended
+                    # Straight at the port: these are payloads, not commands,
+                    # and nothing may be interleaved between them.
+                    if binary:
+                        self.dongle.send_raw(dongle.seq_record(bytes.fromhex(payload)))
+                    else:
+                        self.dongle.send(payload)
+                    written += 1
                     if on_progress and index % 64 == 63:
                         on_progress(index + 1, len(payloads))
                 if closing is not None:
@@ -776,11 +800,13 @@ class Session:
                 self.hub.unsubscribe(q)
 
     def _await_frame(self, q, timeout=5.0):
-        """Waits for one acknowledged frame to be confirmed.
+        """Waits for the dongle to confirm what it has transmitted so far.
 
-        Returns None when the dongle is ready for the next payload, or the
-        closing `OK txseq sent=` line when the run ended instead - which it
-        does as soon as a frame goes unacknowledged.
+        Returns the running count it reported, or the closing `OK txseq sent=`
+        line when the run ended instead - which it does as soon as a frame goes
+        unacknowledged. The count rather than a tick, because a binary run is
+        confirmed once every few frames: counting answers would leave the
+        window's accounting short by the frames a single answer stood for.
         """
         deadline = time.monotonic() + timeout
         while True:
@@ -795,7 +821,7 @@ class Session:
                 continue
             text = event.get("text", "")
             if text.startswith("OK txseq at="):
-                return None
+                return int(text.rsplit("=", 1)[1])
             if text.startswith("OK txseq sent="):
                 return text
             if text.startswith("ERR"):

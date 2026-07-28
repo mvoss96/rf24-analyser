@@ -95,6 +95,11 @@ static void reportMissing(uint8_t have) {
 // --- Line assembly ---------------------------------------------------------
 
 void CommandParser::feed(char c) {
+  // Before anything looks for a line terminator: a binary payload byte may be
+  // any value at all, newline included, and assembling it into lines would
+  // corrupt the very first payload that happened to contain one.
+  if (seqLeft_ != SEQ_IDLE && seqBin_) { feedSeqByte((uint8_t)c); return; }
+
   // Accept CR, LF or CRLF as the line terminator, so any terminal works
   // unconfigured (PuTTY sends CR on Enter, miniterm CRLF). The trailing empty
   // line a CRLF produces is dispatched too, but dispatch() ignores it.
@@ -145,15 +150,19 @@ void CommandParser::handleTxSeq(char *args) {
   if (count < 1 || count > 60000) { err(F("count 1..60000")); return; }
 
   bool noack = true;
+  bool binary = false;
   for (char *tok = strtok_r(nullptr, " \t", &save); tok != nullptr;
        tok = strtok_r(nullptr, " \t", &save)) {
     if (strcmp(tok, "ack") == 0)        noack = false;
     else if (strcmp(tok, "noack") == 0) noack = true;
+    else if (strcmp(tok, "bin") == 0)   binary = true;
     else { err(F("unknown key")); return; }
   }
 
   seqLeft_ = (uint16_t)count;
   seqAcking_ = !noack;
+  seqBin_ = binary;
+  binLen_ = 0;
   seqTaken_ = 0;
   seqLastMs_ = millis();
   radio_.beginSequence(addr, noack);
@@ -161,7 +170,12 @@ void CommandParser::handleTxSeq(char *args) {
   // rather than for commands - and so a human who typed it by hand sees why
   // the next thing they type is not answered.
   Serial.print(F("OK txseq ready count="));
-  Serial.println(count);
+  Serial.print(count);
+  // Echoed so a host can tell an accepted `bin` from a firmware that ignored
+  // it - and older firmware answers `ERR unknown key`, which is the same
+  // question asked the other way round.
+  if (binary) Serial.print(F(" bin"));
+  Serial.println();
 }
 
 void CommandParser::feedSeqPayload(char *line) {
@@ -178,7 +192,35 @@ void CommandParser::feedSeqPayload(char *line) {
   if (seqLeft_ == SEQ_IDLE) { endSeq(nullptr); return; }
   // A progress line every so often: a run of three thousand frames is nearly a
   // minute of silence otherwise, and silence is what a hung dongle looks like.
-  if (seqTaken_ % (seqAcking_ ? 1 : SEQ_PROGRESS_EVERY) == 0) {
+  if (seqTaken_ % (seqAcking_ ? (seqBin_ ? SEQ_PROGRESS_ACK_BIN : 1) : SEQ_PROGRESS_EVERY) == 0) {
+    Serial.print(F("OK txseq at="));
+    Serial.println(seqTaken_);
+  }
+}
+
+void CommandParser::feedSeqByte(uint8_t b) {
+  seqLastMs_ = millis();
+  if (binLen_ == 0) {
+    if (b < 1 || b > 32) { endSeq(F("bad length")); return; }
+    binLen_ = b;
+    binGot_ = 0;
+    return;
+  }
+  if (binGot_ < binLen_) { buf_[binGot_++] = (char)b; return; }
+
+  // The byte after the payload is its checksum. Nothing here can resynchronise
+  // on its own - a wrong length would swallow the records behind it - so a
+  // failed checksum ends the run rather than transmitting a guess.
+  const uint8_t len = binLen_;
+  binLen_ = 0;
+  if (b != nrf24_crc8((const uint8_t *)buf_, len)) { endSeq(F("bad payload")); return; }
+
+  const bool more = radio_.sequenceWrite((const uint8_t *)buf_, len);
+  seqTaken_++;
+  seqLeft_--;
+  if (!more) { endSeq(F("gave up")); return; }
+  if (seqLeft_ == SEQ_IDLE) { endSeq(nullptr); return; }
+  if (seqTaken_ % (seqAcking_ ? (seqBin_ ? SEQ_PROGRESS_ACK_BIN : 1) : SEQ_PROGRESS_EVERY) == 0) {
     Serial.print(F("OK txseq at="));
     Serial.println(seqTaken_);
   }
@@ -187,6 +229,9 @@ void CommandParser::feedSeqPayload(char *line) {
 void CommandParser::endSeq(const __FlashStringHelper *why) {
   const uint16_t asked = seqTaken_ + seqLeft_;
   seqLeft_ = SEQ_IDLE;
+  seqBin_ = false;
+  binLen_ = 0;
+  len_ = 0;               // whatever the byte stream left in the line buffer
   const RadioController::TxResult r = radio_.endSequence();
   Serial.print(F("OK txseq sent="));
   Serial.print(r.sent);
@@ -607,7 +652,8 @@ void CommandParser::dispatch(char *line) {
     Serial.println(F("hwset ce=<pin> csn=<pin> [irq=<pin|none>] [led_rx=<pin|none>] [led_tx=<pin|none>]"));
     Serial.println(F("listen ch= rate= crc= aw= pa= ack= dpl= [plsize=] pipeN=<addr>"));
     Serial.println(F("hwclear | listen | stop | info | scan [passes] | repeats <0|1>"));
-    Serial.println(F("txseq <addr> <count> [ack|noack] then <count> hex lines"));
+    Serial.println(F("txseq <addr> <count> [ack|noack] [bin] then <count> payloads"));
+    Serial.println(F("  bin: raw records len+payload+crc8 instead of hex lines"));
     Serial.println(F("tx <addr> <hex...> [ack|noack] [x<n>] [gap=<ms>]"));
     Serial.println(F("format bin|text  (bin: frames as binary records, faster, unreadable)"));
     Serial.println(F("baud 250000|500000|1000000|2000000  (for this session; reset restores)"));

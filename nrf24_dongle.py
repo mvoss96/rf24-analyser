@@ -171,6 +171,21 @@ def _rx_line(record):
             f"{payload.hex().upper()}")
 
 
+def seq_record(payload):
+    """One `txseq ... bin` payload: its length, itself, and a checksum.
+
+    Half the bytes of the hex line it replaces, which is what the sending
+    dongle's serial link had become bound by. There is no sync marker because
+    none would help: the dongle knows it is owed a fixed number of records and
+    each states its own length, so a reader that has lost its place cannot get
+    it back by scanning - which is why the checksum ends the run rather than
+    skipping a record.
+    """
+    if not 1 <= len(payload) <= 32:
+        raise ValueError("payload must be 1..32 bytes")
+    return bytes([len(payload)]) + payload + bytes([crc8(payload)])
+
+
 def parse_rx(line):
     """Parses 'RX t=<ms> p<pipe> len=<n> crc=<XX> <hex>' into
     (stamp_ms, pipe, data, intact).
@@ -327,6 +342,18 @@ class Dongle:
         if self._serial is None:
             raise RuntimeError("not connected")
         data = (line.rstrip("\r\n") + "\n").encode("ascii", errors="replace")
+        with self._write_lock:
+            self._serial.write(data)
+
+    def send_raw(self, data):
+        """Writes bytes with nothing added - no terminator, no encoding.
+
+        Only for a `txseq ... bin` payload stream, where the dongle is counting
+        bytes rather than looking for lines. Takes the same lock as send(), so
+        a payload record still cannot be braided into a command.
+        """
+        if self._serial is None:
+            raise RuntimeError("not connected")
         with self._write_lock:
             self._serial.write(data)
 
