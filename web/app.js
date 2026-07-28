@@ -683,7 +683,7 @@ function renderFrame(frame) {
     });
     group.tr.addEventListener("contextmenu", (e) => {
       e.preventDefault();
-      openCompare(index);
+      markCompare(index);
     });
     paintRow(group);
     tbody.appendChild(group.tr);
@@ -750,12 +750,22 @@ function select(index) {
   showFrameTab();
 }
 
-// Drawing the selected frame, separately from choosing it. Marking a second row
-// has to redraw this - the hint below changes - without also being a new
-// selection, which is what happened when it went through select().
+// Drawing the two panes, separately from choosing what goes in them. Marking a
+// second row has to redraw this without also being a new selection, which is
+// what happened when it went through select().
+//
+// With a second row marked the same two tabs show two frames instead of one:
+// Decoded compares the fields, Raw compares the bytes. That is what the tabs
+// were already for, and it means the comparison is read the same way and in the
+// same place as everything else - a dialog for it was a second home for one
+// half of the same question.
 function renderDetail() {
   const group = groups[selected];
   if (!group) return;
+  if (groups[compared]) {
+    renderCompare(group.frames[0], groups[compared].frames[0]);
+    return;
+  }
   const [head] = group.frames;
   const lines = [...head.detail];
   if (group.frames.length > 1) {
@@ -764,9 +774,7 @@ function renderDetail() {
         ? `${f.deviceMs - group.frames[i].deviceMs} ms` : "?");
     lines.push("", `  repeats   : ${group.frames.length} frames, ${gaps.join(" + ")} apart`);
   }
-  lines.push("", compared >= 0
-    ? "  a second row is marked — right-click either to open the comparison"
-    : "  ctrl-click another row to mark it, right-click one to compare");
+  lines.push("", "  ctrl-click or right-click another row to compare it with this one");
   $("detail").textContent = lines.join("\n");
   $("raw").textContent = head.hex.join("\n");
 }
@@ -781,40 +789,22 @@ function paintSelection() {
   if (groups[compared]) groups[compared].tr.classList.add("cmp");
 }
 
-// Ctrl-click: mark the other row, and say so where the detail already is. No
-// window yet - see the click handler above.
+// Ctrl-click or right-click: mark the other row, or unmark it. Both gestures do
+// the same thing now that there is nothing to open - the panes below change the
+// moment the mark does.
 function markCompare(index) {
   if (index === selected) return;          // a frame is not different from itself
   if (!groups[index] || !groups[selected]) return;
   compared = compared === index ? -1 : index;
   paintSelection();
-  renderDetail();                          // the hint below changes with it
+  renderDetail();
+  showFrameTab();
 }
 
-// Right-click: open it. On a row that is not marked yet, that row becomes the
-// second one - picking and opening in one gesture, for when the intent is
-// already clear.
-function openCompare(index) {
-  if (selected < 0 || !groups[selected]) return void select(index);
-  if (index !== selected && compared < 0) {
-    compared = index;
-    paintSelection();
-  }
-  if (compared < 0 || !groups[compared]) return;
-  renderCompare(groups[selected].frames[0], groups[compared].frames[0]);
-  $("compare").showModal();
-}
-
-// Ending it in one place, called from every way out. Hanging this on the
-// dialog's own `close` event would be tidier and does not work: in the browser
-// this is developed against, that event is never delivered - even a listener
-// added moments before calling close() does not fire. The row would stay marked
-// for a comparison that is no longer on screen.
 function endCompare() {
   compared = -1;
   paintSelection();
   renderDetail();
-  $("compare").close();
 }
 
 // Bytes of the two frames, side by side, with the ones that differ marked.
@@ -849,8 +839,6 @@ function renderCompare(a, b) {
     for (let i = off; i < Math.min(off + 8, width); i++) marks += differs(i) ? "^^ " : "   ";
     out.append(line(marks.trimEnd() + "\n\n", "diff"));
   }
-  $("cmp-bytes").replaceChildren(out);
-
   const offsets = [];
   for (let i = 0; i < width; i++) if (differs(i)) offsets.push(i);
   const rows = [
@@ -880,10 +868,15 @@ function renderCompare(a, b) {
       text.push(`  ${label}${mark}`, `    A  ${left}`, `    B  ${right}`);
     }
   }
-  $("cmp-summary").textContent =
-    `${offsets.length} of ${width} bytes differ`
-    + (offsets.length ? ` — at ${offsets.join(", ")}` : " — the two are identical");
-  $("cmp-fields").textContent = text.join("\n");
+  // The same headline over both panes, so whichever tab is open says what is
+  // being compared and how far apart the two are.
+  const headline = `  A ${a.time}   B ${b.time}   ·   `
+    + `${offsets.length} of ${width} bytes differ`
+    + (offsets.length ? ` at ${offsets.join(", ")}` : " — the two are identical");
+  $("detail").textContent = [headline, "", ...text, "",
+    "  ctrl-click or right-click the marked row again to stop comparing"].join("\n");
+  out.prepend(document.createTextNode(headline + "\n\n"));
+  $("raw").replaceChildren(out);
 }
 
 function rebuild(list) {
@@ -1201,19 +1194,6 @@ function init() {
   // Closing the dialog ends the comparison - Esc, the ✕ or the backdrop are
   // all the same statement, and leaving the second row marked afterwards would
   // be a selection with nothing to show for it.
-  $("cmp-close").addEventListener("click", endCompare);
-  // The form fills the dialog box, so a click landing on the dialog itself is
-  // outside it. Esc is handled here rather than left to the dialog: closing it
-  // and ending the comparison have to be the same act.
-  $("compare").addEventListener("click", (e) => {
-    if (e.target === $("compare")) endCompare();
-  });
-  $("compare").addEventListener("keydown", (e) => {
-    if (e.key === "Escape") {
-      e.preventDefault();
-      endCompare();
-    }
-  });
   $("apply").addEventListener("click", applySetup);
 
   // Start is about reception, not about configuration: the dongle keeps what it

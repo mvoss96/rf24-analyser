@@ -52,7 +52,8 @@ MAX_FRAMES = 5000
 #       warning restarts into the new code when clicked; the frame list filters
 #       by pipe and by sender, colours them apart once there are two to tell
 #       apart, hides columns that are in the way, pauses without touching the
-#       radio, compares two frames byte for byte, and stopped taking minutes to
+#       radio, compares two frames in the tabs that already show one, and
+#       stopped taking minutes to
 #       redraw a full history. What never arrived is counted once, in Python,
 #       rather than by two different methods on two sides of the wire.
 APP_VERSION = "1.1.0"

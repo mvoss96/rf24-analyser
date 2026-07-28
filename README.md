@@ -702,10 +702,19 @@ three repeats of one event sit ~4 ms apart, which per-second resolution hides.
 Selecting a row shows its **decoded fields** and its **hex dump**, one tab each
 rather than side by side: the strip is a few lines tall, and halving its width
 left neither half wide enough to read. Frames the decoder objected to are drawn
-in red. Ctrl-click a second row to mark it and right-click to open the
-comparison - marking and opening are separate, because a window that appears on
-the same click that picks a row takes the table away just as you were choosing
-in it. The log and the free-text command line share
+in red.
+
+**Ctrl-click or right-click a second row and those same two tabs compare two
+frames instead of showing one**: Decoded lines the fields up and marks the ones
+that differ, Raw puts the bytes over each other with `^^` under every pair that
+does not match, and both carry the same headline saying how far apart the two
+are. Comparing two receptions is what this tool exists for — invented frames
+showed up because two receivers disagreed — and it belongs in the same place and
+the same reading order as everything else. It was a modal dialog for one
+afternoon; a window is a second home for one half of the same question, and this
+way the byte view and the decoded view are one tab apart rather than one window
+apart. A length difference pads rather than stops the comparison, because that
+is a finding too. The log and the free-text command line share
 their own tab. A tab opened later is brought up to date: the server replays the
 greeting, the current state and the retained frames.
 

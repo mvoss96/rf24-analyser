@@ -239,37 +239,6 @@ input[type="text"], input:not([type]) {
    saying the same thing about the same thing. */
 .summary.silent { color: var(--danger); }
 
-/* --- compare dialog --- */
-
-/* Wide, because the two things being compared are wide: a field table and two
-   hex dumps. In the bottom pane this had four visible lines and a scrollbar,
-   which defeats the one thing it is for - seeing both at once. */
-dialog.compare {
-  width: min(1100px, calc(100vw - 24px));
-  max-height: calc(100vh - 48px);
-  padding: 0;
-  border: 1px solid var(--border-strong);
-  border-radius: 10px;
-  background: var(--surface);
-  color: var(--text);
-  box-shadow: 0 18px 48px rgba(0, 0, 0, .35);
-}
-dialog.compare::backdrop { background: rgba(0, 0, 0, .45); }
-.compare-body {
-  display: flex;
-  gap: 0;
-  align-items: stretch;
-  max-height: calc(100vh - 110px);
-}
-.compare-body .pane { flex: 1 1 50%; min-width: 0; overflow: auto; }
-.compare-body .pane + .pane { border-left: 1px solid var(--border); }
-.compare-body pre { margin: 0; padding: 10px 14px; font-size: 12px; line-height: 1.5; }
-/* Narrow windows: one under the other rather than two unreadable columns. */
-@media (max-width: 720px) {
-  .compare-body { flex-direction: column; max-height: calc(100vh - 110px); overflow: auto; }
-  .compare-body .pane + .pane { border-left: 0; border-top: 1px solid var(--border); }
-}
-
 /* --- setup dialog --- */
 
 /* A dialog, not a panel in the flow: settings are read and changed in bursts,
