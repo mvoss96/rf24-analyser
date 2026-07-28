@@ -115,6 +115,7 @@ NRF24ANALYSER fw=3.6.0 api=5 state=nohw hw=failed ce=8 csn=10 irq=2 led_rx=8 led
 | `scan off` | stop a live scan and resume whatever was running |
 | `repeats <0\|1>` | `0` suppresses identical back-to-back frames |
 | `tx <addr> <hex...> [ack\|noack] [x<n>] [gap=<ms>]` | transmit a payload (default `noack`), optionally `n` copies `gap` ms apart |
+| `txseq <addr> <count> [ack\|noack]` | read the next `count` lines as payloads and transmit them in order — [see below](#sending-more-than-one-frame-txseq) |
 | `rxmode <0..4>` | how a payload is taken out of the RX FIFO — diagnosis only, see below |
 | `rxdbg <0\|1>` | one `DBG` line per drain pass with the FIFO registers |
 | `regs` | dump the chip's registers by name |
@@ -258,6 +259,53 @@ listener on `rxmode 1` so any stale frame shows. None of it is a fix:
 The two variants that do stop the stale frames break reception instead, and both
 need the *sender* changed — which is not on offer when the sender is somebody's
 remote control. That leaves the flush.
+
+### Sending more than one frame: `txseq`
+
+`tx` costs a command and a reply per frame — about 7.8 ms, most of it serial
+round trip. `txseq` pays that once for a whole run:
+
+```
+> txseq 4354484D45 128 noack
+OK txseq ready count=128
+> <64 hex characters>          <- 128 lines, no command word, no reply
+...
+OK txseq sent=128/128 ack=no
+```
+
+Between `ready` and the closing line the dongle reads **payloads, not
+commands** — anything else typed there is transmitted, or ends the run with
+`stopped=bad payload`. Half a second of silence ends it too, so an abandoned
+run cannot swallow the commands that follow it. Unacknowledged runs report
+progress every 32 frames (`OK txseq at=<n>`).
+
+Nothing is added to the payloads. No sequence number, no length, no checksum:
+only the caller knows what its receiver expects, and framing invented here
+would describe a transfer this tool does not control.
+
+**`ack` changes both the speed and the meaning.** Acknowledged, the dongle
+confirms every frame and the host waits for that confirmation before writing
+the next payload — it has to, because a frame being retried keeps the dongle
+out of its serial port for longer than its input buffer can cover. That costs
+speed and buys certainty:
+
+| | per frame | of 4096 bytes, received |
+|---|---|---|
+| `noack`, full rate | 1.6 ms | ~40 % |
+| `ack` | 5.7 ms | 100 %, byte-for-byte |
+| one `tx` per frame | 20 ms | 100 % |
+
+The loss in the fast case is not the radio and not the host: it is the
+*receiving* dongle, which writes about 85 characters per frame to its serial
+port. At 500 kBaud that is roughly 1.7 ms — exactly what the fast sender
+leaves it. Send faster than the receiver can talk and the difference is simply
+gone. `ack` works because it slows the sender down to a rate the receiver can
+keep up with, and would still work if it did not, because a frame that is not
+acknowledged is retried.
+
+With `dpl=0` every frame is padded to `plsize`, so a transfer's last frame
+carries filler and the receiver has to know the real length. With `dpl=1` the
+lengths are exact and a file comes back out at its original size.
 
 ### The CE self-test
 
@@ -780,9 +828,35 @@ client's resume point backwards.
 | `GET /api/state` | one synchronous snapshot: connected, open port, state, decoder, `radio` (the parsed `info` block) with its `radioAge` in seconds, wiring, and `firmware` (the dongle's `fw`/`api` from the greeting, against the `api` this host speaks) |
 | `POST /api/connect`, `/api/disconnect`, `/api/command` | control; `command` with `"wait": true` blocks for and returns the firmware's OK/ERR reply |
 | `POST /api/burst` | transmit a frame sequence (`{"address", "frames": [{"payload", "repeat", "gap_ms", …}]}`), one awaited reply per entry |
+| `POST /api/send` | transmit a whole run through one [`txseq`](#sending-more-than-one-frame-txseq): `{"address", "payloads": [hex, …]}` or `{"address", "data": base64, "size": 1..32}`, plus `"ack"`. Answers `{"sent", "of", "bytes", "reply", "means"}` — `means` spells out what `sent` is worth, because without `ack` nothing confirms arrival. Progress arrives on the event stream as `{"type":"send"}`; `POST /api/send/cancel` stops a run |
 | `POST /api/restart` | answer, then replace this process with one running the code on disk, handing it the open port. Resets the dongle |
 | `POST /api/capture` | block for `seconds`, return the window's frames + stats |
 | `POST /api/parser` | switch decoder, returns the history re-decoded |
+
+### What a capture is, exactly
+
+Anyone reassembling a transfer out of captured frames needs to know what the
+capture is and is not:
+
+- **`raw` is the whole payload**, every byte the radio handed over, in hex. The
+  decoder's reading sits beside it and never replaces it — a frame no decoder
+  understands still carries its bytes.
+- **Frames are in arrival order**, as the dongle handed them out.
+- **Nothing is deduplicated** while `repeats 1` is set (the default). `repeats
+  0` suppresses identical back-to-back frames, which is a display convenience
+  and destroys exactly the information a transfer needs — leave it at `1`.
+- **`/api/frames` is capped at 5000** frames and drops the oldest beyond that.
+  `/api/capture` returns its whole window uncapped: for a long transfer, use
+  the capture window rather than reading back history.
+- **A frame whose checksum fails is kept but not decoded.** It arrives with
+  `flagged: true` and a `cells.data` saying it was corrupted between radio and
+  host, and its `raw` is still there — so it is visible and countable, but
+  never quietly reassembled into a file as if it were the bytes that were
+  sent. Check `flagged` before concatenating.
+
+What is *not* guaranteed is that everything transmitted was captured. Nothing
+in a passive receiver can promise that; see the loss table under
+[`txseq`](#sending-more-than-one-frame-txseq).
 
 ## Letting another agent drive the dongle (MCP)
 

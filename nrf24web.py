@@ -55,10 +55,18 @@ MAX_FRAMES = 5000
 #       by pipe and by sender, colours them apart once there are two to tell
 #       apart, hides columns that are in the way, pauses without touching the
 #       radio, compares two frames in the tabs that already show one, and
-#       stopped taking minutes to
-#       redraw a full history. What never arrived is counted once, in Python,
-#       rather than by two different methods on two sides of the wire.
-APP_VERSION = "1.1.0"
+#       stopped taking minutes to redraw a full history. What never arrived is
+#       counted once, in Python, rather than by two different methods on two
+#       sides of the wire.
+#
+# 1.2.0 sends a whole transfer in one request. /api/send takes a list of
+#       payloads or a block of base64 and hands it to the dongle as a single
+#       run, so a file no longer costs an HTTP call and a serial round trip per
+#       frame - 1.6 ms a frame instead of 7.8. Acknowledged runs are lockstep
+#       and arrive complete; unacknowledged ones are five times faster and
+#       mostly do not, which /api/send says outright in `means` rather than
+#       leaving the caller to assume `sent` means `arrived`.
+APP_VERSION = "1.2.0"
 
 # Python imports a module once and keeps it: editing nrf24_parsers.py while the
 # server runs changes nothing until the process is restarted. That cost a real
@@ -1243,8 +1251,12 @@ class Handler(BaseHTTPRequestHandler):
                 def progress(sent, of):
                     session.hub.publish({"type": "send", "sent": sent, "of": of})
 
+                address = payload.get("address")
+                if not address:
+                    raise ValueError("address is required: a transfer has to be "
+                                     "aimed at a receiver")
                 progress(0, total)
-                reply = session.send_sequence(payload["address"], payloads,
+                reply = session.send_sequence(address, payloads,
                                               ack=bool(payload.get("ack", False)),
                                               on_progress=progress)
                 sent = int(re.search(r"sent=(\d+)", reply).group(1))
