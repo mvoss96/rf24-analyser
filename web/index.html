@@ -125,6 +125,28 @@
   </div>
 </main>
 
+<!-- The comparison gets a dialog rather than the bottom pane: two hex dumps and
+     a field table do not fit in four visible lines, and the whole point is to
+     see both at once. Esc closes it, which also ends the comparison. -->
+<dialog id="compare" class="compare">
+  <header class="dialog-head">
+    <h2>Compare</h2>
+    <span id="cmp-summary" class="dim"></span>
+    <span class="spacer"></span>
+    <button id="cmp-close" class="btn ghost small" aria-label="Close">✕</button>
+  </header>
+  <div class="compare-body">
+    <div class="pane">
+      <div class="pane-title">fields</div>
+      <pre id="cmp-fields" class="mono"></pre>
+    </div>
+    <div class="pane">
+      <div class="pane-title">bytes</div>
+      <pre id="cmp-bytes" class="mono"></pre>
+    </div>
+  </div>
+</dialog>
+
 <dialog id="setup" class="setup">
   <!-- method=dialog closes on submit, so anything in here that is not "close"
        has to say type=button explicitly. -->

@@ -754,7 +754,6 @@ function select(index) {
   lines.push("", "  ctrl-click another row to compare it with this one");
   $("detail").textContent = lines.join("\n");
   $("raw").textContent = head.hex.join("\n");
-  setPaneTitles("decoded", "raw");
   showTab("detail");
 }
 
@@ -771,17 +770,22 @@ function paintSelection() {
 function compareWith(index) {
   if (index === selected) return;          // a frame is not different from itself
   if (!groups[index] || !groups[selected]) return;
-  compared = compared === index ? -1 : index;
+  if (compared === index) return void endCompare();
+  compared = index;
   paintSelection();
-  if (compared < 0) return void select(selected);
   renderCompare(groups[selected].frames[0], groups[compared].frames[0]);
-  showTab("detail");
+  $("compare").showModal();
 }
 
-function setPaneTitles(left, right) {
-  const titles = document.querySelectorAll(".pane-title");
-  titles[0].textContent = left;
-  titles[1].textContent = right;
+// Ending it in one place, called from every way out. Hanging this on the
+// dialog's own `close` event would be tidier and does not work: in the browser
+// this is developed against, that event is never delivered - even a listener
+// added moments before calling close() does not fire. The row would stay marked
+// for a comparison that is no longer on screen.
+function endCompare() {
+  compared = -1;
+  paintSelection();
+  $("compare").close();
 }
 
 // Bytes of the two frames, side by side, with the ones that differ marked.
@@ -816,7 +820,7 @@ function renderCompare(a, b) {
     for (let i = off; i < Math.min(off + 8, width); i++) marks += differs(i) ? "^^ " : "   ";
     out.append(line(marks.trimEnd() + "\n\n", "diff"));
   }
-  $("raw").replaceChildren(out);
+  $("cmp-bytes").replaceChildren(out);
 
   const offsets = [];
   for (let i = 0; i < width; i++) if (differs(i)) offsets.push(i);
@@ -847,15 +851,10 @@ function renderCompare(a, b) {
       text.push(`  ${label}${mark}`, `    A  ${left}`, `    B  ${right}`);
     }
   }
-  $("detail").textContent = [
-    `  ${offsets.length} of ${width} bytes differ`
-    + (offsets.length ? `, at ${offsets.join(", ")}` : " — the two are identical"),
-    "",
-    ...text,
-    "",
-    "  ctrl-click the marked row again to stop comparing",
-  ].join("\n");
-  setPaneTitles("A vs B", "bytes");
+  $("cmp-summary").textContent =
+    `${offsets.length} of ${width} bytes differ`
+    + (offsets.length ? ` — at ${offsets.join(", ")}` : " — the two are identical");
+  $("cmp-fields").textContent = text.join("\n");
 }
 
 function rebuild(list) {
@@ -881,10 +880,9 @@ function rebuild(list) {
   scrollToEnd();
   // The rows are new objects, so the two indices point at nothing meaningful.
   selected = -1;
-  compared = -1;
+  endCompare();   // clears the second index, unmarks the rows, shuts the dialog
   $("detail").textContent = "";
   $("raw").textContent = "";
-  setPaneTitles("decoded", "raw");
 }
 
 function showTab(name) {
@@ -1162,6 +1160,23 @@ function init() {
   // describing the dongle. An edit that was not applied changed nothing, and a
   // field left showing it would be the old lie in a smaller box.
   $("setup").addEventListener("close", seedSetup);
+
+  // Closing the dialog ends the comparison - Esc, the ✕ or the backdrop are
+  // all the same statement, and leaving the second row marked afterwards would
+  // be a selection with nothing to show for it.
+  $("cmp-close").addEventListener("click", endCompare);
+  // The form fills the dialog box, so a click landing on the dialog itself is
+  // outside it. Esc is handled here rather than left to the dialog: closing it
+  // and ending the comparison have to be the same act.
+  $("compare").addEventListener("click", (e) => {
+    if (e.target === $("compare")) endCompare();
+  });
+  $("compare").addEventListener("keydown", (e) => {
+    if (e.key === "Escape") {
+      e.preventDefault();
+      endCompare();
+    }
+  });
   $("apply").addEventListener("click", applySetup);
 
   // Start is about reception, not about configuration: the dongle keeps what it
