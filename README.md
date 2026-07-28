@@ -285,6 +285,601 @@ Nothing is added to the payloads. No sequence number, no length, no checksum:
 only the caller knows what its receiver expects, and framing invented here
 would describe a transfer this tool does not control.
 
+#### How fast an acknowledged transfer goes
+
+4096 bytes, verified byte-for-byte at the receiver each time:
+
+| air rate | observer | ms/frame | kB/s |
+|---|---|---|---|
+| 250 kbps | `text` | 4.44 | 7.0 |
+| 1 Mbps | `bin` | 1.88 | 16.7 |
+| 2 Mbps | `bin` | **1.74** | **18.0** |
+
+Three things had to be right, and each was measured rather than assumed.
+
+**A window, not lockstep.** Waiting for every frame to be confirmed before
+writing the next put a whole host round trip between frames - at 2 Mbps, 4.42
+ms a frame of which 0.35 ms was air. Three payloads in flight closes that gap
+and still cannot overflow the dongle's 256-byte input buffer, which holds three
+69-byte payload lines but not four.
+
+**The air rate is worth 1.3 ms, once.** 250 kbps to 1 Mbps saved 1.26 ms a
+frame; 1 Mbps to 2 Mbps saved 0.04. Past the first step the air is no longer
+what costs.
+
+**The observer is not the transfer.** At 1 Mbps with a readable-line observer
+the run reported 128/128 acknowledged while only 60 frames reached the host -
+the chip accepted and acknowledged them, and the firmware then discarded them
+at the flush. Reassembling that gives a corrupt file and no error anywhere. A
+dongle watching a fast transfer needs [`format bin`](#format-bin-the-same-frames-in-half-the-time);
+otherwise what fails is the measurement, and it fails silently.
+
+That last point cuts both ways, and it is the good news about acknowledgement:
+a receiver whose FIFO is full stops acknowledging, so the sender slows to what
+the receiver can absorb. An acknowledged transfer paces itself. That is why the
+250 kbps row above is byte-perfect even with a readable-line observer - the
+sender was being held back to 4.44 ms a frame by the observer's own limit.
+
+What bound next was the serial line to the sending dongle, and `txseq ... bin`
+removed it. A payload arrives as a record - one length byte, the payload, one
+checksum - instead of two hex characters per byte. No sync marker, because none
+would help: the dongle knows it is owed a fixed number of records and each
+states its own length, so a failed checksum ends the run rather than
+transmitting a guess. The host asks for `bin` and falls back to hex when the
+firmware answers `ERR unknown key`, which is the whole negotiation.
+
+Halving the payload was worth less than it looks until the confirmations were
+counted too. Measured at 2 Mbps, 512 frames:
+
+| | ms/frame | kB/s |
+|---|---|---|
+| hex, no acknowledgement | 1.50 | 20.8 |
+| **binary**, no acknowledgement | **0.79** | **39.5** |
+| binary, acknowledged, confirmed every frame | 1.55 | 20.2 |
+| binary, acknowledged, confirmed every third | **1.32** | **23.6** |
+
+The payload halved exactly as arithmetic said. But a confirmation the host has
+to wait for cost 0.76 ms on a 0.79 ms frame - it is a round trip, not sixteen
+bytes. Confirming every third frame instead of every one recovers most of that,
+and stays safe because a binary run's window is six records where a hex run's
+is three: the same 256-byte buffer, smaller records.
+
+Where that leaves a transfer, against 5.72 ms a frame and 5.5 kB/s when it was
+first measured:
+
+| | ms/frame | kB/s |
+|---|---|---|
+| 250 kbps | 2.74 | 11.4 |
+| 2 Mbps | **1.32** | **23.6** |
+
+#### Everything else that was tried
+
+The remaining levers were measured and most of them did nothing. Written down
+so they are not tried again.
+
+**Window against confirmation interval**, 512 frames at 2 Mbps, ms per frame:
+
+| window | conf=1 | conf=2 | conf=3 | conf=4 | conf=6 |
+|---|---|---|---|---|---|
+| 3 | 1.71 | 1.85 | 2.05 | – | – |
+| 6 | 1.54 | 1.41 | 1.33 | 1.30 | 1.63 |
+| 7 | 1.60 | 1.39 | 1.32 | **1.29** | 1.45 |
+
+Both directions cost. Confirming every frame is a round trip per frame;
+confirming too rarely leaves the host stalled with a full window. A window of
+three cannot be rescued by any interval, which is why the hex path is slower
+than the record path for a reason beyond its byte count. Seven and four are the
+defaults now, and `conf=` on the command exposes the axis because the right
+value is not derivable.
+
+**1 MBaud is a net loss.** The sending line is what binds, so quadrupling it
+should have helped. Measured: 24.4 kB/s at 500000 became **5.0 kB/s** at
+1000000. At about one corrupted byte in a hundred lines a record fails its
+checksum often enough that the run spends its time being resumed - five times
+in 512 frames - and the capture becomes unreliable as well, because the
+observing dongle is reading at the raised rate too. 500000 stays.
+
+**Batching the writes did nothing.** Handing the dongle a windowful of records
+in one `write` rather than one call per record measured 1.28 ms a frame either
+way. The syscall was not the cost, and the change was reverted rather than kept
+for tidiness.
+
+**A bigger input buffer and a bigger window did nothing.** The obvious reading
+of the gap below was that the host stalls waiting for a confirmation with the
+window full, so the serial receive buffer went to 512 bytes and the window to
+fourteen records. Measured across windows of 7, 10, 12 and 14: 1.30 to 1.33 ms
+a frame, indistinguishable. The window was never the constraint, and the buffer
+came back down rather than spend a quarter of the ATmega's RAM on nothing.
+
+#### How close this is to the serial line, and what the rest is
+
+At 500000 baud, 8N1, a byte costs 20 us. An acknowledged frame puts 34 bytes on
+the wire outbound and about four inbound, so the line's own floor is **0.68 ms
+a frame - 47 kB/s of payload**. Against that:
+
+| | ms/frame | share of the line |
+|---|---|---|
+| unacknowledged | 0.79 | **86 %** |
+| acknowledged | 1.29 | 51 % |
+
+The unacknowledged path is essentially at the wire. The acknowledged one is at
+half, and the missing half is not the host and not the buffer: it is that the
+firmware does not overlap the air with the wire. It reads a record, transmits,
+waits for the acknowledgement, and only then reads the next - while the host,
+thanks to the window, wrote the next seven long ago.
+
+That is measurable rather than argued. Going from 2 Mbps to 250 kbps costs
+1.45 ms a frame; the arithmetic for one 329-bit packet and its acknowledgement
+predicts 1.41 ms. Nothing hides behind anything - the extra air time shows up
+in full, which is what "not overlapped" means.
+
+Closing it means keeping the transmit FIFO fed under acknowledgement, the way
+the unacknowledged path already does, and that has a price this tool should not
+pay quietly: `TX_DS` is a flag rather than a counter, and on `MAX_RT` there is
+no register saying how many packets are still queued behind the failed one. So
+`sent` would stop being exact at the moment a frame fails - and `sent` is what
+[resume](#picking-up-where-a-broken-run-stopped) trusts to continue without
+sending anything twice. The failure would be duplicates rather than gaps, but
+it would be a guarantee traded for about sixty per cent more speed.
+
+So a transfer settles at **1.29 ms a frame and 24.3 kB/s** acknowledged, which
+held from 4 kB to 64 kB (2048 frames in 2.6 seconds, every frame confirmed,
+byte-for-byte identical). Unacknowledged and binary reaches 0.79 ms and
+39.7 kB/s, which is the sending dongle's serial line and nothing else - but
+at that rate the receiving dongle sees about a seventh of it.
+
+#### Which air rate is actually used
+
+**Re-measured on every change that could move it, committed with that change,
+and always carrying the difference to the previous measurement.** A stale table
+here is worse than none - which lever is worth pulling next has flipped several
+times in this project purely because a number moved. And the delta is the half
+that matters: several changes measured as *exactly zero*, which is the finding
+that stops the same idea being tried a second time.
+
+512 frames of 32 bytes, both dongles. A packet is 329 bits on air and its
+acknowledgement 73 more; the serial line's own limit is a 34-byte record at
+20 us a byte, so 0.68 ms a frame - **47 kB/s whatever the radio does**.
+
+Read "air used" against the right denominator: acknowledged, the air's own floor
+is not the packet but the whole exchange - 1316 us of packet, 292 of
+acknowledgement and two 130 us turnarounds, so 1868 us at 250 kbps. There is no
+such thing as "the full 250 kbps with acknowledgement"; 100 % of *that* is what
+the column measures. And even unacknowledged only 256 of the 329 bits are
+payload, so 78 % of the modulation rate is the ceiling on useful data before
+anything else is counted.
+
+**Transmit power is not a lever to reach for.** Measured on one channel, three
+interleaved rounds: `low` 1.96 ms with 1-2 retransmissions, `high` 2.06 with
+16-31, `max` **6.57 with 781-849**, `min` 2.59 with ~105. The dongles sit close
+together and full power overloads the receiver's front end; `low` is both the
+default and the optimum here.
+
+Now at **fw 3.16.0**, three interleaved rounds per row, median. **Each rate on
+its own best channel** — 250 kbps on 14, 1 and 2 Mbps on 88 — because the choice
+turned out to be worth more than anything in the firmware and to differ by rate:
+channel 14 is the quietest for 250 kbps and among the worst for 2 Mbps, the
+faster rates occupying more of the band. Receiving side in `format bin`, so that
+what arrived can be checked. The Δ is against fw 3.14.0 on the same channels.
+
+| air rate | | measured | Δ ms | air used | wire used | seen by observer | Δ |
+|---|---|---|---|---|---|---|---|
+| 250 kbps | acknowledged | 2.00 ms, 16.0 kB/s | +0.04 | 93 % | 34 % | 512/512 | +0 |
+| 250 kbps | not | 1.33 ms, 24.1 kB/s | +0.00 | 99 % | 51 % | 506/512 | +5 |
+| 1 Mbps | acknowledged | 0.98 ms, 32.7 kB/s | +0.00 | 68 % | 69 % | 512/512 | +0 |
+| 1 Mbps | not | 0.87 ms, 36.7 kB/s | +0.02 | 38 % | 78 % | 454/512 | **+14** |
+| 2 Mbps | acknowledged | 0.95 ms, 33.7 kB/s | −0.06 | 49 % | 72 % | 512/512 | +0 |
+| 2 Mbps | not | 0.88 ms, 36.4 kB/s | +0.01 | 19 % | 77 % | 447/512 | **+7** |
+
+The sending times stand still, which is right and has been right three times
+running: that path is bound by the serial line, so neither a shorter record nor
+faster SPI shows up in it. What moves is the last column. Against fw 3.15.0 the
+observer gained another 14 and 7 frames from CSN by direct port write, and the
+acknowledged rows needed fewer retransmissions again (1 Mbps 71 → 64, 2 Mbps
+133 → 125), because a receiver that keeps up goes on acknowledging.
+
+Cumulative over the two changes: on the rows where the observer is the
+constraint, **1 Mbps 426 → 454 of 512 and 2 Mbps 422 → 447**.
+
+Against a **silent** receiver the same six rows read 1.31 / 1.99 / 0.88 / 0.90 /
+0.87 / 0.89 ms with 512 of 512 seen everywhere except 250 kbps unacknowledged,
+where about ten frames are lost on air rather than in the dongle. Acknowledgement
+costs 4 % at 1 and 2 Mbps once the channel is clean — the 1.04 ms measured on a
+mediocre channel was retransmissions and nothing else.
+
+#### The last quarter of the wire, and three things that do not get it
+
+A record needs 0.68 ms on the line and a run measures about 0.88. That quarter
+resisted everything aimed at it:
+
+| tried | result |
+|---|---|
+| window from 7 to 14 records | 0.88 → 0.87 ms |
+| serial receive buffer 256 → 512 bytes | 0.90 → 0.89 ms |
+| one `write` per window instead of per record | 0.88 → 0.87 ms |
+
+All three are within the noise of the six rows above, and all three were
+reverted rather than kept: a 512-byte buffer is a quarter of the ATmega's RAM,
+and batching is code with nothing to show for itself. Confirming *less* often
+is actively worse - at `conf=16` a run takes 4.2 ms a frame, because the host
+then sits with a full window waiting.
+
+What is left was guessed at as host-side scheduling - Python's reaction to a
+confirmation, and the USB frame the CH340 is served in. Half of that guess was
+wrong, and [measuring the same wire without the analyser on
+it](#the-same-wire-without-the-analyser) is what showed it: Python costs nothing
+measurable, and 0.09 ms of the 0.17 is spent before any of our code runs. The
+sending path is therefore treated as finished at **75-80 % of the serial line**,
+which is itself a fifth of what the radio can do.
+
+**The confirmation repeat is a real fix even though it moved no number here.** A host whose
+window is full cannot write another payload until one is confirmed, so a
+confirmation damaged on the wire used to deadlock the run until the dongle's
+500 ms quiet timer killed it - one bad byte on the return path costing an entire
+transfer. The dongle now says the count again after 25 ms of silence, and
+because that count is a running total rather than a tick, hearing it twice is
+harmless. At 1 MBaud, where damaged bytes are common, an acknowledged 512-frame
+run went from ending at 279/512 to completing byte-for-byte.
+
+Which finally closes the serial rate, for the third time and now on its own
+terms: 1 MBaud completes but is *slower* - 1.14 ms a frame against 1.01 - and
+unacknowledged it still dies on a damaged payload record, which has no resume.
+500000 stays.
+
+**But the observer in those rows is itself the constraint**, and `format none`
+is what shows it. A dongle on the receiving end of a transfer does not need to
+write every frame out; writing costs it about 800 us a frame, and a receiver
+that falls behind stops acknowledging, so the sender retransmits.
+
+| air rate, acknowledged | receiver prints (`bin`) | receiver silent (`none`) |
+|---|---|---|
+| 250 kbps | 1.99 ms, 7 retransmissions | 1.99 ms, 7 |
+| 1 Mbps | 1.00 ms, **78** | **0.87 ms**, **3** |
+| 2 Mbps | 1.03 ms, **141** | **0.87 ms**, **0** |
+
+So the retransmissions were never the air. They were the receiver's serial
+port, arriving back at the sender as backpressure - which is the acknowledged
+link doing exactly what it should, pacing itself to what the far end can take.
+Against a receiver that is not narrating, an acknowledged transfer runs at
+**0.87 ms a frame, 35.9 kB/s** - within a whisker of the unacknowledged 0.83,
+and at 78 % of the serial line. Acknowledgement has stopped costing anything
+worth measuring.
+
+At 250 kbps it changes nothing, because there the air binds and no amount of
+silence at the far end helps.
+
+Read the two "used" columns together: above 250 kbps the air stops binding and
+the serial line takes over. Both directions are now within a fifth of that
+line, and the one measure that would widen it - a faster serial rate - has been
+measured twice as a net loss, most recently at 1.10 ms a frame against 1.00.
+
+#### The same thing without the UART
+
+Every figure above measures the radio and the serial line together, because the
+payload arrives over the serial line - and that turned out to be what binds.
+`txtest` removes it: the payload comes from flash with a frame index stamped
+into it, so nothing crosses the UART per frame. Point it at a receiver in
+`format none` and there is no UART in the path at all.
+
+2000 frames of 32 bytes, timed by the sending firmware's own clock:
+
+| air rate | | us/frame | kB/s | air allows | received |
+|---|---|---|---|---|---|
+| 250 kbps | not acknowledged | 1284 | 24.3 | 1316 us | 1990/2000 |
+| 250 kbps | acknowledged | 1981 | 15.8 | 1738 us | 2000/2000, 34 retransmissions |
+| 1 Mbps | not acknowledged | 321 | **97.4** | 329 us | 1999/2000 |
+| 1 Mbps | acknowledged | 678 | 46.1 | 532 us | 2000/2000, **0** |
+| 2 Mbps | not acknowledged | **161** | **194.1** | 164 us | 1420/2000 |
+| 2 Mbps | acknowledged | 473 | 66.1 | 331 us | 2000/2000, **0** |
+
+Unacknowledged, the radio sits **on the air's own limit at every rate** - 161 us
+against a calculated 164. The chip, the SPI bus and the drain loop were never
+the constraint and this says so outright.
+
+Set against the same transfers driven over serial:
+
+| | through the UART | radio only | the UART costs |
+|---|---|---|---|
+| 2 Mbps, not acknowledged | 37.5 kB/s | 194.1 kB/s | **5.2x** |
+| 2 Mbps, acknowledged | 35.9 kB/s | 66.1 kB/s | 1.8x |
+| 1 Mbps, not acknowledged | 37.5 kB/s | 97.4 kB/s | 2.6x |
+
+So the entire optimisation above - records instead of hex, a window, pipelining
+- was work on the host link, and what lies behind it is five times larger. That
+is the honest shape of this dongle: **a radio that can do 194 kB/s behind a
+serial port that can do 47.**
+
+The receiving side has a ceiling of its own, and the 2 Mbps unacknowledged row
+is where it shows: 1420 of 2000, at a rate the sender held for the other five
+rows. 1420 frames over 322 ms is 4400 a second, so a dongle can take a frame
+off the radio and out of the FIFO in about 226 us when it prints nothing at all
+- roughly 141 kB/s. Acknowledgement hides this completely, which is what the
+zero retransmission counts mean: the link paced itself to the receiver without
+losing anything.
+
+#### Is 250 kbps actually exhausted, with and without acknowledgement
+
+The table above says 250 kbps is where the air binds rather than the wire, which
+makes it the one rate where the question "are we using all of it" has a clean
+answer. Measured on channel 76 at address `42:54:48:4D:45` - away from the
+BTHome sender that transmits on channel 90 continuously, because a third party
+on the same channel and address would be measured along with everything else.
+
+512 frames over the serial line, against `txtest`'s 1000 frames with no serial
+line in the path at all:
+
+| | radio only | over the UART at 500000 baud | the UART costs |
+|---|---|---|---|
+| not acknowledged | 1.287 ms | 1.31 ms | ~25 us, 2 % |
+| acknowledged | 1.95-2.09 ms | 2.05 ms | nothing measurable |
+
+**Unacknowledged, 250 kbps is exhausted.** 1.31 ms a frame against 1.316 ms of
+calculated air time, and the serial line - which needs 0.68 ms for the same
+frame - is not close to binding.
+
+**Acknowledged, what is left is retransmissions rather than anything a program
+can change.** The acknowledged cycle is 1316 us of packet, 292 us of
+acknowledgement and two 130 us turnarounds, so 1868 us; a run measures about
+2050. Fifteen `txtest` runs at five different retransmit delays put a number on
+the difference: per-frame time tracks the retransmission count almost exactly,
+at **2169 us per retransmission**, and extrapolating to none gives **1952 us** -
+within 5 % of the arithmetic.
+
+The auto-retransmit delay looked like a lever and is not. A first pass suggested
+`retries=750,15` was worth 6 % over the default 1500 us; repeating it three
+times per setting showed the retransmission count varying eight-fold *within* a
+setting, and the apparent win disappeared:
+
+| ard | us/frame, three runs | retransmissions |
+|---|---|---|
+| 500 us | 2107, 2104, 2263 | 85, 86, 164 |
+| 750 us | 2178, 2342, 2238 | 109, 184, 134 |
+| 1000 us | 2280, 2213, 2011 | 140, 113, 31 |
+| 1250 us | 2068, 1995, 1956 | 49, 22, 8 |
+| 1500 us | 2285, 2003, 2125 | 117, 23, 64 |
+
+The spread within one setting is larger than the spread between settings, so
+this measures the room, not the parameter. `retries` stays at 1500,15.
+
+> One discrepancy is left open rather than smoothed over. Unacknowledged,
+> `txtest`'s own clock says **1287 us** a frame where 329 bits at 250 kbps needs
+> **1316 us** - 2 % *below* what the arithmetic says is possible, so one of the
+> two is wrong. It is not the ATmega's clock: the serial bench above has the
+> device and the host timing the same 32 kB transfer independently, and they
+> agree to 0.3 %. Either the packet is shorter than 329 bits or the chip's
+> "250 kbps" is not exactly 250 kbps. Two percent does not change any conclusion
+> here, but it is not understood.
+
+#### The same wire without the analyser
+
+`txtest` takes the UART out to measure the radio. This does the opposite. A
+second firmware, `bench/serialbench`, has no radio and no protocol in it at all:
+it sources bytes, sinks bytes, echoes bytes, and acknowledges every k-th byte -
+which is the shape `txseq ... bin conf=` has, minus everything else the analyser
+is doing. Whatever that firmware cannot do, the analyser certainly cannot.
+
+Driven from `bench/serialtest.py` at 500000 baud, 32 kB a run:
+
+| | measured | of the line |
+|---|---|---|
+| dongle to host | 50.0 kB/s | **100 %**, not one wrong byte |
+| host to dongle, 34-byte writes | 44.7 kB/s | 89 % |
+| host to dongle, 4096-byte writes | 45.4 kB/s | 91 % |
+
+The direction that carries a transfer is the one that falls short, and it falls
+short by about the same amount whatever it is asked: block size barely moves it,
+and a 64 kB driver buffer moves it not at all - the fourth null result for
+buffer sizes in this file.
+
+Which finally puts a number on the last quarter of the wire:
+
+| | ms per 34-byte record |
+|---|---|
+| what the line needs | 0.68 |
+| an empty firmware | 0.77 |
+| the analyser | 0.85 |
+
+Of the 0.17 ms between the analyser and arithmetic, **0.09 is gone before any of
+our code runs**, and 0.08 is ours. The sending path is at 90 % of a firmware
+that does nothing.
+
+**It is not Python.** The same four measurements, written again in C++ against
+the raw Win32 calls that pyserial wraps, agree to the third digit in every
+row - 50.1 kB/s reading, 44.7 and 45.4 writing, 0.77 ms a record, 1.33 ms for
+the round trip. C++ can also do the one thing pyserial cannot, keeping eight
+writes outstanding so the driver never waits for the next buffer: 44.8 kB/s
+against 44.7. The gap is below the Win32 API, not above it.
+
+**A round trip costs 1.33 ms.** One byte out and one back, and the same at every
+rate - 1.32 ms at 1 MBaud, 1.43 at 250 kbps - against 40 us of actual wire. That
+is USB, and it is why the window matters and the confirmation interval does not:
+a window of 7 records keeps 4.8 ms in flight and hides the round trip
+completely, while a window of 1 pays it every record and takes 2.54 ms instead
+of 0.77.
+
+It also settles the serial rate for the fourth time, now with a cause instead of
+a symptom:
+
+| baud | dongle to host | host to dongle |
+|---|---|---|
+| 250000 | 100 %, clean | 100 %, clean |
+| 500000 | 100 %, clean | 89-91 %, clean |
+| 1000000 | full speed, **23000-31000 damaged bytes in each of five runs** | 70-77 %, clean |
+| 2000000 | unusable | - |
+
+At 1 MBaud the right *number* of bytes arrives - none missing, timing exact -
+with the wrong contents, and only in the direction dongle to host. The other
+direction is faultless, which means the two clocks agree: a rate mismatch would
+break the working direction as well. C++ sees identical damage. And the lockstep
+says the same thing from a third angle, by stalling - what comes back damaged is
+the acknowledgements.
+
+#### The Windows driver, cleared - and the trap in clearing it
+
+The dongle was bound with usbipd and attached to WSL2, where Linux's `ch341`
+driver takes over and WCH's Windows driver is out of the path entirely. The same
+`bench/serialtest.py`, unchanged, against the same dongle.
+
+Read naively, the result says Linux wins:
+
+| | Windows | WSL2 / `ch341` |
+|---|---|---|
+| write, host's clock | 721 ms (91 %) | **675 ms (97 %)** |
+| read, host's clock | 655 ms (100 %) | **617 ms (106 %)** |
+
+**That 106 % is the tell.** Reading 32768 bytes off a 500000-baud line cannot take
+less than 655 ms, so the second column is not a faster wire, it is a worse clock.
+usbip returns from `write()` once the request is queued rather than once the
+bytes have left, and it hands reads over in batches.
+
+The dongle's own clock settles it, and it is the reason `serialbench` reports its
+own timing at all:
+
+| device says | Windows | WSL2 |
+|---|---|---|
+| write 32 kB at 500000 | 723-724 ms | **723 ms** |
+| write 32 kB at 1 MBaud | 428 ms | **428 ms** |
+| read 32 kB at 500000 | 655 ms | **655 ms** |
+
+Identical, to the millisecond. The bytes cross the wire exactly as they did
+before; only the host's idea of when it finished changed. And 1 MBaud corrupts
+the same way under Linux - every read run damaged, 14700 to 30300 bytes wrong out
+of 32768, with the write direction clean at the same 428 ms.
+
+So **the Windows driver is not the cause**, of either finding. The missing 9-11 %
+in the write direction and the 1 MBaud corruption are below both drivers: the
+CH340 itself, or the USB scheduling underneath it. Two operating systems, three
+host programs, one answer.
+
+usbip's own cost is worth recording so nobody mistakes it for a result: a
+one-byte round trip goes from 1.33 ms to 2.09 ms, and the lockstep figures under
+WSL are noise for the same reason the throughput ones are.
+
+What remains untried is a **CP210x on the same host** - a different bridge chip
+with a different vendor's driver, where reaching 100 % would convict the CH340
+and stopping at 91 % would convict the host's USB stack.
+
+> Binding a device with usbipd makes Windows re-enumerate it, and it comes back
+> with a **new COM number** each time - COM18 became COM35, then COM36. The
+> number is set in the device's `PortName` under
+> `HKLM\SYSTEM\CurrentControlSet\Enum\...\Device Parameters`, or through Device
+> Manager under Port Settings, Advanced.
+
+#### Where the RAM goes, and 324 bytes that were not paying rent
+
+An ATmega328P has 2048 bytes. At fw 3.15.0 the firmware held 1496 of them, and
+the question of what could be spent on new capability was really the question of
+what the existing 1496 were for. From the ELF, not from guessing:
+
+| | bytes | |
+|---|---|---|
+| `Serial` | 541 | two 256-byte ring buffers and the object |
+| `RadioController` | 303 | of which **126 is the scan histogram**, 32 the repeat filter, 36 the pipe addresses |
+| `CommandParser` | 154 | a 128-byte line buffer and its state |
+| the register-name table | 198 | 57 bytes of pointers **and the nineteen names themselves** |
+
+The serial buffers are a quarter of the chip on purpose - 256 out so
+`Serial.print` does not block while the RX FIFO fills, 256 in because an
+85-character `tx` line does not fit the Arduino default of 64 and a command
+arriving during a transmit lost its tail.
+
+The other two were paying no rent at all:
+
+- **The scan's per-channel counters are now taken for the duration of a scan.**
+  A scan retunes the radio, so it can never overlap with receiving; keeping 126
+  bytes reserved permanently for something that runs for a few seconds was the
+  single worst trade in the file. During a scan the total is exactly what it
+  always was, and the resting state is 126 bytes better. It is the only
+  allocation this firmware makes and the same pair makes and releases it, so
+  there is nothing to fragment - and `scan live` gained the one way it can fail,
+  which it reports.
+- **The register-name table moved to flash.** It cost 198 bytes of RAM, not the
+  57 the symbol table shows: string literals live in RAM on this architecture
+  unless they are told otherwise, so the nineteen names were there too. For a
+  diagnostic command that prints them on request.
+
+**1496 → 1172 bytes**, and 876 free where 552 were. Nothing on the transmit or
+receive path was touched, and a check run says so: 2 Mbps unacknowledged with the
+receiver printing measures 0.88 ms a frame and 439 of 512, against 0.87 and 440
+before; padded payloads stay at 512 of 512.
+
+#### CSN, and the difference between an Arduino call and a register
+
+`digitalWrite` looks up the port and bit for a pin in three PROGMEM tables,
+checks whether a timer owns the pin, and masks interrupts around the write. That
+is about 4 us, and a frame comes out of the FIFO through four SPI transactions,
+so eight of them. The pin stays configurable - only the translation stops
+happening a hundred thousand times a second, because the port and bit are
+resolved once in `hwset`.
+
+| | `us_in` | seen at 2 Mbps, receiver printing |
+|---|---|---|
+| `digitalWrite` on CSN | 223 us | 439-441 of 512 |
+| **direct port write** | **191 us** | **449-454 of 512** |
+| plus `SPCR` written directly instead of `SPI.beginTransaction` | 191 us | 449-453 |
+
+The third row is a null result and was reverted. Without a registered interrupt
+`SPI.beginTransaction` compiles to the same two register writes on this
+architecture, so hand-rolling them buys exactly nothing and gives up the one
+thing the library call exists for.
+
+Of the 191 us that remain, about 39 are the bus clocking 37 bytes at 8 MHz. Most
+of the rest is `SPI.transfer` polling until each byte is done, and that is
+inherent: the ATmega's SPI is not double-buffered, so every byte is written,
+waited for and read. There is no third layer to peel.
+
+#### How much of it is Arduino
+
+The SPI clock was at 4 MHz where the chip allows 10 and the ATmega can drive 8.
+Raising it is one line, and it is also the cleanest way to separate bus time
+from library overhead - halving the clock rate halves the former and leaves the
+latter alone.
+
+`us_in`, the drain loop's own measure of everything up to the flush, fell from
+**190 to 143 us** a frame. Of those 143, about 41 are the bus actually clocking
+41 bytes. **The other hundred are Arduino**: `digitalWrite` on CSN costs some
+4 us and there are two per transaction, plus `beginTransaction`,
+`endTransaction`, and a polling loop per byte. Direct port writes would take
+most of that back.
+
+But it is not on the critical path of anything measured here. A transfer ran at
+1.28 ms a frame before the change and 1.28 ms after - the sending side is bound
+by the serial line and by air that does not overlap it, and 47 us against
+1290 does not show. The receive path gained the 47 us against a per-frame cost
+of some 830, most of which is serial output.
+
+So the honest ranking of what is left, by measured headroom rather than by how
+interesting it is:
+
+| | worth | blocked on |
+|---|---|---|
+| overlap air with wire on the acknowledged path | 1.29 → ~0.85 ms | the exactness of `sent` |
+| drop the per-payload flush on the receive path | 2.4 → 0.83 ms received | reproducing the duplicate fault |
+| direct port writes instead of `digitalWrite` | ~60 us a frame | nothing, but it is not binding |
+| a bigger payload | – | 32 bytes is the chip's maximum |
+| a faster serial rate | negative | measured: 1 MBaud costs more than it saves |
+| the write direction's missing 9-11 % | 0.85 → 0.77 ms | not reachable from here: [identical from Python and from C++](#the-same-wire-without-the-analyser) |
+
+The clock stays at 8 MHz because it is free and correct, not because it helped.
+
+#### Picking up where a broken run stopped
+
+An acknowledged run reports how many frames the radio confirmed, and a
+confirmed frame is one the receiver has. So a run that ends early continues
+from exactly there, with nothing sent twice and nothing skipped, up to
+`SEND_RETRIES` times. The reply then carries ` resumed=<n>`.
+
+This is what would make a raised serial rate survivable, and measuring it is
+how the rate was shown not to be worth raising. It earns its place anyway: a
+record whose checksum fails is otherwise a whole transfer lost.
+
+**Do not verify a transfer from the capture.** Sixteen kilobytes sent three
+times at 250 kbps came back `sent=512/512 ack=yes failed=0` every time - the
+radio confirmed every frame - while the observing dongle's own history held 512
+frames twice and 510 once. Acknowledgement is what says the bytes arrived; the
+sniffer's history is a separate and slightly lossy path, and reassembling it is
+a check on the observer, not on the transfer.
+
 **`ack` changes both the speed and the meaning.** Acknowledged, the dongle
 confirms every frame and the host waits for that confirmation before writing
 the next payload — it has to, because a frame being retried keeps the dongle
@@ -317,6 +912,24 @@ With `dpl=0` every frame is padded to `plsize`, so a transfer's last frame
 carries filler and the receiver has to know the real length. With `dpl=1` the
 lengths are exact and a file comes back out at its original size.
 
+### The flush, and why it is now conditional
+
+`rxmode 2` flushed the RX FIFO after **every** payload, which discards whatever
+arrived while the firmware was busy and so limits a dongle to one frame per
+drain pass - measured, half the reception rate. It exists for the duplicate
+fault, and that fault has one stated condition, quoted from the section below:
+a payload that fills the 32-byte slot comes out exactly once; one that does not
+leaves the FIFO a payload out of step.
+
+So the flush is now spent where that condition holds and not where it does not.
+**A full 32-byte slot skips it**; anything shorter is flushed as before.
+
+| | before | after |
+|---|---|---|
+| 512 frames of 32 bytes, `bin`, `rxmode 2` | 50 % | **99 %** |
+| 60 events x 3 copies at `plsize` 8 and 16 | 180/180, no duplicates | 180/180, no duplicates |
+| RotRemote, 20 clicks | 20 ids, no duplicates | 20 ids, no duplicates |
+
 ### The duplicate fault, re-measured — and not reproduced
 
 The flush in `rxmode 2` costs half the reception rate (see
@@ -342,9 +955,24 @@ misalignment, so a bench on which it comes out clean is a bench that cannot
 currently reproduce the fault at all. The negative result says the test is
 blind, not that the fault is gone.
 
-What is missing is the sender it was found with: a real
-[`RotRemote_BTHome`](../../active/RotRemote_BTHome), not a second analyser
-dongle. Until it has been reproduced there, the flush stays.
+It has since been tried against the sender it was found with - a real
+`RotRemote_BTHome`, triggered by toggling DTR on its port - and does not appear
+there either: 25 clicks, 25 packet ids, no excess copies, in every `rxmode`
+including the one documented as worst. That sender emits **static 32-byte**
+payloads, so short and dynamic ones still have to come from a dongle, which is
+how they were measured above.
+
+Two false alarms are worth recording, because they were the same mistake twice.
+A third device transmits on this channel and address, and counting frames
+rather than identifying them attributed its traffic to the device under test -
+once as "515 frames for 512 sent", once as "9 excess copies from the remote".
+Both vanished on filtering by sender. **Any measurement of invented frames has
+to identify payloads.**
+
+The fault therefore stays unreproduced, which is why the flush was made
+conditional rather than removed: a fault living in the chip's FIFO RAM, which
+outlives a reset, is not disproved by a bench that cannot summon it - and the
+payloads it was stated for are exactly the ones still protected.
 
 **Beware of a third device.** Frames arriving on channel 90 at address
 `43:54:48:4D:45` that nobody on the bench sent are not necessarily invented -
@@ -526,6 +1154,71 @@ FIFO; `p<pipe>` is the pipe number, `len=<n>` the payload length, then `2*n` hex
 chars. A sender that repeats each event emits several identical frames;
 `repeats 0` prints only the first of a run (identical payload within 500 ms).
 
+That switch is also the cheapest throughput lever there is, and it was measured
+rather than assumed. A hundred events, each sent three times back to back:
+
+| | frames through | events seen |
+|---|---|---|
+| `repeats 1`, `text` | 34 % | 98-99 % |
+| `repeats 1`, `bin` | 50 % | 99-100 % |
+| `repeats 0` | one per event, all of them | **100 %** |
+
+Read that carefully, because it is not the result one expects. With `repeats 1`
+two thirds of the frames never arrive - and almost every event is still seen,
+because three copies of it were sent and only one has to survive. **Turning
+repeats off does not recover events that were being missed.** The redundancy
+was already covering the loss.
+
+What it does is remove two thirds of the traffic at no cost to what is
+observed, which is three times the headroom before anything starts being
+dropped for real - a second sender, a denser burst, a slower decoder.
+
+The cost is exact and worth stating: a run of identical payloads is
+indistinguishable from a sender repeating one event, so **a transfer must run
+with `repeats 1`**. In the measurement above `repeats 0` turned 300 frames into
+101. If those had been a file, two thirds of it would be gone.
+
+#### Why a sender repeats at all, when the chip can acknowledge
+
+Worth separating, because they are easy to confuse: the repeats above are the
+*sender's*, three separate packets carrying one event. The chip's auto-retransmit
+is a different mechanism - it resends until acknowledged and then stops.
+
+If both are available, acknowledgement wins outright. Measured over a
+deliberately poor link (2 Mbps at `pa=min`, where a single packet lands 46 % of
+the time):
+
+| | events delivered | packets on air |
+|---|---|---|
+| one blind packet | 46/100 | 100 |
+| three blind copies | 96/100 | 300 |
+| one packet, acknowledged | **100/100** | **191** (91 retransmissions) |
+
+Complete delivery for a third fewer packets than blind repetition, and on a good
+link the same run cost **zero** retransmissions and 100 packets - a third of the
+traffic for the same result. Blind repeats pay their price always;
+acknowledgement pays only when the air makes it necessary.
+
+So why do the senders this tool exists to watch repeat blindly? Because
+acknowledgement needs **exactly one** receiver that owns the address and answers
+for it. A sender broadcasting to several listeners cannot use it - two receivers
+answering would collide - and this analyser is very often a third party
+overhearing somebody else's traffic, which is a role that cannot acknowledge
+anything.
+
+That has a consequence for reading the table above: our receiving dongle *was*
+the acknowledging party, which is why it saw 100/100. An analyser merely
+listening in on an acknowledged link gets no benefit from those acknowledgements
+at all - it would be back at the 46 %. Confirming that wants a third dongle, and
+this bench has two, so it is reasoning rather than measurement.
+
+The practical upshot: `repeats 0` is a filter for senders that repeat blindly. A
+sender that acknowledges has no repeats to filter, and the switch does nothing.
+
+No such lever exists for the padding. A `dpl=0` frame is padded to `plsize` on
+the *sender's* side - the BTHome frames on this bench end in twelve `FF` bytes
+because their sender pads them - so a receiver cannot decline to carry it.
+
 > Why the firmware timestamps: host arrival times cannot resolve the gap between
 > a sender's repeats. Measured on the host the same three repeats came out 0.5
 > and 0.3 ms apart; on the dongle's clock they are **5 and 6 ms**. The host was
@@ -546,17 +1239,53 @@ characters, one `Serial.print` per byte.
 | offset | | |
 |---|---|---|
 | 0 | 1 byte | `0x01`, which begins a record |
-| 1 | 1 byte | payload length, 1..32 |
-| 2 | 1 byte | pipe |
-| 3 | 4 bytes | `millis()`, little-endian |
-| 7 | *len* bytes | the payload |
-| 7+*len* | 1 byte | CRC-8 over the payload |
-| 8+*len* | 1 byte | `
+| 1 | 1 byte | payload length before suppression, 1..32 |
+| 2 | 1 byte | pipe in bits 2–0, suppressed run in bits 7–3 |
+| 3 | 2 bytes | the low 16 bits of `millis()`, little-endian |
+| 5 | *stored* bytes | the payload, less any repeated tail |
+| 5+*stored* | 1 byte | the repeated byte — only when the run is not zero |
+| … | 1 byte | CRC-8 over the payload **as it was**, all *len* bytes |
+| … | 1 byte | `
 ` |
 
-Forty bytes against ninety-odd characters, assembled once and handed over in a
-single `Serial.write`. The checksum covers **exactly** the bytes that `crc=`
-covers in the readable line, so `intact` means the same thing either way.
+So 39 bytes for a payload with nothing to suppress and 28 for one padded the way
+this bench's BTHome sender pads — against ninety-odd characters for the readable
+line — assembled once and handed over in a single `Serial.write`. The checksum
+covers **exactly** the bytes that `crc=` covers in the readable line, so `intact`
+means the same thing either way, and a host that rebuilds the tail wrongly fails
+the check rather than passing it.
+
+Three things were paid for here, and the receiver's throughput is what asked for
+each of them:
+
+**The timestamp is two bytes, not four.** The host puts the high bits back from
+its own clock: it knows roughly what the dongle's counter reads, so it takes the
+value congruent to those 16 bits that lies nearest, and would have to be out by
+more than half the 65.536 s wrap to pick wrong. `info` reports `ms=` so a host
+that has just connected — or has heard nothing for hours — anchors on the
+dongle's own answer instead of guessing. **This is deliberately not a delta.**
+Every record still carries an absolute value, so frames lost in between cost
+nothing; a delta would have shifted every timestamp after a lost frame, and
+repeat spacing is the one thing this stamp exists to measure.
+
+**Pipe and run count share a byte**, three bits and five.
+
+**A repeated tail is sent as one byte and a count.** Senders that pad a static
+payload out to 32 bytes are most of what this dongle ever sees. Measured over 54
+real frames off the air, against two synthetic corpora for contrast:
+
+| encoding | sniffed sensor frames | random bytes | English text |
+|---|---|---|---|
+| before | 41.0 B | 41.0 B | 41.0 B |
+| **trailing run suppressed** | **30.0 B** | 41.0 B | 41.0 B |
+| general run-length | 34.0 B | 41.1 B | 41.0 B |
+| both | 32.0 B | 41.1 B | 41.0 B |
+
+General run-length is *worse* than suppressing only the tail, which is why the
+firmware does not do it: an escape byte costs two bytes every time its own value
+appears in the data, and the short runs inside a BTHome payload do not repay it.
+Suppressing only the tail needs no escape and cannot expand a record by more than
+one byte.
 
 `0x01` can introduce a record unambiguously because nothing else this firmware
 prints lies outside printable ASCII — replies, warnings and the greeting stay
@@ -579,6 +1308,31 @@ than halving the bytes might suggest. What is left is no longer the protocol:
 about 1.7 ms per frame goes on work that does not depend on the output shape at
 all (the SPI read at 4 MHz, the per-payload `FLUSH_RX` that `rxmode 2`
 performs, the repeat check, the LED writes).
+
+#### What the shorter record bought, and where it ran out
+
+512 frames sent unacknowledged with the receiver printing every one of them,
+which is the case where the receive path is the constraint:
+
+| air rate | payload | record | seen before | seen after |
+|---|---|---|---|---|
+| 1 Mbps | random, no tail | 41 → 39 B | 426/512 | 440/512 |
+| 1 Mbps | 20 data + 12 × FF | 41 → 28 B | ~426/512 | **512/512** |
+| 2 Mbps | random, no tail | 41 → 39 B | 422/512 | 440/512 |
+| 2 Mbps | 20 data + 12 × FF | 41 → 28 B | ~422/512 | **512/512** |
+
+The split is the whole point, and the arithmetic predicted it. A frame arrives
+every 850 us; writing a record out costs 20 us a byte plus about 210 us of SPI
+read and drain loop. At 41 bytes that is 1030 us and the dongle falls behind by
+18 %. At 39 it is 950 — better, still behind. At 28 it is 770, and the loss does
+not shrink, it **disappears**.
+
+And the wall behind it: **the payload alone is 640 us**, so with the 210 us of
+work around it a 32-byte frame needs 850 us to be narrated — exactly the arrival
+interval, with nothing left for framing at all. Arbitrary payloads at 1 or
+2 Mbps therefore cannot be printed frame-for-frame at 500000 baud, by this
+firmware or any other. That case is `format none`, or acknowledged transfer,
+which paces the sender to what the far end can take.
 
 **A record is not a line.** It carries no terminator that means anything - the
 length is what says where it ends - and a payload byte may be `0x0A` or `0x01`
@@ -1175,7 +1929,7 @@ rather than guessed.
 
 ```
 nRF24-Analyser/
-  platformio.ini              build environments (nano / nano_old)
+  platformio.ini              build environments (nano / nano_old / serialbench)
   include/RadioController.h   radio wrapper, HwConfig + RadioConfig
   include/CommandParser.h     serial command parser
   include/HwStore.h           EEPROM persistence for the wiring
@@ -1190,4 +1944,16 @@ nRF24-Analyser/
   nrf24_parsers.py            decoder registry: raw, bthome, nrf24smart
   nrf24_mcp.py                MCP server: lets another agent drive the dongle
   requirements.txt            pyserial, bthome-ble
+  bench/serialbench/          a dongle with no radio in it, to measure the wire
+  bench/serialtest.py         drives it: read, write, round trip, lockstep
+  bench/serialtest.cpp        the same measurements without Python in the way
+```
+
+`bench/serialbench` replaces the firmware on whichever dongle it is flashed to,
+so a dongle is on loan for as long as it runs and has to be flashed back with
+`pio run -e nano -t upload` afterwards. The C++ twin is built by hand and is not
+in the tree:
+
+```
+g++ -O2 -std=c++17 -o bench/serialtest.exe bench/serialtest.cpp
 ```

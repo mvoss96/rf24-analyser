@@ -42,15 +42,39 @@ constexpr uint8_t FIFO_RX_EMPTY = 0x01;
 constexpr uint8_t STATUS_RX_DR = 0x40;
 
 // The dongle's SPI is shared with nothing else, so one setting object is fine.
-const SPISettings NRF_SPI(4000000, MSBFIRST, SPI_MODE0);
+//
+// 8 MHz is the ATmega's ceiling as a master (F_CPU/2) and well inside the
+// nRF24L01+'s 10. What each layer of the Arduino stack costs, by the drain
+// loop's own clock (`us_in` in `info`), per received frame:
+//
+//   4 MHz bus                                          190 us
+//   8 MHz bus                                          143 us
+//   ... the same under load, with a 39-byte record     223 us
+//   CSN by direct port write instead of digitalWrite   191 us
+//   SPCR written directly instead of beginTransaction  191 us  - nothing
+//
+// The last of those was tried and reverted. Without a registered interrupt
+// `SPI.beginTransaction` compiles to the same two register writes on this
+// architecture, so hand-rolling them buys exactly zero and gives up the one
+// thing the library call is for.
+//
+// Of the 191 that remain, about 39 are the bus clocking 37 bytes. Most of the
+// rest is `SPI.transfer`'s poll-until-done, which is inherent: the ATmega's SPI
+// is not double-buffered, so every byte is written, waited for, and read.
+//
+// None of this shows on the sending path - a transfer runs at the same
+// milliseconds either way, because that path is bound by the serial line - and
+// all of it shows on the receiving one, where a frame arriving every 850 us has
+// to be read out and written on before the next lands.
+const SPISettings NRF_SPI(8000000, MSBFIRST, SPI_MODE0);
 }  // namespace
 
 uint8_t RadioController::regRead(uint8_t reg) {
   SPI.beginTransaction(NRF_SPI);
-  digitalWrite(hw_.csn, LOW);
+  csnLow();
   SPI.transfer(CMD_R_REGISTER | reg);
   const uint8_t value = SPI.transfer(0xFF);
-  digitalWrite(hw_.csn, HIGH);
+  csnHigh();
   SPI.endTransaction();
   return value;
 }
@@ -61,48 +85,48 @@ uint8_t RadioController::regRead(uint8_t reg) {
 // anyone having to reason about which end is the LSByte.
 void RadioController::regReadBuf(uint8_t reg, uint8_t *buf, uint8_t len) {
   SPI.beginTransaction(NRF_SPI);
-  digitalWrite(hw_.csn, LOW);
+  csnLow();
   SPI.transfer(CMD_R_REGISTER | reg);
   for (uint8_t i = 0; i < len; i++) buf[i] = SPI.transfer(0xFF);
-  digitalWrite(hw_.csn, HIGH);
+  csnHigh();
   SPI.endTransaction();
 }
 
 void RadioController::regWrite(uint8_t reg, uint8_t value) {
   SPI.beginTransaction(NRF_SPI);
-  digitalWrite(hw_.csn, LOW);
+  csnLow();
   SPI.transfer(0x20 | reg);
   SPI.transfer(value);
-  digitalWrite(hw_.csn, HIGH);
+  csnHigh();
   SPI.endTransaction();
 }
 
 void RadioController::spiCommand(uint8_t cmd) {
   SPI.beginTransaction(NRF_SPI);
-  digitalWrite(hw_.csn, LOW);
+  csnLow();
   SPI.transfer(cmd);
-  digitalWrite(hw_.csn, HIGH);
+  csnHigh();
   SPI.endTransaction();
 }
 
 uint8_t RadioController::payloadWidth() {
   SPI.beginTransaction(NRF_SPI);
-  digitalWrite(hw_.csn, LOW);
+  csnLow();
   SPI.transfer(CMD_R_RX_PL_WID);
   const uint8_t width = SPI.transfer(0xFF);
-  digitalWrite(hw_.csn, HIGH);
+  csnHigh();
   SPI.endTransaction();
   return width;
 }
 
 void RadioController::readPayload(uint8_t *out, uint8_t len) {
   SPI.beginTransaction(NRF_SPI);
-  digitalWrite(hw_.csn, LOW);
+  csnLow();
   SPI.transfer(CMD_R_RX_PAYLOAD);
   for (uint8_t i = 0; i < len; i++) {
     out[i] = SPI.transfer(0xFF);
   }
-  digitalWrite(hw_.csn, HIGH);
+  csnHigh();
   SPI.endTransaction();
 }
 
@@ -120,6 +144,11 @@ bool RadioController::setHardware(const HwConfig &hw) {
   hwReady_ = false;
 
   hw_ = hw;
+
+  // Resolve CSN once. radio_.begin() below sets the pin's direction and drives
+  // it, so this only has to survive until the first transaction of our own.
+  csnOut_ = portOutputRegister(digitalPinToPort(hw_.csn));
+  csnBit_ = digitalPinToBitMask(hw_.csn);
 
   // An IRQ pin that cannot raise an interrupt is not fatal - polling works,
   // it just reacts a little later. Say so rather than pretending.
@@ -362,7 +391,25 @@ void RadioController::drainRx() {
     const uint8_t widthMid =
         (rxDbg_ && cfg_.dpl && rxMode_ != RX_NOWID) ? payloadWidth() : 0;
     regWrite(REG_STATUS, STATUS_RX_DR);
-    if (rxMode_ == RX_FLUSH) spiCommand(CMD_FLUSH_RX);
+    // The flush costs half the reception rate - it discards whatever arrived
+    // while the firmware was busy, so only one frame is taken per pass. It
+    // exists for the duplicate fault, and that fault has one stated condition:
+    // "a payload that fills the 32-byte slot comes out exactly once. One that
+    // does not leaves the FIFO a payload out of step."
+    //
+    // So it is spent where it is needed and not where it is not. A full slot
+    // skips it and the FIFO keeps its queue; anything shorter is flushed as
+    // before.
+    //
+    // The fault did not reproduce here at all - not against a real RotRemote at
+    // 32 bytes, not against a dongle sending 8, 12, 16, 20, 24 and 32 both
+    // statically and dynamically, sparse, back to back and as three copies five
+    // milliseconds apart, acknowledged and not, in every rxmode including the
+    // one documented as worst. That is not why this is conditional rather than
+    // gone: a fault that lives in the chip's FIFO RAM and outlives a reset is
+    // not disproved by a bench that cannot summon it, and the payloads it was
+    // stated for are exactly the ones still protected here.
+    if (rxMode_ == RX_FLUSH && len < 32) spiCommand(CMD_FLUSH_RX);
     const uint8_t fifoPost = rxDbg_ ? regRead(REG_FIFO_STATUS) : 0;
     // Stamped where the frame leaves the FIFO, which is the earliest moment the
     // firmware knows of it. Host arrival times cannot resolve the few
@@ -400,13 +447,20 @@ void RadioController::drainRx() {
     if (rxCount_ < 0xFFFFFFFF) rxCount_++;
     led(hw_.ledRx, true);
 
-    if (binaryOut_) {
-      // Sync, length, pipe, timestamp, payload, checksum - assembled here and
-      // handed over in one Serial.write, so the per-byte cost is a copy into
-      // the ring buffer instead of a number being formatted. 0x01 can start a
-      // record unambiguously because nothing else this firmware prints is
-      // outside printable ASCII, and the length says where the record ends, so
-      // a payload byte that happens to be 0x01 or a newline decodes as data.
+    if (outMode_ == OUT_NONE) {
+      led(hw_.ledRx, false);
+      accrue(usEnter, usRead);
+      continue;
+    }
+
+    if (outMode_ == OUT_BIN) {
+      // Sync, length, pipe and run count, timestamp, payload, checksum -
+      // assembled here and handed over in one Serial.write, so the per-byte cost
+      // is a copy into the ring buffer instead of a number being formatted. 0x01
+      // can start a record unambiguously because nothing else this firmware
+      // prints is outside printable ASCII, and the length says where the record
+      // ends, so a payload byte that happens to be 0x01 or a newline decodes as
+      // data.
       //
       // The checksum covers exactly the bytes the readable line's `crc=` does -
       // the payload as it left the FIFO, nothing else. That keeps the two
@@ -416,24 +470,46 @@ void RadioController::drainRx() {
       // reader that mis-syncs takes a wrong length, and a wrong length fails
       // this checksum, so it hunts for the next sync byte instead of believing
       // a shifted frame.
-      uint8_t rec[7 + 32 + 2];
+      //
+      // A repeated tail is sent as one byte and a count. Senders that pad a
+      // static payload out to 32 bytes are most of what this dongle ever sees -
+      // the BTHome sender on this bench ends every frame with twelve bytes of
+      // FF - and that costs the same serial time as twelve bytes of data. The
+      // scan runs backwards over at most 31 bytes, which is nothing against the
+      // 240 us those bytes would take on the wire. A payload with no repeated
+      // tail loses nothing by being asked.
+      uint8_t run = 0;
+      if (len >= RX_RUN_MIN) {
+        const uint8_t fill = buf[len - 1];
+        run = 1;
+        while (run < len - 1 && run < RX_RUN_MAX && buf[len - 1 - run] == fill) run++;
+        if (run < RX_RUN_MIN) run = 0;
+      }
+      const uint8_t stored = (uint8_t)(len - run);
+
+      uint8_t rec[5 + 32 + 3];
       rec[0] = RX_BIN_SYNC;
-      rec[1] = len;
-      rec[2] = pipe;
+      rec[1] = len;                                  // the length before suppression
+      rec[2] = (uint8_t)(pipe | (run << 3));
+      // The low 16 bits only. Which minute of the dongle's uptime this belongs
+      // to is something the host can work out and the wire should not carry.
       rec[3] = (uint8_t)(stamp);
       rec[4] = (uint8_t)(stamp >> 8);
-      rec[5] = (uint8_t)(stamp >> 16);
-      rec[6] = (uint8_t)(stamp >> 24);
-      for (uint8_t i = 0; i < len; i++) rec[7 + i] = buf[i];
-      rec[7 + len] = crc8(buf, len);
+      for (uint8_t i = 0; i < stored; i++) rec[5 + i] = buf[i];
+      uint8_t n = (uint8_t)(5 + stored);
+      if (run) rec[n++] = buf[len - 1];
+      // Over the payload as it was, not as it is being sent: the two shapes have
+      // to keep saying the same thing about the same bytes, and a host that
+      // rebuilds the tail wrongly should fail this check rather than pass it.
+      rec[n++] = crc8(buf, len);
       // A newline after the record. It does not make this line-based - a
       // payload byte can be 0x0A and a reader must go by the length - but it
       // guarantees the next readable line starts on a fresh one. Without it a
       // reply printed while frames are arriving comes out glued to the tail of
       // a record, which is precisely the moment somebody has opened a terminal
       // to find out what is wrong. One byte of ninety.
-      rec[8 + len] = '\n';
-      Serial.write(rec, (size_t)(9 + len));
+      rec[n++] = '\n';
+      Serial.write(rec, (size_t)n);
       led(hw_.ledRx, false);
       accrue(usEnter, usRead);
       continue;
@@ -555,7 +631,44 @@ bool RadioController::sequenceWrite(const uint8_t *data, uint8_t len) {
     seq_.sent++;
     return true;
   }
-  // With acknowledgements the count has to mean something, so each frame is
+  // Acknowledged, and still pipelining: keep the FIFO fed and collect the
+  // acknowledgements as they land, so the air runs while the next record is
+  // still arriving over serial. Waiting for each frame instead cost half the
+  // wire - 1.28 ms a frame at 2 Mbps where the line's own floor is 0.68.
+  if (seq_.pipelining) {
+    const uint32_t start = millis();
+    while (true) {
+      const uint8_t status = regRead(REG_STATUS);
+      if (status & 0x10) {                        // MAX_RT: a frame gave up
+        seq_.retries += regRead(0x08) & 0x0F;
+        seq_.failed++;
+        regWrite(REG_STATUS, 0x10);
+        radio_.flush_tx();
+        // Stop pipelining for the rest of the run. From here the count can no
+        // longer be exact: TX_DS is a flag rather than a counter, and nothing
+        // says how many packets were queued behind the one that failed. It can
+        // only be short, never long, so the host resumes a little early and
+        // sends up to a FIFO's worth twice - never skips any.
+        seq_.pipelining = false;
+        seq_.gaveUp = true;
+        return false;                             // the run ends; host resumes
+      }
+      if (status & 0x20) {                        // TX_DS: one acknowledged
+        seq_.sent++;
+        seq_.retries += regRead(0x08) & 0x0F;     // OBSERVE_TX, that packet
+        regWrite(REG_STATUS, 0x20);
+      }
+      if (!(status & 0x01)) break;                // TX_FULL clear: room for one
+      if (millis() - start > TX_TIMEOUT_MS) {     // CE not wired, or no clock
+        seq_.failed++;
+        return false;
+      }
+    }
+    radio_.startFastWrite(data, len, false);
+    return true;
+  }
+
+  // After a failure the count has to mean something again, so each frame is
   // confirmed before the next goes in.
   radio_.startFastWrite(data, len, false);
   if (radio_.txStandBy(TX_TIMEOUT_MS)) {
@@ -565,6 +678,7 @@ bool RadioController::sequenceWrite(const uint8_t *data, uint8_t len) {
   }
   seq_.failed++;
   seq_.retries += regRead(0x08) & 0x0F;
+  seq_.gaveUp = true;
   radio_.flush_tx();
   return false;                                    // the run ends here
 }
@@ -572,7 +686,18 @@ bool RadioController::sequenceWrite(const uint8_t *data, uint8_t len) {
 RadioController::TxResult RadioController::endSequence() {
   // Whatever is still in the FIFO has not been on the air yet. Waiting for it
   // is the difference between "handed over" and "transmitted".
-  if (!seq_.acking) radio_.txStandBy(TX_TIMEOUT_MS);
+  if (!seq_.acking) {
+    radio_.txStandBy(TX_TIMEOUT_MS);
+  } else if (seq_.pipelining) {
+    // Drain what is still queued, then say the exact thing. Counting TX_DS
+    // events can only undercount - two frames finishing between two looks are
+    // one flag - so the tally is not what gets reported. If nothing gave up,
+    // every frame that was written was acknowledged, and `sent` is `attempted`
+    // exactly. That is the whole reason the pipeline stops at the first
+    // failure: up to that point this identity holds.
+    radio_.txStandBy(TX_TIMEOUT_MS);
+    if (!seq_.gaveUp) seq_.sent = seq_.attempted;
+  }
   led(hw_.ledTx, false);
   reconfigure();
   return seq_;
@@ -585,13 +710,20 @@ RadioController::TxResult RadioController::endSequence() {
 // A scan configured for 250 kbps therefore reports an empty band no matter what
 // is on the air, which is worse than useless. This measures the band; it does
 // not claim to measure what a 250 kbps receiver will suffer from.
-void RadioController::scanBegin() {
+bool RadioController::scanBegin() {
+  if (scanCounts_ == nullptr) {
+    scanCounts_ = (uint8_t *)calloc(CHANNELS, 1);
+    if (scanCounts_ == nullptr) return false;
+  }
   radio_.stopListening();
   listening_ = false;
   radio_.setDataRate(RF24_2MBPS);
+  return true;
 }
 
 void RadioController::scanEnd() {
+  free(scanCounts_);
+  scanCounts_ = nullptr;
   if (configured_) {
     radio_.setDataRate(rateEnum(cfg_.rateKbps));
     radio_.setChannel(cfg_.channel);
@@ -625,7 +757,7 @@ void RadioController::scanReport() {
 
 void RadioController::scan(uint16_t passes) {
   bool wasListening = listening_;
-  scanBegin();
+  if (!scanBegin()) { Serial.println(F("ERR no memory for a scan")); return; }
 
   // Announced before the sweeps, not after: a sweep is a stretch of time with
   // nothing on the wire, and a host that hears about it only afterwards cannot
@@ -643,13 +775,13 @@ void RadioController::scan(uint16_t passes) {
   Serial.println(F("OK scan done"));
 }
 
-void RadioController::startScan(uint16_t passesPerReport) {
+bool RadioController::startScan(uint16_t passesPerReport) {
   scanResume_ = listening_;
-  scanBegin();
-  for (uint8_t ch = 0; ch < CHANNELS; ch++) scanCounts_[ch] = 0;
+  if (!scanBegin()) return false;
   scanDone_ = 0;
   scanTarget_ = passesPerReport;
   scanning_ = true;
+  return true;
 }
 
 void RadioController::stopScan() {
@@ -695,20 +827,27 @@ void RadioController::printWiring() const {
 // tells you nothing you can act on. Addresses are left out: they are multi-byte
 // reads and `info` already prints what the pipes were told to listen on.
 void RadioController::printRegs() {
-  static const struct { uint8_t reg; const char *name; } kRegs[] = {
-      {0x00, "CONFIG"},     {0x01, "EN_AA"},      {0x02, "EN_RXADDR"},
-      {0x03, "SETUP_AW"},   {0x04, "SETUP_RETR"}, {0x05, "RF_CH"},
-      {0x06, "RF_SETUP"},   {0x07, "STATUS"},     {0x08, "OBSERVE_TX"},
-      {0x09, "RPD"},        {0x11, "RX_PW_P0"},   {0x12, "RX_PW_P1"},
-      {0x13, "RX_PW_P2"},   {0x14, "RX_PW_P3"},   {0x15, "RX_PW_P4"},
-      {0x16, "RX_PW_P5"},   {0x17, "FIFO_STATUS"},{0x1C, "DYNPD"},
-      {0x1D, "FEATURE"},
+  // Both tables in flash. As a plain array of pointers-to-string this cost 57
+  // bytes of RAM permanently to print nineteen names on request, which on a 2 KB
+  // chip is a poor trade for a diagnostic command.
+  static const uint8_t kRegAddr[] PROGMEM = {
+      0x00, 0x01, 0x02, 0x03, 0x04, 0x05, 0x06, 0x07, 0x08, 0x09,
+      0x11, 0x12, 0x13, 0x14, 0x15, 0x16, 0x17, 0x1C, 0x1D,
   };
+  static const char kRegName[][12] PROGMEM = {
+      "CONFIG",   "EN_AA",    "EN_RXADDR", "SETUP_AW", "SETUP_RETR",
+      "RF_CH",    "RF_SETUP", "STATUS",    "OBSERVE_TX", "RPD",
+      "RX_PW_P0", "RX_PW_P1", "RX_PW_P2",  "RX_PW_P3", "RX_PW_P4",
+      "RX_PW_P5", "FIFO_STATUS", "DYNPD",  "FEATURE",
+  };
+  char name[12];
+
   Serial.println(F("regs:"));
-  for (uint8_t i = 0; i < sizeof(kRegs) / sizeof(kRegs[0]); i++) {
-    const uint8_t value = regRead(kRegs[i].reg);
+  for (uint8_t i = 0; i < sizeof(kRegAddr); i++) {
+    const uint8_t value = regRead(pgm_read_byte(&kRegAddr[i]));
+    strcpy_P(name, kRegName[i]);
     Serial.print(F("  "));
-    Serial.print(kRegs[i].name);
+    Serial.print(name);
     Serial.print('=');
     if (value < 0x10) Serial.print('0');
     Serial.println(value, HEX);
@@ -831,7 +970,13 @@ void RadioController::printInfo(long baud) {
   // it says accounts for - and the one most likely to be mistaken for a broken
   // link, because in binary the frames stop looking like anything.
   Serial.print(F("  baud="));    Serial.println(baud);
-  Serial.print(F("  format="));  Serial.println(binaryOut_ ? F("bin") : F("text"));
+  // The clock frame records are stamped against. They carry only its low 16
+  // bits, so a host that has just connected - or has heard nothing for hours -
+  // can anchor itself here instead of guessing which wrap it is in.
+  Serial.print(F("  ms="));      Serial.println(millis());
+  Serial.print(F("  format="));
+  Serial.println(outMode_ == OUT_BIN ? F("bin")
+                 : outMode_ == OUT_NONE ? F("none") : F("text"));
   // Averages, in microseconds, over the frames since the last `listen`. This is
   // the one number that says whether a dongle is keeping up and where its time
   // goes - guessing at it from component costs was off by a factor of five.

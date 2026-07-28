@@ -10,6 +10,7 @@ callers drain it however suits them (a print loop, a tkinter after() tick).
 
 import queue
 import threading
+import time
 
 try:
     import serial
@@ -27,7 +28,13 @@ except ImportError:  # pragma: no cover - reported by the entry points
 # it never gets as far as reading api= out of it. What it sees instead is
 # silence where the greeting should be, which the ui reports as "no greeting" -
 # and the fix is to reflash the dongle.
-EXPECTED_API = 5
+#
+# api=6 shrinks the binary frame record: a two-byte timestamp instead of four,
+# the pipe sharing a byte with a suppressed-run count, and a repeated tail sent
+# as one fill byte. A host reading the old layout would take the pipe byte for
+# part of the timestamp and the payload for the rest, so this one the version
+# does have to announce.
+EXPECTED_API = 6
 
 DEFAULT_BAUD = 500000
 
@@ -68,7 +75,7 @@ INFO_HEADER = "info:"
 # there rather than index into a fixed shape.
 INFO_INT_FIELDS = ("channel", "crc", "aw", "plsize", "ack", "dpl", "repeats",
                    "rxmode", "rxdbg", "rx", "fifofull", "baud", "us_in",
-                   "us_out", "us_n")
+                   "us_out", "us_n", "ms")
 
 
 def parse_info(lines):
@@ -150,25 +157,58 @@ def crc8(data):
     return crc
 
 
-# A frame under `format bin`: sync, length, pipe, four bytes of millis, the
-# payload, and the same checksum over the same bytes the readable line carries.
+# A frame under `format bin`: sync, the length before suppression, the pipe and
+# suppressed-run count sharing a byte, two bytes of millis, the payload with any
+# repeated tail replaced by one fill byte, and the same checksum over the same
+# bytes the readable line carries.
 RX_BIN_SYNC = b"\x01"
-RX_BIN_HEADER = 7
+RX_BIN_HEADER = 5
+
+# The wrap of the two-byte timestamp, and the furthest the host's estimate of the
+# dongle's clock may be out before it picks the wrong one.
+STAMP_WRAP = 1 << 16
+STAMP_HALF = STAMP_WRAP // 2
 
 
-def _rx_line(record):
-    """Writes a binary frame record out as the line the firmware would print.
+def rx_record_size(header):
+    """How long the record starting with these bytes is, or None if it cannot be one.
 
-    The saving is on the wire - 40 bytes against about 95 characters, and no
-    number formatted a byte at a time - so it belongs on the wire. Above this,
-    one shape: everything that reads frames goes on reading `RX ...` lines and
-    never learns which way they arrived.
+    Needs the first three bytes. Returns the length up to and including the
+    checksum; the newline after it is not part of the record.
     """
-    length = record[1]
-    payload = record[RX_BIN_HEADER:RX_BIN_HEADER + length]
-    return (f"RX t={int.from_bytes(record[3:7], 'little')} p{record[2]} "
-            f"len={length} crc={record[RX_BIN_HEADER + length]:02X} "
-            f"{payload.hex().upper()}")
+    if len(header) < 3:
+        return None
+    length, run = header[1], header[2] >> 3
+    pipe = header[2] & 0x07
+    if not 1 <= length <= 32 or pipe > 5 or run >= length:
+        return None
+    stored = length - run
+    return RX_BIN_HEADER + stored + (1 if run else 0) + 1
+
+
+def rx_payload(record):
+    """The payload as it left the FIFO, with any suppressed tail put back."""
+    length, run = record[1], record[2] >> 3
+    stored = length - run
+    body = record[RX_BIN_HEADER:RX_BIN_HEADER + stored]
+    if not run:
+        return body
+    return body + bytes([record[RX_BIN_HEADER + stored]]) * run
+
+
+def seq_record(payload):
+    """One `txseq ... bin` payload: its length, itself, and a checksum.
+
+    Half the bytes of the hex line it replaces, which is what the sending
+    dongle's serial link had become bound by. There is no sync marker because
+    none would help: the dongle knows it is owed a fixed number of records and
+    each states its own length, so a reader that has lost its place cannot get
+    it back by scanning - which is why the checksum ends the run rather than
+    skipping a record.
+    """
+    if not 1 <= len(payload) <= 32:
+        raise ValueError("payload must be 1..32 bytes")
+    return bytes([len(payload)]) + payload + bytes([crc8(payload)])
 
 
 def parse_rx(line):
@@ -276,6 +316,10 @@ class Dongle:
         # A binary record's trailing newline can arrive in the next read, so
         # whether one is still owed outlives a single pass over the buffer.
         self._pending_lf = False
+        # Where the dongle's clock was, and when we heard that, so the two bytes
+        # a record carries can be put back into a full millisecond count.
+        self._stamp_full = None
+        self._stamp_heard = 0.0
 
     @property
     def is_open(self):
@@ -327,6 +371,18 @@ class Dongle:
         if self._serial is None:
             raise RuntimeError("not connected")
         data = (line.rstrip("\r\n") + "\n").encode("ascii", errors="replace")
+        with self._write_lock:
+            self._serial.write(data)
+
+    def send_raw(self, data):
+        """Writes bytes with nothing added - no terminator, no encoding.
+
+        Only for a `txseq ... bin` payload stream, where the dongle is counting
+        bytes rather than looking for lines. Takes the same lock as send(), so
+        a payload record still cannot be braided into a command.
+        """
+        if self._serial is None:
+            raise RuntimeError("not connected")
         with self._write_lock:
             self._serial.write(data)
 
@@ -417,16 +473,62 @@ class Dongle:
                     self.lines.put(text)
                 continue
 
-            if len(buffer) < RX_BIN_HEADER:
+            if len(buffer) < 3:
                 return buffer                      # header still in flight
-            length = buffer[1]
-            if not 1 <= length <= 32:
+            size = rx_record_size(buffer)
+            if size is None:
                 buffer = buffer[1:]                # not a header; resync
                 continue
-            size = RX_BIN_HEADER + length + 1
             if len(buffer) < size:
                 return buffer                      # payload still in flight
             record, buffer = buffer[:size], buffer[size:]
             self._pending_lf = True     # swallowed at the top, this pass or next
-            self.lines.put(_rx_line(record))
+            self.lines.put(self._rx_line(record))
         return buffer
+
+    def stamp_anchor(self, device_ms):
+        """Takes the dongle's own `ms=` as the truth about where its clock is.
+
+        `info` reports it, so a host that has just connected does not have to
+        assume the dongle booted a moment ago, and one that has heard nothing for
+        hours cannot have drifted into the wrong wrap.
+        """
+        self._stamp_full = int(device_ms)
+        self._stamp_heard = time.monotonic()
+
+    def _unwrap_stamp(self, low):
+        """Puts the high bits back on a two-byte timestamp.
+
+        The record carries the low 16 bits of the dongle's millisecond clock,
+        which wrap every 65.536 s. The host knows roughly what that clock reads -
+        it knew a moment ago and its own clock has run since - so it picks the
+        value congruent to those 16 bits that lies nearest the estimate. Being
+        wrong needs the estimate to be out by more than 32.7 s.
+
+        Each record carries an absolute value, so this cannot accumulate: frames
+        lost in between cost nothing, and one bad reconstruction does not poison
+        the next. That is the whole reason the wire does not carry a delta.
+        """
+        now = time.monotonic()
+        if self._stamp_full is None:
+            self._stamp_full, self._stamp_heard = low, now
+            return low
+        estimate = self._stamp_full + int((now - self._stamp_heard) * 1000)
+        full = estimate + ((low - estimate) % STAMP_WRAP)
+        if full - estimate > STAMP_HALF:
+            full -= STAMP_WRAP
+        self._stamp_full, self._stamp_heard = full, now
+        return full
+
+    def _rx_line(self, record):
+        """Writes a binary frame record out as the line the firmware would print.
+
+        The saving is on the wire - 28 to 39 bytes against about 95 characters,
+        and no number formatted a byte at a time - so it belongs on the wire.
+        Above this, one shape: everything that reads frames goes on reading
+        `RX ...` lines and never learns which way they arrived.
+        """
+        payload = rx_payload(record)
+        return (f"RX t={self._unwrap_stamp(record[3] | (record[4] << 8))} "
+                f"p{record[2] & 0x07} len={record[1]} "
+                f"crc={record[len(record) - 1]:02X} {payload.hex().upper()}")

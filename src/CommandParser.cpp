@@ -95,6 +95,11 @@ static void reportMissing(uint8_t have) {
 // --- Line assembly ---------------------------------------------------------
 
 void CommandParser::feed(char c) {
+  // Before anything looks for a line terminator: a binary payload byte may be
+  // any value at all, newline included, and assembling it into lines would
+  // corrupt the very first payload that happened to contain one.
+  if (seqLeft_ != SEQ_IDLE && seqBin_) { feedSeqByte((uint8_t)c); return; }
+
   // Accept CR, LF or CRLF as the line terminator, so any terminal works
   // unconfigured (PuTTY sends CR on Enter, miniterm CRLF). The trailing empty
   // line a CRLF produces is dispatched too, but dispatch() ignores it.
@@ -122,7 +127,18 @@ void CommandParser::feed(char c) {
 
 void CommandParser::poll() {
   if (seqLeft_ == SEQ_IDLE) return;
-  if (millis() - seqLastMs_ > SEQ_QUIET_MS) endSeq(F("truncated"));
+  const uint32_t now = millis();
+  if (now - seqLastMs_ > SEQ_QUIET_MS) { endSeq(F("truncated")); return; }
+  // Nothing has arrived for a while and the run is not over: either the host
+  // has stopped, in which case the line above will end it shortly, or it is
+  // waiting for a confirmation that never arrived intact. Say the count again -
+  // it is the running total, so hearing it twice is harmless and hearing it
+  // once is what unblocks a full window.
+  if (now - seqNudgeMs_ > SEQ_NUDGE_MS) {
+    seqNudgeMs_ = now;
+    Serial.print(F("OK txseq at="));
+    Serial.println(seqTaken_);
+  }
 }
 
 // --- Sending a run of payloads ---------------------------------------------
@@ -145,27 +161,125 @@ void CommandParser::handleTxSeq(char *args) {
   if (count < 1 || count > 60000) { err(F("count 1..60000")); return; }
 
   bool noack = true;
+  bool binary = false;
+  uint16_t conf = 0;
   for (char *tok = strtok_r(nullptr, " \t", &save); tok != nullptr;
        tok = strtok_r(nullptr, " \t", &save)) {
     if (strcmp(tok, "ack") == 0)        noack = false;
     else if (strcmp(tok, "noack") == 0) noack = true;
+    else if (strcmp(tok, "bin") == 0)   binary = true;
+    else if (strncmp(tok, "conf=", 5) == 0) {
+      // How often the dongle confirms, in frames. Exposed because the right
+      // value is not derivable - it trades a host round trip against how many
+      // payloads may be in flight, and both were measured rather than reasoned.
+      long v = atol(tok + 5);
+      if (v < 1 || v > 255) { err(F("conf 1..255")); return; }
+      conf = (uint16_t)v;
+    }
     else { err(F("unknown key")); return; }
   }
 
   seqLeft_ = (uint16_t)count;
   seqAcking_ = !noack;
+  seqBin_ = binary;
+  seqConf_ = conf;
+  binLen_ = 0;
   seqTaken_ = 0;
   seqLastMs_ = millis();
+  seqNudgeMs_ = seqLastMs_;
   radio_.beginSequence(addr, noack);
   // Said before the payloads, so a host knows the dongle is listening for them
   // rather than for commands - and so a human who typed it by hand sees why
   // the next thing they type is not answered.
   Serial.print(F("OK txseq ready count="));
-  Serial.println(count);
+  Serial.print(count);
+  // Echoed so a host can tell an accepted `bin` from a firmware that ignored
+  // it - and older firmware answers `ERR unknown key`, which is the same
+  // question asked the other way round.
+  if (binary) Serial.print(F(" bin"));
+  Serial.println();
+}
+
+// A payload that never crossed the serial line. Everything else in this
+// firmware measures the radio and the UART together, because the bytes arrive
+// over the UART - and the UART turned out to be the constraint in both
+// directions. `txtest` takes the payload from flash instead and stamps a frame
+// index into it, so what is left is the radio, the SPI bus and this loop.
+//
+// Pair it with `format none` at the far end and no UART is in the path at all.
+static const uint8_t TEST_PATTERN[32] PROGMEM = {
+  0x5A, 0xA5, 0x00, 0x00, 0x0F, 0xF0, 0x33, 0xCC, 0x01, 0x02, 0x04, 0x08,
+  0x10, 0x20, 0x40, 0x80, 0xFE, 0xFD, 0xFB, 0xF7, 0xEF, 0xDF, 0xBF, 0x7F,
+  0x11, 0x22, 0x33, 0x44, 0x55, 0x66, 0x77, 0x88
+};
+
+void CommandParser::handleTxTest(char *args) {
+  if (!radio_.configured()) { err(F("unconfigured - run listen first")); return; }
+  if (args == nullptr) { err(F("usage: txtest <addr> <count> [ack|noack] [size=<n>]")); return; }
+
+  const RadioConfig &cfg = radio_.config();
+  char *save = nullptr;
+  char *addrTok = strtok_r(args, " 	", &save);
+  if (addrTok == nullptr) { err(F("missing addr")); return; }
+  uint8_t addr[MAX_ADDR_WIDTH];
+  if (parseHexList(addrTok, addr, 0, MAX_ADDR_WIDTH) != cfg.addrWidth) {
+    err(F("addr length must match aw")); return;
+  }
+  char *countTok = strtok_r(nullptr, " 	", &save);
+  if (countTok == nullptr) { err(F("missing count")); return; }
+  long count = atol(countTok);
+  if (count < 1 || count > 20000) { err(F("count 1..20000")); return; }
+
+  bool noack = true;
+  uint8_t size = 32;
+  for (char *tok = strtok_r(nullptr, " 	", &save); tok != nullptr;
+       tok = strtok_r(nullptr, " 	", &save)) {
+    if (strcmp(tok, "ack") == 0)        noack = false;
+    else if (strcmp(tok, "noack") == 0) noack = true;
+    else if (strncmp(tok, "size=", 5) == 0) {
+      long v = atol(tok + 5);
+      if (v < 3 || v > 32) { err(F("size 3..32")); return; }
+      size = (uint8_t)v;
+    }
+    else { err(F("unknown key")); return; }
+  }
+
+  uint8_t payload[32];
+  for (uint8_t i = 0; i < size; i++) payload[i] = pgm_read_byte(&TEST_PATTERN[i]);
+
+  radio_.beginSequence(addr, noack);
+  const uint32_t started = micros();
+  long done = 0;
+  for (; done < count; done++) {
+    // Two bytes of frame index, so the far end can tell the frames apart and
+    // a duplicate or a gap is visible rather than assumed.
+    payload[1] = (uint8_t)(done >> 8);
+    payload[2] = (uint8_t)done;
+    if (!radio_.sequenceWrite(payload, size)) break;
+  }
+  const RadioController::TxResult r = radio_.endSequence();
+  const uint32_t took = micros() - started;
+
+  // The firmware's own clock, because the host's includes the round trip that
+  // this command exists to measure without.
+  Serial.print(F("OK txtest sent="));
+  Serial.print(r.sent);
+  Serial.print('/');
+  Serial.print(count);
+  Serial.print(F(" size="));
+  Serial.print(size);
+  Serial.print(F(" ack="));
+  if (!r.acking) Serial.print(r.asked ? F("off") : F("no"));
+  else { Serial.print(F("yes failed=")); Serial.print(r.failed);
+         Serial.print(F(" retries=")); Serial.print(r.retries); }
+  Serial.print(F(" us="));
+  Serial.print(took);
+  Serial.print(F(" us_per="));
+  Serial.println(done ? took / (uint32_t)done : 0);
 }
 
 void CommandParser::feedSeqPayload(char *line) {
-  seqLastMs_ = millis();
+  seqLastMs_ = seqNudgeMs_ = millis();
   if (line[0] == '\0') return;              // a CRLF's second terminator
   uint8_t payload[32];
   int n = parseHexList(line, payload, 0, 32);
@@ -178,7 +292,41 @@ void CommandParser::feedSeqPayload(char *line) {
   if (seqLeft_ == SEQ_IDLE) { endSeq(nullptr); return; }
   // A progress line every so often: a run of three thousand frames is nearly a
   // minute of silence otherwise, and silence is what a hung dongle looks like.
-  if (seqTaken_ % (seqAcking_ ? 1 : SEQ_PROGRESS_EVERY) == 0) {
+  if (seqTaken_ % confEvery() == 0) {
+    Serial.print(F("OK txseq at="));
+    Serial.println(seqTaken_);
+  }
+}
+
+uint16_t CommandParser::confEvery() const {
+  if (seqConf_) return seqConf_;
+  if (!seqAcking_) return SEQ_PROGRESS_EVERY;
+  return seqBin_ ? SEQ_PROGRESS_ACK_BIN : 1;
+}
+
+void CommandParser::feedSeqByte(uint8_t b) {
+  seqLastMs_ = seqNudgeMs_ = millis();
+  if (binLen_ == 0) {
+    if (b < 1 || b > 32) { endSeq(F("bad length")); return; }
+    binLen_ = b;
+    binGot_ = 0;
+    return;
+  }
+  if (binGot_ < binLen_) { buf_[binGot_++] = (char)b; return; }
+
+  // The byte after the payload is its checksum. Nothing here can resynchronise
+  // on its own - a wrong length would swallow the records behind it - so a
+  // failed checksum ends the run rather than transmitting a guess.
+  const uint8_t len = binLen_;
+  binLen_ = 0;
+  if (b != nrf24_crc8((const uint8_t *)buf_, len)) { endSeq(F("bad payload")); return; }
+
+  const bool more = radio_.sequenceWrite((const uint8_t *)buf_, len);
+  seqTaken_++;
+  seqLeft_--;
+  if (!more) { endSeq(F("gave up")); return; }
+  if (seqLeft_ == SEQ_IDLE) { endSeq(nullptr); return; }
+  if (seqTaken_ % confEvery() == 0) {
     Serial.print(F("OK txseq at="));
     Serial.println(seqTaken_);
   }
@@ -187,6 +335,9 @@ void CommandParser::feedSeqPayload(char *line) {
 void CommandParser::endSeq(const __FlashStringHelper *why) {
   const uint16_t asked = seqTaken_ + seqLeft_;
   seqLeft_ = SEQ_IDLE;
+  seqBin_ = false;
+  binLen_ = 0;
+  len_ = 0;               // whatever the byte stream left in the line buffer
   const RadioController::TxResult r = radio_.endSequence();
   Serial.print(F("OK txseq sent="));
   Serial.print(r.sent);
@@ -527,7 +678,12 @@ void CommandParser::dispatch(char *line) {
       Serial.println(F("OK scan stopped"));
     } else if (rest != nullptr && strncmp(rest, "live", 4) == 0) {
       int v = atoi(rest + 4);   // "live" or "live <passes per report>"
-      radio_.startScan((v <= 0) ? 8 : (uint16_t)v);
+      // The per-channel counters are taken only for the duration of a scan, so
+      // this is the one command that can fail for want of memory.
+      if (!radio_.startScan((v <= 0) ? 8 : (uint16_t)v)) {
+        err(F("no memory for a scan"));
+        return;
+      }
       Serial.println(F("OK scan live"));
     } else {
       if (radio_.scanning()) { err(F("scan live is running - scan off first")); return; }
@@ -566,15 +722,20 @@ void CommandParser::dispatch(char *line) {
     Serial.end();
     Serial.begin(v);
     baud_ = v;
+  } else if (strcmp(cmd, "txtest") == 0) {
+    handleTxTest(rest);
   } else if (strcmp(cmd, "format") == 0) {
     // Answered in ASCII either way, including the one that switches to binary:
     // the reply belongs to the command stream, which stays readable.
-    if (rest == nullptr) { err(F("format bin|text")); return; }
-    if (strcmp(rest, "bin") == 0)       radio_.setBinaryOut(true);
-    else if (strcmp(rest, "text") == 0) radio_.setBinaryOut(false);
-    else { err(F("format bin|text")); return; }
+    if (rest == nullptr) { err(F("format bin|text|none")); return; }
+    if (strcmp(rest, "bin") == 0)       radio_.setOutMode(RadioController::OUT_BIN);
+    else if (strcmp(rest, "text") == 0) radio_.setOutMode(RadioController::OUT_TEXT);
+    else if (strcmp(rest, "none") == 0) radio_.setOutMode(RadioController::OUT_NONE);
+    else { err(F("format bin|text|none")); return; }
     Serial.print(F("OK format="));
-    Serial.println(radio_.binaryOut() ? F("bin") : F("text"));
+    Serial.println(radio_.outMode() == RadioController::OUT_BIN ? F("bin")
+                   : radio_.outMode() == RadioController::OUT_NONE ? F("none")
+                   : F("text"));
   } else if (strcmp(cmd, "rxdbg") == 0) {
     int v = rest ? atoi(rest) : -1;
     if (v != 0 && v != 1) { err(F("rxdbg 0|1")); return; }
@@ -607,9 +768,11 @@ void CommandParser::dispatch(char *line) {
     Serial.println(F("hwset ce=<pin> csn=<pin> [irq=<pin|none>] [led_rx=<pin|none>] [led_tx=<pin|none>]"));
     Serial.println(F("listen ch= rate= crc= aw= pa= ack= dpl= [plsize=] pipeN=<addr>"));
     Serial.println(F("hwclear | listen | stop | info | scan [passes] | repeats <0|1>"));
-    Serial.println(F("txseq <addr> <count> [ack|noack] then <count> hex lines"));
+    Serial.println(F("txseq <addr> <count> [ack|noack] [bin] then <count> payloads"));
+    Serial.println(F("  bin: raw records len+payload+crc8 instead of hex lines"));
     Serial.println(F("tx <addr> <hex...> [ack|noack] [x<n>] [gap=<ms>]"));
-    Serial.println(F("format bin|text  (bin: frames as binary records, faster, unreadable)"));
+    Serial.println(F("format bin|text|none  (bin: binary records; none: count only)"));
+    Serial.println(F("txtest <addr> <count> [ack|noack] [size=<n>]  (payload from flash)"));
     Serial.println(F("baud 250000|500000|1000000|2000000  (for this session; reset restores)"));
     Serial.println(F("rxmode <0|1|2> | rxdbg <0|1> | regs | reg <addr> [val]  (diagnosis)"));
     ok();

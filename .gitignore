@@ -11,3 +11,6 @@ venv/
 
 # Logs
 *.log
+
+# Built by hand from bench/serialtest.cpp, not part of the tree
+*.exe

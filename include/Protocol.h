@@ -48,8 +48,32 @@
 // `sent=44` and a 512-frame run `sent=0` - after transmitting all of them. A
 // count that lies about a completed transfer reads exactly like a truncated
 // one. `txseq` also tells `ack=off` from `ack=no` now, as `tx` already did.
-#define FW_VERSION "3.8.1"
-#define API_VERSION 5
+// api=6 makes the binary frame record smaller, and it is the receiver's
+// throughput that asked for it. A record was 9 bytes of frame around 32 bytes of
+// payload; at 2 Mbps a frame arrives every 850 us and writing 41 bytes out takes
+// 1030, so the dongle fell behind by 18 % and dropped that many. Three changes,
+// none of them additive - a host reading the old layout would take the pipe byte
+// for a timestamp - so the version moves:
+//
+//   - the timestamp is the low 16 bits of millis() instead of all 32. The host
+//     puts the high bits back from its own clock, which would have to be wrong
+//     by more than half of the 65.536 s wrap for that to fail. Each record still
+//     carries an absolute value, so a lost frame costs nothing; a delta would
+//     have shifted every timestamp after it, which is why this is not one.
+//   - pipe and the suppressed-run count share a byte, three bits and five.
+//   - a repeated tail is sent as one fill byte instead of itself. Senders that
+//     pad a static payload are most of what this dongle ever sees: measured over
+//     real BTHome traffic a record goes from 41 bytes to 28, which is the
+//     difference between falling behind and keeping up. Arbitrary payloads have
+//     no tail to suppress and pay nothing for the attempt.
+// 3.16.0 frees 183 bytes of RAM without giving anything up. The scan's
+// per-channel counters are taken for the duration of a scan instead of being a
+// member - a scan retunes the radio, so it can never overlap with receiving, and
+// the peak is unchanged while the resting state is 126 bytes better. The
+// register-name table moves to flash, where it always belonged. Additive: only
+// `scan live` gains a way to fail, and it says so. api stays at 6.
+#define FW_VERSION "3.16.0"
+#define API_VERSION 6
 
 // The rate a dongle always boots at. `baud` can raise it for a session, but a
 // reset must come back here: a host that does not know the command - or a
@@ -74,3 +98,11 @@ inline uint8_t nrf24_crc8(const uint8_t *data, uint8_t len) {
 // Starts a binary frame record. Outside printable ASCII, which nothing else
 // this firmware prints ever is, so a reader can tell the two apart mid-stream.
 #define RX_BIN_SYNC 0x01
+
+// A tail shorter than this is left alone: suppressing n bytes costs one byte to
+// say what they were, so two saves a single byte and is not worth the branch.
+#define RX_RUN_MIN 3
+
+// Five bits hold it, and one payload byte always has to remain for the fill
+// value to be read from.
+#define RX_RUN_MAX 31

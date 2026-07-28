@@ -135,8 +135,16 @@ public:
   // whoever opens a terminal expecting to read along is not surprised, and
   // only a host that asked for throughput gets bytes it has to decode.
   void resetTiming() { usIn_ = usOut_ = usFrames_ = 0; }
-  void setBinaryOut(bool on) { binaryOut_ = on; }
-  bool binaryOut() const { return binaryOut_; }
+  // Three shapes, not two. `none` drains the FIFO and counts, and prints
+  // nothing at all - which is what a dongle on the receiving end of a transfer
+  // actually needs. Writing every frame out costs about 800 us, and a receiver
+  // that cannot keep up stops acknowledging, so the sender retransmits: 77
+  // retransmissions in 512 frames, measured. Silence removes that.
+  enum OutMode : uint8_t { OUT_TEXT = 0, OUT_BIN = 1, OUT_NONE = 2 };
+  void setOutMode(uint8_t m) { outMode_ = m; }
+  uint8_t outMode() const { return outMode_; }
+  void setBinaryOut(bool on) { outMode_ = on ? OUT_BIN : OUT_TEXT; }
+  bool binaryOut() const { return outMode_ == OUT_BIN; }
 
   // Per-pass FIFO trace. Off by default and deliberately so: it adds SPI reads
   // and a serial line to every drain pass, which is milliseconds in exactly the
@@ -178,6 +186,11 @@ public:
     uint16_t retries = 0;    // summed ARC_CNT, the retransmissions it did make
     bool acking = false;     // was an acknowledgement actually going to be waited for
     bool asked = false;      // ...and was one asked for, which is a different question
+    // Whether the run is still keeping the transmit FIFO fed. It stops at the
+    // first frame that gives up, because from that moment the count can no
+    // longer be exact - see sequenceWrite().
+    bool pipelining = true;
+    bool gaveUp = false;
   };
 
   // Transmits `count` copies of one payload to `addr`, `gapMs` apart. noack=true
@@ -212,7 +225,9 @@ public:
   // poll() so commands keep being answered in between. Receiving is impossible
   // while it runs - the radio is being retuned across the band - and resumes on
   // stopScan() if it was running before.
-  void startScan(uint16_t passesPerReport);
+  // False if the per-channel counters could not be taken; nothing has changed
+  // and the caller must not report a scan as running.
+  bool startScan(uint16_t passesPerReport);
   void stopScan();
   bool scanning() const { return scanning_; }
 
@@ -257,6 +272,20 @@ private:
 
   enum HwState : uint8_t { HW_NONE, HW_CONNECTED, HW_FAILED };
 
+  // CSN, resolved once into the port register and bit it actually is.
+  //
+  // `digitalWrite` walks three PROGMEM lookup tables, checks for a timer on the
+  // pin and masks interrupts, which is about 4 us - and a frame comes out of the
+  // FIFO through four SPI transactions, so eight of them. The pin stays
+  // configurable; only the translation stops happening a hundred thousand times
+  // a second. Nothing in an interrupt writes a port here, so the read-modify-
+  // write below needs no guard of its own.
+  volatile uint8_t *csnOut_ = nullptr;
+  uint8_t csnBit_ = 0;
+
+  inline void csnLow()  { *csnOut_ &= (uint8_t)~csnBit_; }
+  inline void csnHigh() { *csnOut_ |= csnBit_; }
+
   RF24 radio_; // pinless constructor: pins are supplied at begin() time
   RadioConfig cfg_;
   HwConfig hw_;
@@ -264,7 +293,7 @@ private:
   bool configured_ = false;
   bool listening_ = false;
   bool showRepeats_ = true;
-  bool binaryOut_ = false;
+  uint8_t outMode_ = 0;   // OutMode
   uint32_t usIn_ = 0, usOut_ = 0, usFrames_ = 0;
   uint8_t rxMode_ = RX_FLUSH;
   bool rxDbg_ = false;
@@ -282,9 +311,16 @@ private:
   bool scanResume_ = false;      // was the radio listening when the scan began
   uint16_t scanTarget_ = 0;      // sweeps per report
   uint16_t scanDone_ = 0;        // sweeps since the last report
-  uint8_t scanCounts_[CHANNELS] = {0};
+  // One counter per channel, held only while a scan runs. As a member it was
+  // 126 bytes of a 2 KB chip reserved permanently for something that happens
+  // for a few seconds and never while receiving - and the two cannot overlap,
+  // because a scan retunes the radio. Allocated in scanBegin and released in
+  // scanEnd, so the peak is what it always was and the resting state is 126
+  // bytes better. It is the only allocation this firmware makes, and it is
+  // freed by the same pair that made it, so there is nothing to fragment.
+  uint8_t *scanCounts_ = nullptr;
 
-  void scanBegin();              // stop receiving and widen the receiver
+  bool scanBegin();              // stop receiving, widen the receiver, take the counters
   void scanEnd();                // put the configured rate and channel back
   void scanSweep();              // one pass over every channel
   void scanReport();             // print and clear the accumulated counts
