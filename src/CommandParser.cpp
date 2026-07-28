@@ -194,7 +194,10 @@ void CommandParser::endSeq(const __FlashStringHelper *why) {
   Serial.print(asked);
   Serial.print(F(" ack="));
   if (!r.acking) {
-    Serial.print(F("no"));
+    // The same distinction `tx` makes: `no` is a receiver that stayed silent,
+    // `off` is a radio that was never going to wait for one. Reporting the
+    // second as the first invites a hunt for a receiver that is fine.
+    Serial.print(r.asked ? F("off") : F("no"));
   } else {
     Serial.print(F("yes failed="));
     Serial.print(r.failed);

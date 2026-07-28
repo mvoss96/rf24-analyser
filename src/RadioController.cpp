@@ -272,6 +272,7 @@ const __FlashStringHelper *RadioController::stateName() const {
 }
 
 void RadioController::startListening() {
+  resetTiming();
   // The counters describe one capture, so they start over with it - otherwise
   // "12 overflows" says nothing about the run you are looking at.
   rxCount_ = 0;
@@ -295,6 +296,16 @@ bool RadioController::isRepeat(const uint8_t *buf, uint8_t len) {
   return same && recent;
 }
 
+// Where a received frame's time goes: everything up to and including the flush
+// (SPI, registers, the length question) against everything after it (the line
+// or the record on the wire). Kept as sums so reading them costs nothing per
+// frame, and reset by `listen` so a measurement starts where it was asked for.
+void RadioController::accrue(uint32_t usEnter, uint32_t usRead) {
+  usIn_ += usRead - usEnter;
+  usOut_ += micros() - usRead;
+  usFrames_++;
+}
+
 void RadioController::drainRx() {
   // A full RX FIFO means the host could not keep up; further frames arriving
   // now are dropped by the chip. Surfacing this separates "lost on air" from
@@ -312,6 +323,7 @@ void RadioController::drainRx() {
       break;
     }
     rxPass_++;
+    const uint32_t usEnter = micros();
     // RX_P_NO in STATUS names the pipe of the payload at the FIFO top.
     const uint8_t statusPre = regRead(REG_STATUS);
     const uint8_t pipe = (statusPre >> 1) & 0x07;
@@ -368,6 +380,7 @@ void RadioController::drainRx() {
     // milliseconds between a sender's repeats: they carry the serial transfer
     // and the host's scheduling on top.
     uint32_t stamp = millis();
+    const uint32_t usRead = micros();
 
     if (rxDbg_) {
       // One line per pass, whether or not the frame itself is printed: the
@@ -433,6 +446,7 @@ void RadioController::drainRx() {
       rec[8 + len] = '\n';
       Serial.write(rec, (size_t)(9 + len));
       led(hw_.ledRx, false);
+      accrue(usEnter, usRead);
       continue;
     }
 
@@ -463,6 +477,7 @@ void RadioController::drainRx() {
     }
     Serial.println();
     led(hw_.ledRx, false);
+    accrue(usEnter, usRead);
   }
   s_rxFlag = false;
 }
@@ -531,6 +546,7 @@ void RadioController::beginSequence(const uint8_t *addr, bool noack) {
   led(hw_.ledTx, true);
   seq_ = TxResult();
   seqNoack_ = noack;
+  seq_.asked = !noack;
   seq_.acking = !noack && regRead(0x01) != 0;   // EN_AA, the chip's own answer
 }
 
@@ -826,6 +842,15 @@ void RadioController::printInfo() {
   // it says accounts for - and the one most likely to be mistaken for a broken
   // link, because in binary the frames stop looking like anything.
   Serial.print(F("  format="));  Serial.println(binaryOut_ ? F("bin") : F("text"));
+  // Averages, in microseconds, over the frames since the last `listen`. This is
+  // the one number that says whether a dongle is keeping up and where its time
+  // goes - guessing at it from component costs was off by a factor of five.
+  Serial.print(F("  us_in="));
+  Serial.print(usFrames_ ? (uint16_t)(usIn_ / usFrames_) : 0);
+  Serial.print(F(" us_out="));
+  Serial.print(usFrames_ ? (uint16_t)(usOut_ / usFrames_) : 0);
+  Serial.print(F(" us_n="));
+  Serial.println(usFrames_);
   Serial.print(F("  rxmode="));  Serial.println(rxMode_);
   // No newline yet: in block layout printConfig() opens each field with one, so
   // the last line printed here is the one it continues from.

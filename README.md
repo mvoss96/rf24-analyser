@@ -559,6 +559,41 @@ record -
 find out why a binary session is misbehaving. Commands, replies, `WARN` lines
 and the greeting are all still ordinary ASCII lines; only frames change shape.
 
+#### And after that, the flush
+
+With the readable line gone the ceiling moves again, and the next thing in the
+way is not the protocol at all. `info` reports what a frame costs the firmware,
+averaged since the last `listen`:
+
+| | `us_in` (SPI, registers) | `us_out` (onto the wire) |
+|---|---|---|
+| `text` | 189 us | 3991 us |
+| `bin` | 190 us | 642 us |
+
+189 microseconds of SPI against four milliseconds of printing: the readable
+line was never held up by the radio. But 832 us a frame would allow 1200 a
+second, and `bin` was measured at 400. The difference is `rxmode 2`, which
+**flushes the RX FIFO after every payload** — so whatever arrived while the
+firmware was busy is discarded rather than queued, and the dongle can absorb
+exactly one frame per pass. Against `rxmode 1`, which does not flush:
+
+| spacing | `bin` + `rxmode 2` | `bin` + `rxmode 1` |
+|---|---|---|
+| 1.3 ms | 50 % | **100 %** |
+| 2.3 ms | 100 % | 100 % |
+
+1.3 ms is as fast as a 32-byte frame can be sent at 250 kbps, so without the
+flush the receiver keeps up with everything the air can carry.
+
+The flush is not gratuitous — it is the one measure that fixes the
+[duplicate-frame fault](#duplicate-frames-and-the-rxmode-switch), and `rxmode 1`
+is not a setting to run. But that fault was only ever observed for payloads
+**shorter than the 32-byte slot**; one that fills the slot comes out exactly
+once. Flushing only after a short payload would therefore cost nothing in
+correctness and lift the full-slot case to the air rate. That is a change to
+the one behaviour in this firmware arrived at purely empirically, so it is
+written down here rather than made quietly.
+
 **It is off after every reset, and it is not hidden**: `info` reports
 `format=bin|text`. The default stays readable because that is what makes this
 dongle debuggable with nothing but a terminal — turn it on when throughput

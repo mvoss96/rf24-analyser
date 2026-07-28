@@ -43,7 +43,12 @@
 // clock cycles apiece. A binary record removes both. Additive and off by
 // default, so api stays at 5: a host that never asks sees exactly what it saw
 // before, and a reset returns a dongle to the readable form.
-#define FW_VERSION "3.8.0"
+// 3.8.1 stops the transmit counters wrapping. attempted/sent/failed were bytes
+// while `txseq` takes up to sixty thousand frames, so a 300-frame run reported
+// `sent=44` and a 512-frame run `sent=0` - after transmitting all of them. A
+// count that lies about a completed transfer reads exactly like a truncated
+// one. `txseq` also tells `ack=off` from `ack=no` now, as `tx` already did.
+#define FW_VERSION "3.8.1"
 #define API_VERSION 5
 
 // Starts a binary frame record. Outside printable ASCII, which nothing else

@@ -134,6 +134,7 @@ public:
   // a compile-time choice. Readable is the default and a reset returns to it:
   // whoever opens a terminal expecting to read along is not surprised, and
   // only a host that asked for throughput gets bytes it has to decode.
+  void resetTiming() { usIn_ = usOut_ = usFrames_ = 0; }
   void setBinaryOut(bool on) { binaryOut_ = on; }
   bool binaryOut() const { return binaryOut_; }
 
@@ -166,11 +167,17 @@ public:
   // while the configuration has auto-ack off reports success for every frame,
   // with nobody listening on the address - true, and read as the opposite.
   struct TxResult {
-    uint8_t attempted = 0;   // frames handed to the radio
-    uint8_t sent = 0;        // left the FIFO: acknowledged, or emitted if no ack
-    uint8_t failed = 0;      // gave up after the configured retransmissions
+    // Sixteen bits, not eight: `tx` sends at most sixteen copies, but `txseq`
+    // takes up to sixty thousand frames. As bytes these wrapped, and silently -
+    // a 300-frame run reported `sent=44`, a 512-frame run `sent=0`, both after
+    // transmitting every frame. A count that lies about a completed transfer is
+    // worse than no count, because it reads exactly like a truncated one.
+    uint16_t attempted = 0;  // frames handed to the radio
+    uint16_t sent = 0;       // left the FIFO: acknowledged, or emitted if no ack
+    uint16_t failed = 0;     // gave up after the configured retransmissions
     uint16_t retries = 0;    // summed ARC_CNT, the retransmissions it did make
     bool acking = false;     // was an acknowledgement actually going to be waited for
+    bool asked = false;      // ...and was one asked for, which is a different question
   };
 
   // Transmits `count` copies of one payload to `addr`, `gapMs` apart. noack=true
@@ -255,6 +262,7 @@ private:
   bool listening_ = false;
   bool showRepeats_ = true;
   bool binaryOut_ = false;
+  uint32_t usIn_ = 0, usOut_ = 0, usFrames_ = 0;
   uint8_t rxMode_ = RX_FLUSH;
   bool rxDbg_ = false;
   uint32_t rxPass_ = 0;   // drain passes since boot, to line traces up
@@ -279,6 +287,7 @@ private:
   void scanReport();             // print and clear the accumulated counts
 
   void led(uint8_t pin, bool on);
+  void accrue(uint32_t usEnter, uint32_t usRead);
 
   // Last frame seen, for the repeat filter.
   uint8_t lastFrame_[32] = {0};
