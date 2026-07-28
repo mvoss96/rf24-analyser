@@ -504,44 +504,28 @@ function paintRow(group) {
   group.tr.classList.toggle("repeated", count > 1);
 }
 
-// Packet counters run in sequence per sender, so a jump in one is the only
-// direct evidence a sniffer has that something never arrived. The counter is a
-// byte, hence the wrap.
-const lastPacket = new Map();   // source -> furthest packet id seen
-let missingTotal = 0;
+// What never arrived is counted in Python and only drawn here. It used to be
+// worked out twice, by two different methods, which in a tool built to measure
+// frame loss is the worst kind of bug: two believable numbers about the same
+// traffic. See the Loss class in nrf24web.py.
+//
+// The two numbers say different things and are shown in different places.
+// `frame.jumped` is local: how far this frame's id is ahead of the furthest
+// seen from that sender, marked on its row. It can overstate, because ids
+// arrive out of order and a gap may be filled a moment later. The total below
+// is the honest one - the counter values that never appeared at all - and comes
+// from the server as a `stats` event.
+let lossTotal = 0;
 
-// Ids do not arrive in order. A sender repeats each event, and a frame left
-// over from an earlier transmission can arrive in the middle of the current
-// burst carrying the id before it. Read frame to frame, every such step back
-// counts as a jump forward of 255 and reports 254 packets lost - the mistake
-// the capture summary was fixed for, still living here until now. Only a step
-// FORWARD from the furthest id seen means something never arrived; anything
-// behind it is a repeat or a straggler and says nothing about loss.
-const BEHIND_TOLERANCE = 64;
-
-function missingBefore(frame) {
-  if (frame.packetId === null || frame.packetId === undefined || !frame.source) return 0;
-  const furthest = lastPacket.get(frame.source);
-  if (furthest === undefined) {
-    lastPacket.set(frame.source, frame.packetId);
-    return 0;
-  }
-  const ahead = (frame.packetId - furthest) & 0xFF;
-  // Equal means a retransmission of the event we just saw, not a new one.
-  if (ahead === 0) return 0;
-  if (ahead > 0xFF - BEHIND_TOLERANCE) return 0;   // behind: a repeat or a stale frame
-  lastPacket.set(frame.source, frame.packetId);
-  return ahead - 1;
-}
-
-function missingNote(frame, missing) {
-  const from = (frame.packetId - missing) & 0xFF;
-  const range = missing === 1 ? `#${from}` : `#${from} to #${(frame.packetId - 1) & 0xFF}`;
+function missingNote(frame, jumped) {
+  const from = (frame.packetId - jumped) & 0xFF;
+  const range = jumped === 1 ? `#${from}` : `#${from} to #${(frame.packetId - 1) & 0xFF}`;
   // The counter is a byte, so a gap of n is really n, n+256, n+512... For small
   // gaps that is pedantry; past half a cycle a wrap is plausible enough to say.
-  const floor = missing >= 128 ? "at least " : "";
-  return `${floor}${missing} packet${missing === 1 ? "" : "s"} never arrived before this `
-       + `one — ${range} from ${frame.source}`;
+  const floor = jumped >= 128 ? "at least " : "";
+  return `${floor}${jumped} packet${jumped === 1 ? "" : "s"} had not arrived when this `
+       + `one did — ${range} from ${frame.source}. A straggler can still fill a `
+       + `gap; the total in the header is the count that takes that back.`;
 }
 
 function addRow(frame) {
@@ -671,9 +655,6 @@ function fillPicker(select, allLabel, entries) {
 function renderFrame(frame) {
   frames.push(frame);
 
-  const missing = missingBefore(frame);
-  if (missing) missingTotal += missing;
-
   const existing = groupable(frame);
   if (existing) {
     existing.frames.push(frame);
@@ -688,8 +669,8 @@ function renderFrame(frame) {
     if (previous && frame.deviceMs !== null && previous.frames[0].deviceMs !== null) {
       gap = frame.deviceMs - previous.frames[0].deviceMs;
     }
-    const group = { identity: frame.identity, frames: [frame], gap, missing,
-                    tr: document.createElement("tr") };
+    const group = { identity: frame.identity, frames: [frame], gap,
+                    missing: frame.jumped || 0, tr: document.createElement("tr") };
     const index = groups.length;
     groups.push(group);
     // Ctrl or Cmd picks a second row to compare against the selected one.
@@ -742,9 +723,9 @@ function updateCount() {
   // Counted over what is shown. With a sender filter that is exactly right -
   // every frame of that sender is on screen - and with a pipe filter it is the
   // loss within that pipe, which is the question the filter was asking.
-  if (missingTotal) parts.push(`${missingTotal} missing`);
+  if (lossTotal) parts.push(`${lossTotal} missing`);
   $("count").textContent = parts.join(" · ");
-  $("count").classList.toggle("has-loss", missingTotal > 0);
+  $("count").classList.toggle("has-loss", lossTotal > 0);
 
   // Nothing on screen has three very different reasons, and telling them apart
   // is the whole value of saying anything: nothing has arrived, nothing here
@@ -882,8 +863,6 @@ function rebuild(list) {
   allFrames = list.slice();
   frames = [];
   groups = [];
-  lastPacket.clear();
-  missingTotal = 0;
   seenPipes.clear();
   seenSources.clear();
   // Every value first, then the pickers once. Repainting them frame by frame
@@ -1037,6 +1016,11 @@ function handle(event) {
     deviceRadio = event.radio;
     renderSummary();
     seedSetup();
+  } else if (event.type === "stats") {
+    // What never arrived, as the server counts it. The table draws the number;
+    // it does not have an opinion about it.
+    lossTotal = event.missing || 0;
+    updateCount();
   } else if (event.type === "reset") {
     // Either someone cleared the history, or this connection cannot be
     // continued from what is on screen - a different server process, or a
@@ -1055,7 +1039,13 @@ function handle(event) {
     if ($("decoder").value !== event.name) {
       $("decoder").value = event.name;
       setColumns(event.columns);
-      post("/api/parser", { name: event.name }).then((d) => d.frames && rebuild(d.frames));
+      post("/api/parser", { name: event.name }).then((d) => {
+        // The totals come with the frames: who the sender is is the decoder's
+        // answer, so switching decoder is a different question about the same
+        // bytes and gets a different count.
+        if (d.loss) lossTotal = d.loss.missing || 0;
+        if (d.frames) rebuild(d.frames);
+      });
     }
   } else if (event.type === "line") {
     // Log only. The state comes from status events - reading it out of log text
@@ -1208,6 +1198,7 @@ function init() {
     const data = await post("/api/parser", { name: $("decoder").value });
     // Header before rows: the rows are laid out against the columns.
     if (data.columns) setColumns(data.columns);
+    if (data.loss) lossTotal = data.loss.missing || 0;
     if (data.frames) rebuild(data.frames);
   });
 

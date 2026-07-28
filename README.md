@@ -636,6 +636,23 @@ person watching to agree to, not for a file watcher to decide. The setup fields
 keep what the dongle last reported, so `Start` puts the radio back where it was
 rather than on the page's defaults.
 
+**What never arrived is counted in Python**, and the browser only draws it. It
+used to be worked out twice by two different methods — which, in a tool built to
+measure frame loss, is the worst kind of bug: two believable numbers about the
+same traffic. They are still two numbers, deliberately, because they answer
+different questions and are shown in different places:
+
+- the **`−n` on a row** is local and immediate: how far that frame's id was
+  ahead of the furthest one seen from its sender. It can overstate, because ids
+  arrive out of order and a straggler may fill the gap a moment later.
+- the **total in the header** is the honest one and needs the whole set: the
+  counter values that never appeared at all, over the smallest arc containing
+  every id seen. That one takes the straggler back.
+
+They are never added together, and both come from `Loss` in `nrf24web.py` — the
+same class that answers `/api/capture`, so the table and an agent's capture
+summary cannot disagree about the same traffic any more.
+
 **Columns** switch off individually, from a menu next to the filters, and the
 choice is remembered. They are hidden by a stylesheet rule rather than by
 leaving the cells out: the row is addressed by position in several places —

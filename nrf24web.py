@@ -51,8 +51,10 @@ MAX_FRAMES = 5000
 #       answering is reported instead of shown as listening; the stale-build
 #       warning restarts into the new code when clicked; the frame list filters
 #       by pipe and by sender, colours them apart once there are two to tell
-#       apart, hides columns that are in the way, and stopped taking minutes to
-#       redraw a full history.
+#       apart, hides columns that are in the way, pauses without touching the
+#       radio, compares two frames byte for byte, and stopped taking minutes to
+#       redraw a full history. What never arrived is counted once, in Python,
+#       rather than by two different methods on two sides of the wire.
 APP_VERSION = "1.1.0"
 
 # Python imports a module once and keeps it: editing nrf24_parsers.py while the
@@ -192,6 +194,70 @@ def _capture_stats(frames):
     }
 
 
+class Loss:
+    """Counts what never arrived, per sender, over one capture.
+
+    Both numbers this produces used to be computed twice - the arc method here
+    for /api/capture, and a different, incremental one in the browser for the
+    table. They answer almost the same question and can disagree, which in a
+    tool built to measure frame loss is the worst kind of bug: two believable
+    numbers about the same traffic. So the rule lives here, once, and the
+    browser draws what it is told.
+
+    They are, deliberately, two numbers rather than one:
+
+    `jumped` is local and immediate - how far this frame's id is ahead of the
+    furthest one seen from that sender. It is what the table marks on a row,
+    and it can overstate: ids arrive out of order (a sender repeats each event,
+    and a straggler from the previous burst lands in the middle of the current
+    one), so a gap flagged here may be filled a moment later.
+
+    `missing` is the honest total, and needs the whole set to be computed: the
+    counter values that never appeared at all, over the smallest arc containing
+    every id seen. That one takes the straggler back. The two are shown in
+    different places for that reason, and never added together.
+    """
+
+    # A step backwards of no more than this is a repeat or a straggler rather
+    # than the counter having wrapped almost all the way round.
+    BEHIND_TOLERANCE = 64
+
+    def __init__(self):
+        self.senders = {}
+
+    def reset(self):
+        self.senders.clear()
+
+    def feed(self, source, packet_id):
+        """Records one frame; returns how many ids it jumped over, if any."""
+        if source is None or packet_id is None:
+            return 0
+        sender = self.senders.setdefault(source, {"ids": set(), "furthest": None})
+        sender["ids"].add(packet_id)
+        furthest = sender["furthest"]
+        if furthest is None:
+            sender["furthest"] = packet_id
+            return 0
+        ahead = (packet_id - furthest) & 0xFF
+        if ahead == 0 or ahead > 0xFF - self.BEHIND_TOLERANCE:
+            return 0        # the same event again, or one that arrived late
+        sender["furthest"] = packet_id
+        return ahead - 1
+
+    def totals(self):
+        """{sender: {missing, uncertain, distinct}} plus the sum, arc-based."""
+        senders = {}
+        total = 0
+        for source, sender in self.senders.items():
+            if not sender["ids"]:
+                continue
+            span, missing = _id_span(sender["ids"])
+            total += missing
+            senders[source] = {"missing": missing, "uncertain": span >= 128,
+                               "distinct": len(sender["ids"])}
+        return {"senders": senders, "missing": total}
+
+
 def _id_span(id_set):
     """(span, missing) for a set of byte packet ids on the 256 ring.
 
@@ -264,6 +330,9 @@ class Session:
         # would otherwise resume from before it and keep rows the server has
         # thrown away.
         self.cleared_at = 0
+        # One rule for what never arrived, on this side of the wire.
+        self.loss = Loss()
+        self._last_stats = None
         self.last_stamp = None
         self.last_ms = None
         # Remembered so a tab opened later still learns the current state -
@@ -594,17 +663,43 @@ class Session:
         if reason:
             raise RuntimeError(reason)
         self.parser = parser
+        # Who the sender is and what its counter reads are this decoder's
+        # answers, so the loss walk is redone under the new one rather than
+        # carried over from the old.
+        self.loss.reset()
+        self.decoded_history(self.loss)
+        self.publish_stats()
         # One decoder is shared by every tab, so every tab has to hear about it.
         self.hub.publish({"type": "parser", "name": parser.name,
                           "columns": column_spec(parser)})
 
-    def decoded_history(self):
+    def decoded_history(self, loss=None):
         """Every retained frame, decoded with the current parser.
 
         Each carries the event id it was published under, so a client can tell
-        which of them it has already seen.
+        which of them it has already seen, and how many ids it jumped over.
+        The jump is walked here rather than remembered, because who the sender
+        is and what its counter reads are the decoder's answers - switching
+        decoder makes them different questions with different answers.
         """
-        return [dict(self._decode(*frame[1:]), id=frame[0]) for frame in self.frames]
+        tracker = Loss() if loss is None else loss
+        out = []
+        for seq, *raw in self.frames:
+            frame = self._decode(*raw)
+            frame["id"] = seq
+            frame["jumped"] = tracker.feed(frame["source"], frame["packetId"])
+            out.append(frame)
+        return out
+
+    def stats_event(self):
+        return {"type": "stats", **self.loss.totals()}
+
+    def publish_stats(self):
+        """Tells every tab the totals, when they have actually moved."""
+        stats = self.loss.totals()
+        if stats != self._last_stats:
+            self._last_stats = stats
+            self.hub.publish({"type": "stats", **stats})
 
     def clear(self):
         """Discards the retained history - for everyone, not just the caller.
@@ -616,7 +711,9 @@ class Session:
         self.frames.clear()
         self.last_stamp = None
         self.last_ms = None
+        self.loss.reset()
         self.cleared_at = self.hub.publish({"type": "reset"})
+        self.publish_stats()
 
     def capture(self, seconds):
         """Collect the frames decoded over the next `seconds` and summarise them.
@@ -734,9 +831,11 @@ class Session:
             else:
                 delta = None if self.last_stamp is None else round((now - self.last_stamp) * 1000, 1)
             self.last_stamp = now
-            seq = self.hub.publish(self._decode(stamp, delta, device_ms, pipe,
-                                                data, intact))
+            frame = self._decode(stamp, delta, device_ms, pipe, data, intact)
+            frame["jumped"] = self.loss.feed(frame["source"], frame["packetId"])
+            seq = self.hub.publish(frame)
             self.frames.append((seq, stamp, delta, device_ms, pipe, data, intact))
+            self.publish_stats()
             return
 
         # `info` answers with an indented block closed by OK, and it is the one
@@ -903,6 +1002,7 @@ class Handler(BaseHTTPRequestHandler):
             self._json({"decoder": self.session.parser.name,
                         "state": self.session.state_text,
                         "retained": len(self.session.frames),
+                        "loss": self.session.loss.totals(),
                         "frames": frames})
         elif self.path == "/api/events":
             self._events()
@@ -988,6 +1088,7 @@ class Handler(BaseHTTPRequestHandler):
             elif self.path == "/api/parser":
                 self.session.set_parser(payload["name"])
                 self._json({"ok": True, "columns": column_spec(self.session.parser),
+                            "loss": self.session.loss.totals(),
                             "frames": self.session.decoded_history()})
                 return
             elif self.path == "/api/restart":
@@ -1039,6 +1140,9 @@ class Handler(BaseHTTPRequestHandler):
             self._sse(self.session.status_event())
             # Third, because it outranks both: what the dongle itself last said.
             self._sse(self.session.radio_event())
+            # Before the frames: the totals describe all of them, including any
+            # this client is not being sent again.
+            self._sse(self.session.stats_event())
             for frame in self.session.decoded_history():
                 if resume is None or frame["id"] > resume:
                     self._sse(frame)
