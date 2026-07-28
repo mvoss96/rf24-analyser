@@ -176,6 +176,9 @@ input[type="text"], input:not([type]) {
   border-radius: 999px;
   cursor: help;
 }
+/* Only the stale one does anything when clicked, so only it looks clickable. */
+.build.stale { cursor: pointer; }
+.build.stale:hover { color: var(--text); }
 
 /* --- toolbar --- */
 

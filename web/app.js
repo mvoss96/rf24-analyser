@@ -653,6 +653,10 @@ function handle(event) {
     // clear we were disconnected across. What follows is a full replay, so
     // the table has to be empty to receive it.
     rebuild([]);
+    // A different process is the one case where the build badge is certainly
+    // out of date, and it is polled only once a minute. Left alone it would go
+    // on inviting a restart that has already happened.
+    showBuild();
   } else if (event.type === "scan") {
     renderScan(event);
   } else if (event.type === "parser") {
@@ -851,6 +855,17 @@ function init() {
   stream.onmessage = (e) => handle(JSON.parse(e.data));
   stream.onerror = () => setState("server lost", "bad");
 
+  // Only while it is warning: a restart resets the dongle and throws the
+  // capture away, so it must not be one stray click away at any other time.
+  $("build").addEventListener("click", async () => {
+    if (!$("build").classList.contains("stale")) return;
+    setState("restarting…", "warn");
+    await post("/api/restart");
+    // Nothing else to do: the successor binds the same port, EventSource
+    // reconnects on its own, and the new process's run token makes the replay
+    // a reset rather than a duplicate.
+  });
+
   showBuild();
   // Polled, not pushed: the answer changes when a file on disk changes, which
   // the server has no event for. A minute is soon enough to catch an edit
@@ -894,11 +909,13 @@ async function showBuild() {
   if (app.stale && app.stale.length) {
     el.classList.add("stale");
     el.classList.remove("dim");
-    el.textContent = `v${app.version} — restart to load changes`;
+    el.textContent = `v${app.version} — click to restart`;
     el.title = `Changed on disk since this server started (${started}):\n` +
                app.stale.join("\n") +
                "\n\nPython keeps imported modules in memory, so what you see " +
-               "is the older code.";
+               "is the older code. Click to restart into it — the port that is " +
+               "open is reopened, but the dongle resets, so the radio " +
+               "configuration and the captured frames are lost.";
     if (!staleWarned) {
       staleWarned = true;
       log(`[warning] source changed since start (${app.stale.join(", ")}) - ` +

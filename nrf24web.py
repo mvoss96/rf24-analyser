@@ -18,9 +18,12 @@ there is deliberately no --port flag duplicating that.
 
 import argparse
 import json
+import os
 import queue
 import re
 import socket
+import subprocess
+import sys
 import threading
 import time
 import webbrowser
@@ -67,6 +70,9 @@ _STAMP_AT_START = _source_stamp()
 # starts over with the process, so the number alone cannot say whether a client
 # is resuming from this run's stream or a previous one's.
 _RUN = str(int(_STARTED_AT))
+
+# The listening server, so a restart can hand its port to the successor.
+_SERVER = None
 
 
 def _stale_sources():
@@ -969,6 +975,14 @@ class Handler(BaseHTTPRequestHandler):
                 self._json({"ok": True, "columns": column_spec(self.session.parser),
                             "frames": self.session.decoded_history()})
                 return
+            elif self.path == "/api/restart":
+                # Answer first, restart after: the reply is the last thing this
+                # process will manage to say.
+                self._json({"ok": True, "stale": _stale_sources(),
+                            "port": (self.session.dongle.port
+                                     if self.session.dongle else None)})
+                threading.Thread(target=restart, daemon=True).start()
+                return
             elif self.path == "/api/clear":
                 self.session.clear()
             else:
@@ -1063,10 +1077,67 @@ def _already_serving(port):
         return False
 
 
+def _reconnect_quietly(session, port):
+    """Reopens the port a restart inherited. A failure is reported, not raised.
+
+    The dongle may be gone by now - that is one of the reasons somebody
+    restarts - and a traceback in the console would say less than the line the
+    browser gets.
+    """
+    try:
+        session.connect(port)
+    except Exception as exc:
+        session.hub.publish({"type": "line", "kind": "error",
+                             "text": f"ERR could not reopen {port} after the restart: {exc}"})
+
+
+def restart():
+    """Replaces this process with one running the code that is on disk.
+
+    Python keeps what it imported, so the only way to pick up an edit is to
+    start again - which is why the corner says so when a source file has moved
+    past the process. Doing it from in here saves the round trip through a
+    terminal, but never on its own: a restart pulls DTR and resets the dongle,
+    so a capture in progress and the radio configuration both go with it. That
+    is a price for the person watching to agree to, not for a file watcher.
+
+    The port that was open is handed to the successor, because putting it back
+    is what makes the button worth pressing. The radio configuration is not: it
+    did not survive the reset, and re-applying a remembered one would be this
+    program deciding what the radio should be doing.
+    """
+    time.sleep(0.2)          # let the reply reach the browser before we go
+    session = Handler.session
+    port = session.dongle.port if session.dongle else None
+    session.disconnect()     # the successor cannot open a port we still hold
+    if _SERVER is not None:
+        try:
+            _SERVER.server_close()
+        except OSError:
+            pass
+
+    argv = [sys.executable, *sys.argv]
+    if "--restarted" not in argv:
+        argv.append("--restarted")
+    if port and "--reconnect" not in argv:
+        argv += ["--reconnect", port]
+    # Detached, so the successor outlives this process rather than dying with
+    # the console it was started from.
+    flags = {"creationflags": subprocess.DETACHED_PROCESS |
+                              subprocess.CREATE_NEW_PROCESS_GROUP} if os.name == "nt" else {}
+    subprocess.Popen(argv, cwd=str(HERE), close_fds=True, **flags)
+    os._exit(0)
+
+
 def main():
     ap = argparse.ArgumentParser(description="Browser front end for the nRF24 Analyser dongle.")
     ap.add_argument("--http", type=int, default=8724, help="http port (default 8724)")
     ap.add_argument("--no-browser", action="store_true", help="do not open a browser")
+    # Both internal, both set by restart() on its successor. --reconnect is not
+    # the --port flag this program deliberately does not have: it does not
+    # choose a port, it restores the one that was already open.
+    ap.add_argument("--restarted", action="store_true", help=argparse.SUPPRESS)
+    ap.add_argument("--reconnect", help=argparse.SUPPRESS)
     args = ap.parse_args()
 
     url = f"http://127.0.0.1:{args.http}/"
@@ -1075,8 +1146,9 @@ def main():
     # bind the same port instead of failing - two servers, and the second one
     # cannot open the dongle the first is holding. Double-clicking start.cmd a
     # second time is exactly how that happens, so check first and just point the
-    # browser at the instance already running.
-    if _already_serving(args.http):
+    # browser at the instance already running. Not after a restart: the instance
+    # that would answer is the one that just asked for this one.
+    if not args.restarted and _already_serving(args.http):
         print(f"nRF24 Analyser is already running on {url}")
         if not args.no_browser:
             webbrowser.open(url)
@@ -1087,11 +1159,26 @@ def main():
     Handler.hub = hub
     Handler.session = session
 
-    try:
-        server = ThreadingHTTPServer(("127.0.0.1", args.http), Handler)
-    except OSError as exc:
-        print(f"cannot start on port {args.http}: {exc}")
-        return
+    # The predecessor closes its socket before spawning this one, but the two
+    # overlap by however long that takes, so a restart waits rather than giving
+    # up on the port it is meant to inherit.
+    deadline = time.monotonic() + (3.0 if args.restarted else 0.0)
+    while True:
+        try:
+            server = ThreadingHTTPServer(("127.0.0.1", args.http), Handler)
+            break
+        except OSError as exc:
+            if time.monotonic() >= deadline:
+                print(f"cannot start on port {args.http}: {exc}")
+                return
+            time.sleep(0.1)
+
+    global _SERVER
+    _SERVER = server
+    if args.reconnect:
+        # After the socket is listening, so the browser finds the server up
+        # while the dongle is still greeting.
+        threading.Timer(0.1, lambda: _reconnect_quietly(session, args.reconnect)).start()
     print(f"nRF24 Analyser web ui on {url}   (Ctrl-C to stop)")
     if not args.no_browser:
         threading.Timer(0.5, lambda: webbrowser.open(url)).start()
