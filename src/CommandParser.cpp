@@ -188,6 +188,84 @@ void CommandParser::handleTxSeq(char *args) {
   Serial.println();
 }
 
+// A payload that never crossed the serial line. Everything else in this
+// firmware measures the radio and the UART together, because the bytes arrive
+// over the UART - and the UART turned out to be the constraint in both
+// directions. `txtest` takes the payload from flash instead and stamps a frame
+// index into it, so what is left is the radio, the SPI bus and this loop.
+//
+// Pair it with `format none` at the far end and no UART is in the path at all.
+static const uint8_t TEST_PATTERN[32] PROGMEM = {
+  0x5A, 0xA5, 0x00, 0x00, 0x0F, 0xF0, 0x33, 0xCC, 0x01, 0x02, 0x04, 0x08,
+  0x10, 0x20, 0x40, 0x80, 0xFE, 0xFD, 0xFB, 0xF7, 0xEF, 0xDF, 0xBF, 0x7F,
+  0x11, 0x22, 0x33, 0x44, 0x55, 0x66, 0x77, 0x88
+};
+
+void CommandParser::handleTxTest(char *args) {
+  if (!radio_.configured()) { err(F("unconfigured - run listen first")); return; }
+  if (args == nullptr) { err(F("usage: txtest <addr> <count> [ack|noack] [size=<n>]")); return; }
+
+  const RadioConfig &cfg = radio_.config();
+  char *save = nullptr;
+  char *addrTok = strtok_r(args, " 	", &save);
+  if (addrTok == nullptr) { err(F("missing addr")); return; }
+  uint8_t addr[MAX_ADDR_WIDTH];
+  if (parseHexList(addrTok, addr, 0, MAX_ADDR_WIDTH) != cfg.addrWidth) {
+    err(F("addr length must match aw")); return;
+  }
+  char *countTok = strtok_r(nullptr, " 	", &save);
+  if (countTok == nullptr) { err(F("missing count")); return; }
+  long count = atol(countTok);
+  if (count < 1 || count > 20000) { err(F("count 1..20000")); return; }
+
+  bool noack = true;
+  uint8_t size = 32;
+  for (char *tok = strtok_r(nullptr, " 	", &save); tok != nullptr;
+       tok = strtok_r(nullptr, " 	", &save)) {
+    if (strcmp(tok, "ack") == 0)        noack = false;
+    else if (strcmp(tok, "noack") == 0) noack = true;
+    else if (strncmp(tok, "size=", 5) == 0) {
+      long v = atol(tok + 5);
+      if (v < 3 || v > 32) { err(F("size 3..32")); return; }
+      size = (uint8_t)v;
+    }
+    else { err(F("unknown key")); return; }
+  }
+
+  uint8_t payload[32];
+  for (uint8_t i = 0; i < size; i++) payload[i] = pgm_read_byte(&TEST_PATTERN[i]);
+
+  radio_.beginSequence(addr, noack);
+  const uint32_t started = micros();
+  long done = 0;
+  for (; done < count; done++) {
+    // Two bytes of frame index, so the far end can tell the frames apart and
+    // a duplicate or a gap is visible rather than assumed.
+    payload[1] = (uint8_t)(done >> 8);
+    payload[2] = (uint8_t)done;
+    if (!radio_.sequenceWrite(payload, size)) break;
+  }
+  const RadioController::TxResult r = radio_.endSequence();
+  const uint32_t took = micros() - started;
+
+  // The firmware's own clock, because the host's includes the round trip that
+  // this command exists to measure without.
+  Serial.print(F("OK txtest sent="));
+  Serial.print(r.sent);
+  Serial.print('/');
+  Serial.print(count);
+  Serial.print(F(" size="));
+  Serial.print(size);
+  Serial.print(F(" ack="));
+  if (!r.acking) Serial.print(r.asked ? F("off") : F("no"));
+  else { Serial.print(F("yes failed=")); Serial.print(r.failed);
+         Serial.print(F(" retries=")); Serial.print(r.retries); }
+  Serial.print(F(" us="));
+  Serial.print(took);
+  Serial.print(F(" us_per="));
+  Serial.println(done ? took / (uint32_t)done : 0);
+}
+
 void CommandParser::feedSeqPayload(char *line) {
   seqLastMs_ = millis();
   if (line[0] == '\0') return;              // a CRLF's second terminator
@@ -627,6 +705,8 @@ void CommandParser::dispatch(char *line) {
     Serial.end();
     Serial.begin(v);
     baud_ = v;
+  } else if (strcmp(cmd, "txtest") == 0) {
+    handleTxTest(rest);
   } else if (strcmp(cmd, "format") == 0) {
     // Answered in ASCII either way, including the one that switches to binary:
     // the reply belongs to the command stream, which stays readable.
@@ -675,6 +755,7 @@ void CommandParser::dispatch(char *line) {
     Serial.println(F("  bin: raw records len+payload+crc8 instead of hex lines"));
     Serial.println(F("tx <addr> <hex...> [ack|noack] [x<n>] [gap=<ms>]"));
     Serial.println(F("format bin|text|none  (bin: binary records; none: count only)"));
+    Serial.println(F("txtest <addr> <count> [ack|noack] [size=<n>]  (payload from flash)"));
     Serial.println(F("baud 250000|500000|1000000|2000000  (for this session; reset restores)"));
     Serial.println(F("rxmode <0|1|2> | rxdbg <0|1> | regs | reg <addr> [val]  (diagnosis)"));
     ok();

@@ -483,6 +483,50 @@ the serial line takes over. Both directions are now within a fifth of that
 line, and the one measure that would widen it - a faster serial rate - has been
 measured twice as a net loss, most recently at 1.10 ms a frame against 1.00.
 
+#### The same thing without the UART
+
+Every figure above measures the radio and the serial line together, because the
+payload arrives over the serial line - and that turned out to be what binds.
+`txtest` removes it: the payload comes from flash with a frame index stamped
+into it, so nothing crosses the UART per frame. Point it at a receiver in
+`format none` and there is no UART in the path at all.
+
+2000 frames of 32 bytes, timed by the sending firmware's own clock:
+
+| air rate | | us/frame | kB/s | air allows | received |
+|---|---|---|---|---|---|
+| 250 kbps | not acknowledged | 1284 | 24.3 | 1316 us | 1990/2000 |
+| 250 kbps | acknowledged | 1981 | 15.8 | 1738 us | 2000/2000, 34 retransmissions |
+| 1 Mbps | not acknowledged | 321 | **97.4** | 329 us | 1999/2000 |
+| 1 Mbps | acknowledged | 678 | 46.1 | 532 us | 2000/2000, **0** |
+| 2 Mbps | not acknowledged | **161** | **194.1** | 164 us | 1420/2000 |
+| 2 Mbps | acknowledged | 473 | 66.1 | 331 us | 2000/2000, **0** |
+
+Unacknowledged, the radio sits **on the air's own limit at every rate** - 161 us
+against a calculated 164. The chip, the SPI bus and the drain loop were never
+the constraint and this says so outright.
+
+Set against the same transfers driven over serial:
+
+| | through the UART | radio only | the UART costs |
+|---|---|---|---|
+| 2 Mbps, not acknowledged | 37.5 kB/s | 194.1 kB/s | **5.2x** |
+| 2 Mbps, acknowledged | 35.9 kB/s | 66.1 kB/s | 1.8x |
+| 1 Mbps, not acknowledged | 37.5 kB/s | 97.4 kB/s | 2.6x |
+
+So the entire optimisation above - records instead of hex, a window, pipelining
+- was work on the host link, and what lies behind it is five times larger. That
+is the honest shape of this dongle: **a radio that can do 194 kB/s behind a
+serial port that can do 47.**
+
+The receiving side has a ceiling of its own, and the 2 Mbps unacknowledged row
+is where it shows: 1420 of 2000, at a rate the sender held for the other five
+rows. 1420 frames over 322 ms is 4400 a second, so a dongle can take a frame
+off the radio and out of the FIFO in about 226 us when it prints nothing at all
+- roughly 141 kB/s. Acknowledgement hides this completely, which is what the
+zero retransmission counts mean: the link paced itself to the receiver without
+losing anything.
+
 #### How much of it is Arduino
 
 The SPI clock was at 4 MHz where the chip allows 10 and the ATmega can drive 8.

@@ -71,6 +71,7 @@ private:
   void handleListen(char *args);
   void handleTx(char *args);
   void handleTxSeq(char *args);
+  void handleTxTest(char *args);
   void feedSeqPayload(char *line);
   void feedSeqByte(uint8_t b);
   uint16_t confEvery() const;
