@@ -57,19 +57,25 @@ sequence number, no length, no checksum. Only you know what your receiver
 expects, so build the framing into the bytes before sending them.
 
 **Use `ack=True` for anything that has to arrive.** Measured dongle to dongle,
-4096 bytes:
+a 13452-byte JPEG at 2 Mbps, the receiving dongle silent:
 
-| | per frame | received at a second dongle |
+| | per frame | the whole file |
 |---|---|---|
-| `ack=False`, full rate | 1.6 ms | ~40 % |
-| `ack=True` | 5.7 ms | 100 %, byte-for-byte |
+| `ack=True` | 0.93 ms | 0.39 s, byte-for-byte identical |
+| `ack=False` | 0.88 ms | 0.38 s, and about a tenth of it never arrives |
 
 The fast case does not lose frames to the radio. It loses them at the
-*receiver*, which needs about 1.7 ms to write each frame out over its own
-serial port and misses what arrives faster than that — so the 40 % measures
-the analyser, not the link, and a receiver that does not narrate every frame
-over serial may do better. Do not carry that number over to your device
-without measuring it.
+*receiver*, which has to write each one out over its own serial port and misses
+what arrives faster than that. A receiver in `format none` counts frames and
+prints nothing, and then loses none — so the loss measures the analyser
+narrating, not the link. Do not carry either number over to your device without
+measuring it.
+
+Two transfers at once, one each way, is worse than doing them in turn: the radio
+is half duplex, so two dongles transmitting are two dongles with nobody
+listening. Acknowledged they take turns by accident of the resume logic and
+neither finishes; unacknowledged both report every frame sent and **nothing
+arrives at all**.
 
 What holds regardless: `ack=False` throws each frame once and never learns
 whether it landed, so `sent` counts frames transmitted, not frames received.

@@ -1077,9 +1077,11 @@ void RadioController::printInfo(long baud) {
   // it says accounts for - and the one most likely to be mistaken for a broken
   // link, because in binary the frames stop looking like anything.
   Serial.print(F("  baud="));    Serial.println(baud);
-  // The clock frame records are stamped against. They carry only its low 16
-  // bits, so a host that has just connected - or has heard nothing for hours -
-  // can anchor itself here instead of guessing which wrap it is in.
+  // The clock a run of frames states its base against, and the dongle's uptime.
+  // It was load-bearing while a record carried only the low 16 bits of it and a
+  // host had to work out which wrap it was in; a run now states all 32, so this
+  // is diagnosis rather than protocol - how long has this dongle been up, and
+  // does its idea of elapsed time agree with the host's.
   Serial.print(F("  ms="));      Serial.println(millis());
   Serial.print(F("  format="));
   Serial.println(outMode_ == OUT_BIN ? F("bin")

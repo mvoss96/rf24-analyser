@@ -98,7 +98,7 @@
 // SEQ_DRAIN_MS, and `OK txseq idle dropped=<n>` says when that is over.
 // Additive: it only ever follows a `stopped=` line, so a host that stops
 // reading at one sees what it saw before, and api stays at 7.
-#define FW_VERSION "3.21.0"
+#define FW_VERSION "3.21.1"
 #define API_VERSION 7
 
 // The rate a dongle always boots at. `baud` can raise it for a session, but a
