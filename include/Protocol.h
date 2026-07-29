@@ -88,7 +88,17 @@
 // rather than the next frame. In this direction, at 500000 baud, no damaged byte
 // has ever been measured; at 1 MBaud they are constant, and 1 MBaud does not
 // work for other reasons.
-#define FW_VERSION "3.20.0"
+// 3.21.0 stops a `txseq` that ended early from answering the payloads behind
+// it. The host writes a window ahead of the confirmations, so when the dongle
+// gives up on a frame there are still up to seven records on the way to it -
+// and those were parsed as commands, one `ERR unknown cmd` or `ERR line too
+// long` apiece. The host read the first of them as the answer to whatever it
+// said next, which is how a run that merely needed picking up again became a
+// failed transfer. They are dropped now until the port has been quiet for
+// SEQ_DRAIN_MS, and `OK txseq idle dropped=<n>` says when that is over.
+// Additive: it only ever follows a `stopped=` line, so a host that stops
+// reading at one sees what it saw before, and api stays at 7.
+#define FW_VERSION "3.21.0"
 #define API_VERSION 7
 
 // The rate a dongle always boots at. `baud` can raise it for a session, but a

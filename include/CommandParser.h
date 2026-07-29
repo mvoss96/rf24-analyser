@@ -15,7 +15,7 @@ public:
   // Called every loop. Notices a `txseq` whose payload lines stopped arriving
   // and ends it, rather than leaving the dongle waiting for a run that the
   // host has abandoned - in which case every later command would be eaten as
-  // if it were a payload.
+  // if it were a payload. Also times the quiet that ends the drain below.
   void poll();
 
   // The identity-and-state line: printed once at boot as the greeting, and on
@@ -54,6 +54,18 @@ private:
   // to wait for costs more than it looks: measured, going from none to one per
   // frame put 0.76 ms on a 0.79 ms frame.
   static constexpr uint16_t SEQ_PROGRESS_ACK_BIN = 3;
+  // Silence that ends the drain after a run stopped early. A run only ever
+  // stops early with payloads still in flight: the host writes a window ahead
+  // of the confirmations, so up to seven records are already on the wire or in
+  // this buffer when the dongle gives up on a frame. Parsing those as commands
+  // is what they used to be - a burst of `ERR unknown cmd` and `ERR line too
+  // long` that the host then read as the answer to its next command, turning
+  // one abandoned run into a failed transfer. So they are dropped instead, and
+  // the port counts as quiet again only after nothing has arrived for a while.
+  // Fifty milliseconds is two hundred times the 238 bytes a full window takes
+  // at the boot rate, and the host does not have to guess at it anyway: the
+  // line printed at the end says when the drain is over.
+  static constexpr uint16_t SEQ_DRAIN_MS = 50;
   uint16_t seqLeft_ = SEQ_IDLE;
   // Acknowledged runs confirm every frame before writing the next, so the
   // firmware is not reading the port for up to twenty milliseconds at a time.
@@ -77,6 +89,10 @@ private:
   uint32_t seqStartMs_ = 0;
   uint32_t seqLastMs_ = 0;
   uint32_t seqNudgeMs_ = 0;
+  // Dropping whatever the host had already written when a run stopped early.
+  bool draining_ = false;
+  uint16_t dropped_ = 0;
+  uint32_t drainLastMs_ = 0;
 
   void dispatch(char *line);
   void handleHwset(char *args);

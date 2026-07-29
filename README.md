@@ -281,6 +281,25 @@ commands** — anything else typed there is transmitted, or ends the run with
 run cannot swallow the commands that follow it. Unacknowledged runs report
 progress every 32 frames (`OK txseq at=<n>`).
 
+A closing line carrying `stopped=` is followed by one more:
+
+```
+OK txseq sent=311/512 ack=yes failed=1 retries=812 stopped=gave up
+OK txseq idle dropped=196
+```
+
+Because a run only ever stops early *while the host is still writing*. The host
+keeps a window of payloads in flight — it has to, or a confirmation round trip
+lands between every frame — so when the dongle gives up on a frame there are
+still several records on the way to it. Those used to be read as commands, one
+`ERR unknown cmd` or `ERR line too long` apiece, and the host read the first of
+them as the answer to whatever it said next. A transfer that only needed
+picking up again failed instead, and did so most often on the slowest runs:
+five milliseconds a frame is five milliseconds further ahead for the host to
+get. They are dropped now, and `dropped=` counts the bytes — how far ahead the
+host had got. `idle` is the dongle saying it is reading commands again, and
+until it does, anything sent goes the same way as the payloads.
+
 Nothing is added to the payloads. No sequence number, no length, no checksum:
 only the caller knows what its receiver expects, and framing invented here
 would describe a transfer this tool does not control.
