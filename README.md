@@ -879,11 +879,32 @@ a byte at a time with a flush between blocks, so the test measured its own
 overhead. Building the block and handing it over in one write is what made the
 question answerable.
 
-What it would take to use: the receive path writes in 32-byte blocks with a 60 us
-pause, at 1 MBaud. A 35-byte frame record then costs 437 us of line instead of
-700, which puts the receiver's per-frame budget at about 546 us against the 850
-a frame arrives in - under it with room, where today it is over. That is the
-prize, and it is the largest single lever this file has found.
+It was then built into the receive path, at 100 us rather than the 60 that first
+passed - the difference costs 7.6 kB/s and buys margin on a failure that is
+silent. **And it made the receiver worse.**
+
+| receiver | frames of 512, 1 Mbps unacked | `us_out` |
+|---|---|---|
+| 500000 baud, continuous | 467-469 | 660 us |
+| 1 MBaud, a block per record | 411-412 | 850 us |
+| 1 MBaud, blocks aligned to 32 bytes | 451-459 | 735 us |
+
+The first attempt paid the pause twice for a 35-byte record, because a record is
+one block and a bit. Accumulating into a 32-byte buffer so the pause falls once
+per block on the wire recovered most of that - and it is still behind.
+
+**Reliability at 1 MBaud requires `Serial.flush()`, and flushing is what costs.**
+At 500000 `Serial.write` returns as soon as the bytes are in the ring buffer and
+the UART empties it by interrupt, so the drain loop does its 187 us of SPI work
+*while* the line is busy. A flush ends that: the loop waits for every block, and
+the overlap it gives up is worth more than the extra bandwidth. The bench
+measured 72 kB/s at this setting because a bench has nothing else to do; a
+receiver has 187 us of work per frame that used to hide behind the wire.
+
+So the finding stands and the application does not. `bench/serialbench` keeps the
+block mode, because the measurement is worth having: **1 MBaud is usable on this
+hardware, in 32-byte blocks with a pause, for anything that is only moving
+bytes.** A receiving dongle is not that. Reverted.
 
 #### A quarter of the wire is idle, and it is not the confirmation
 
