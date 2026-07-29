@@ -841,6 +841,39 @@ protocol.
 At 250 kbps none of this matters - the air alone wants 1252 us of the 2019, and
 the wire is idle two thirds of the time.
 
+#### A quarter of the wire is idle, and it is not the confirmation
+
+Put the two numbers next to each other. A record is 34 bytes, so 680 us of a
+500000-baud line. A frame takes 922 us. **The wire is busy 74 % of the time** -
+where the serial bench, an empty firmware driven with the same window and the
+same confirmation interval, reaches 88 %.
+
+The obvious suspect was the flow control. The host may run seven records ahead
+and then waits, and `at=` is the message that lets it go again - and it was said
+*after* the radio work, so the dongle delayed by its own 218 us the very thing
+that unblocked the host. `at=` only claims that a record is whole and its
+checksum passed, which is true the moment the checksum is checked, so saying it
+first costs nothing and cannot overrun anything: the window is seven records and
+the serial receive buffer holds seven and a half.
+
+Measured over three transfers at each rate:
+
+| | after the radio work | **before it** |
+|---|---|---|
+| 250 kbps | 823, 822 ms | 826, 820, 825 ms |
+| 1 Mbps | 396, 395 ms | 396, 396, 395 ms |
+| 2 Mbps | 387, 389 ms | 389, 391, 394 ms |
+
+**Nothing at all**, and reverted. The host was not waiting on the confirmation,
+so that explanation of the idle quarter is wrong and is written down here as
+wrong rather than left standing as a plausible story.
+
+What remains true is the measurement: the wire is idle a quarter of the time and
+the reason is not known. The serial bench says a host driving this pattern over
+this hardware leaves 12 % of the line unused on its own; where the other 14 %
+goes has not been found, and five changes to this path have now failed to move
+it.
+
 #### The payload into the FIFO over our own SPI path
 
 The last item the sending path accounts for: 138 us a frame to put 33 bytes into
