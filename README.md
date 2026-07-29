@@ -455,7 +455,7 @@ interleaved rounds: `low` 1.96 ms with 1-2 retransmissions, `high` 2.06 with
 together and full power overloads the receiver's front end; `low` is both the
 default and the optimum here.
 
-Now at **fw 3.16.0**, three interleaved rounds per row, median. **Each rate on
+Now at **fw 3.19.0**, three interleaved rounds per row, median. **Each rate on
 its own best channel** — 250 kbps on 14, 1 and 2 Mbps on 88 — because the choice
 turned out to be worth more than anything in the firmware and to differ by rate:
 channel 14 is the quietest for 250 kbps and among the worst for 2 Mbps, the
@@ -464,12 +464,12 @@ what arrived can be checked. The Δ is against fw 3.14.0 on the same channels.
 
 | air rate | | measured | Δ ms | air used | wire used | seen by observer | Δ |
 |---|---|---|---|---|---|---|---|
-| 250 kbps | acknowledged | 2.00 ms, 16.0 kB/s | +0.04 | 93 % | 34 % | 512/512 | +0 |
-| 250 kbps | not | 1.33 ms, 24.1 kB/s | +0.00 | 99 % | 51 % | 506/512 | +5 |
-| 1 Mbps | acknowledged | 0.98 ms, 32.7 kB/s | +0.00 | 68 % | 69 % | 512/512 | +0 |
-| 1 Mbps | not | 0.87 ms, 36.7 kB/s | +0.02 | 38 % | 78 % | 454/512 | **+14** |
-| 2 Mbps | acknowledged | 0.95 ms, 33.7 kB/s | −0.06 | 49 % | 72 % | 512/512 | +0 |
-| 2 Mbps | not | 0.88 ms, 36.4 kB/s | +0.01 | 19 % | 77 % | 447/512 | **+7** |
+| 250 kbps | acknowledged | 1.99 ms, 16.1 kB/s | −0.01 | 94 % | 34 % | 512/512 | +0 |
+| 250 kbps | not | 1.31 ms, 24.5 kB/s | +0.01 | 101 % | 52 % | 512/512 | +6 |
+| 1 Mbps | acknowledged | 0.94 ms, 33.9 kB/s | −0.01 | 70 % | 72 % | 512/512 | +0 |
+| 1 Mbps | not | 0.88 ms, 36.4 kB/s | +0.01 | 37 % | 77 % | 487/512 | **+21** |
+| 2 Mbps | acknowledged | 0.94 ms, 34.1 kB/s | −0.02 | 49 % | 72 % | 512/512 | +0 |
+| 2 Mbps | not | 0.88 ms, 36.4 kB/s | +0.01 | 19 % | 77 % | 485/512 | **+22** |
 
 The sending times stand still, which is right and has been right three times
 running: that path is bound by the serial line, so neither a shorter record nor
@@ -478,8 +478,9 @@ observer gained another 14 and 7 frames from CSN by direct port write, and the
 acknowledged rows needed fewer retransmissions again (1 Mbps 71 → 64, 2 Mbps
 133 → 125), because a receiver that keeps up goes on acknowledging.
 
-Cumulative over the two changes: on the rows where the observer is the
-constraint, **1 Mbps 426 → 454 of 512 and 2 Mbps 422 → 447**.
+Cumulative over this branch's work on the receive path: on the rows where the
+observer is the constraint, **1 Mbps 426 → 487 of 512 and 2 Mbps 422 → 485**,
+and padded sensor frames go from about 426 to 512 of 512 at both rates.
 
 Against a **silent** receiver the same six rows read 1.31 / 1.99 / 0.88 / 0.90 /
 0.87 / 0.89 ms with 512 of 512 seen everywhere except 250 kbps unacknowledged,
@@ -802,6 +803,139 @@ The other two were paying no rent at all:
 receive path was touched, and a check run says so: 2 Mbps unacknowledged with the
 receiver printing measures 0.88 ms a frame and 439 of 512, against 0.87 and 440
 before; padded payloads stay at 512 of 512.
+
+#### Where a transmitted frame's time actually goes
+
+Three attempts to speed the sending path up measured as exactly zero - SPI from
+4 to 8 MHz, CSN by port write, batching the writes - and each time the
+explanation was "that path is bound by the serial line". True, but it was never
+taken apart. `txseq` now reports the split, by the firmware's own clock: `us_air`
+is the spin waiting for room in the transmit FIFO, `us_spi` is the payload going
+out over the bus, and whatever a run takes beyond the two is the record arriving
+over serial.
+
+A 13452-byte JPEG, 421 acknowledged frames, per frame:
+
+| air rate | total | waiting for the FIFO | SPI | the rest |
+|---|---|---|---|---|
+| 250 kbps | 2019 us | **1252 us** | 126 us | 641 us |
+| 1 Mbps | 929 us | 107 us | 135 us | **687 us** |
+| 2 Mbps | 948 us | 121 us | 140 us | **687 us** |
+
+**A 34-byte record at 500000 baud needs 680 us.** The remainder above is 687 -
+the serial line and essentially nothing else, which is the first direct
+confirmation of a claim this file has been making for a while.
+
+But read the rows again. At 1 and 2 Mbps the three parts **add up**: 687 + 107 +
+135 = 929. They are sequential, not overlapped - the firmware waits for a whole
+record, then spins for FIFO room, then writes it out, and only then starts
+waiting for the next. The UART fills its ring buffer by interrupt throughout, so
+the 242 us of radio work is time the wire could have been busy and was not.
+
+That is worth about **a quarter of the sending path**, and it is the first
+concrete lever found on it since the window. Not attempted here: it means writing
+frame N to the radio while the bytes of frame N+1 are still arriving, which is a
+change to how `feedSeqByte` and `sequenceWrite` are ordered rather than to any
+protocol.
+
+At 250 kbps none of this matters - the air alone wants 1252 us of the 2019, and
+the wire is idle two thirds of the time.
+
+#### Waiting for the radio while the record is still arriving
+
+The split above says the sending path spends 687 us receiving a record, 107
+waiting for room in the transmit FIFO and 135 writing it out - in that order, one
+after the other. The middle one does not need a payload to hand, so it now
+happens as soon as a record's *length* byte has arrived, with the other 33 bytes
+still on the wire.
+
+| | 250 kbps | 1 Mbps | 2 Mbps |
+|---|---|---|---|
+| before | 0.88 s, `us_air` 527 ms | 0.40 s, 45 ms | 0.41 s, 51 ms |
+| **after** | **0.83 s, 508 ms** | 0.40 s, **30 ms** | 0.40 s, **39 ms** |
+
+**It did what it was built to do and mostly did not matter.** The wait moved and
+shrank by a third, and the total only followed at 250 kbps - six percent, where
+the air is the constraint and the wire has time to spare. At 1 and 2 Mbps
+nothing: the binding terms there are the 687 us of record and the 135 us of bus,
+and the wait was never on the critical path. The prediction of "about a quarter
+of the sending path" was wrong, and this is the third estimate in this file to
+overshoot the same way.
+
+What it did fix is a number. `OBSERVE_TX` holds the retransmission count of the
+*current* transaction and is overwritten by the next, so reading it well after a
+frame completed could report a later packet's count. Reaping each `TX_DS` as it
+lands reads it while it still belongs to the frame that finished: the reported
+count over a 421-frame transfer fell from 47 to 8 at 1 Mbps and from 97 to 46 at
+2 Mbps, stable to within one across three runs. That is not fewer
+retransmissions - it is the right ones being counted.
+
+#### The frames as a stream
+
+The record `format bin` sent was self-contained: a sync byte, a length, the pipe,
+a timestamp, the payload, a checksum and a newline. Seven of those bytes were
+frame rather than data, and six of the seven said the same thing as the record
+before - same pipe, nearly the same millisecond, and a marker whose only job was
+to say "this is not text".
+
+They are now a stream. A **run** of frames opens by stating what they have in
+common and closes when the drain loop has nothing left:
+
+| | |
+|---|---|
+| `0x01` pipe len base(4) | a new epoch: which pipe, how long a payload is, and the millisecond to count from |
+| `0x02` | the epoch before it still holds; frames follow directly |
+| `0xFF` `
+` | no more frames, whatever comes next is readable again |
+
+and a frame between them costs three bytes:
+
+| | |
+|---|---|
+| stored length (bits 5–0), `LONG` (bit 6) | how many payload bytes follow |
+| the true length | only when `LONG` says the run's default does not apply |
+| offset | milliseconds past the epoch's base, 0–255 |
+| | payload, less any repeated tail, then the fill byte |
+| CRC-8 | over the payload as it was, all of it |
+
+**The offset is to the base, not to the frame before.** Every frame in a run is
+therefore placed independently: one lost in between costs nothing and no error
+accumulates. That is the difference between this and a delta chain, which was
+considered and rejected for exactly that reason - a lost frame would have shifted
+every timestamp after it, and repeat spacing is the one thing the stamp exists to
+measure.
+
+The stored length and the true length differ when a repeated tail was suppressed,
+so the run's count is implied by the pair and needs no byte of its own. `LONG` is
+for dynamic payloads, where the length changes frame to frame; with `dpl` off it
+is never set.
+
+A run ends at every pass of the drain loop, and anything not a frame - a reply, a
+`WARN`, a `DBG` - closes the open run first. So a run is never interrupted, and
+the host's rule is simple: outside a run, a byte below `0x03` opens one; inside
+one, `0xFF` ends it.
+
+Measured, 512 unacknowledged frames with the receiver printing every one:
+
+| | api 6 record | api 7 stream |
+|---|---|---|
+| 1 Mbps, random payload | 454/512 | **466/512** |
+| 2 Mbps, random payload | 447/512 | **463/512** |
+| either rate, padded payload | 512/512 | 512/512 |
+| `us_out`, the blocking part of the write | 692 us | 654 us |
+
+**Less than the arithmetic promised, and the reason is worth writing down.** A
+frame costs 3 bytes plus 1 to open the run and 2 to close it, so the fixed cost
+per frame is 3 + 3/N for a run of N. Predicting a run of three - the depth of the
+chip's RX FIFO - gives 4 bytes a frame and a comfortable margin. The measurement
+says the gain is about a third of that, which means runs are mostly of one or
+two: the drain loop is woken per frame and empties what is there rather than
+waiting for company.
+
+What it gives up is immediate resynchronisation. Only a run's first byte is a
+marker, so a reader thrown off by a damaged byte waits for the next run instead
+of the next frame. In this direction at 500000 baud no damaged byte has ever been
+measured here; at 1 MBaud they are constant, and 1 MBaud does not work anyway.
 
 #### CSN, and the difference between an Arduino call and a register
 

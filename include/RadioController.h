@@ -191,6 +191,13 @@ public:
     // longer be exact - see sequenceWrite().
     bool pipelining = true;
     bool gaveUp = false;
+    // Where a frame's time went while the radio had it. `airUs` is the spin
+    // waiting for room in the transmit FIFO, which is the air draining it;
+    // `spiUs` is the payload going out over the bus. Whatever a run takes beyond
+    // these two is the record arriving over serial and the parser reading it -
+    // the split that says which of the three to work on next.
+    uint32_t airUs = 0;
+    uint32_t spiUs = 0;
   };
 
   // Transmits `count` copies of one payload to `addr`, `gapMs` apart. noack=true
@@ -216,6 +223,12 @@ public:
   // frames after a lost one are worth nothing until it is resent.
   void beginSequence(const uint8_t *addr, bool noack);
   bool sequenceWrite(const uint8_t *data, uint8_t len);   // false: gave up here
+  // Wait for room in the transmit FIFO and reap what has completed, without
+  // having a payload to hand yet. Called while the record is still arriving over
+  // serial, which is the whole point: that wait used to happen after the record
+  // was complete, so it was added to the wire time instead of hidden behind it.
+  // Idempotent - sequenceWrite still checks, and then finds nothing to wait for.
+  bool sequenceReady();                                   // false: gave up here
   TxResult endSequence();
 
   // Energy scan across all 126 channels, `passes` sweeps. Prints hits.
@@ -327,6 +340,18 @@ private:
 
   void led(uint8_t pin, bool on);
   void accrue(uint32_t usEnter, uint32_t usRead);
+
+  // The open run of binary frames, if there is one. `streamOpen_` is true only
+  // inside a pass of the drain loop; the rest holds the epoch a later run can
+  // still refer to, so a quiet dongle re-opens with one byte instead of seven.
+  bool     streamOpen_ = false;
+  bool     streamEpoch_ = false;   // the fields below have ever been set
+  uint8_t  streamPipe_ = 0;
+  uint8_t  streamLen_ = 0;         // the true length the run announced
+  uint32_t streamBase_ = 0;
+
+  void streamFrame(const uint8_t *buf, uint8_t len, uint8_t pipe, uint32_t stamp);
+  void streamEnd();
 
   // Last frame seen, for the repeat filter.
   uint8_t lastFrame_[32] = {0};

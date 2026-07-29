@@ -295,6 +295,9 @@ void RadioController::startListening() {
   // "12 overflows" says nothing about the run you are looking at.
   rxCount_ = 0;
   fifoFull_ = 0;
+  // A capture starts with no epoch to refer back to, so the first run states one
+  // rather than assuming a host that has just connected shares ours.
+  streamEpoch_ = false;
   radio_.startListening();
   listening_ = true;
 }
@@ -322,6 +325,92 @@ void RadioController::accrue(uint32_t usEnter, uint32_t usRead) {
   usIn_ += usRead - usEnter;
   usOut_ += micros() - usRead;
   usFrames_++;
+}
+
+// One frame into the open run of binary frames, opening or re-opening it first.
+//
+// Everything a run of frames has in common - which pipe they came in on, how
+// long their payloads are, and which millisecond they are counted from - is
+// stated once at the top of the run. A frame then costs three bytes: what it
+// stores, an offset from the run's base, and a checksum.
+//
+// The offset is to the *base*, not to the frame before. Every frame is therefore
+// placed independently: one lost in between costs nothing, and no error
+// accumulates. A delta to the previous frame would have shifted every timestamp
+// after a loss, which is precisely what the stamp exists to measure.
+//
+// Assembled here and handed over in one Serial.write, so the per-byte cost is a
+// copy into the ring buffer rather than a number being formatted.
+void RadioController::streamFrame(const uint8_t *buf, uint8_t len, uint8_t pipe,
+                                  uint32_t stamp) {
+  // A repeated tail goes as one byte. Senders that pad a static payload out to
+  // 32 bytes are most of what this dongle ever sees - the BTHome sender on this
+  // bench ends every frame with twelve bytes of FF - and those cost the same
+  // serial time as twelve bytes of data. The scan runs backwards over at most 31
+  // bytes, nothing against the 240 us they would take on the wire, and a payload
+  // with no repeated tail loses nothing by being asked.
+  uint8_t run = 0;
+  if (len >= RX_RUN_MIN) {
+    const uint8_t fill = buf[len - 1];
+    run = 1;
+    while (run < len - 1 && run < RX_RUN_MAX && buf[len - 1 - run] == fill) run++;
+    if (run < RX_RUN_MIN) run = 0;
+  }
+  const uint8_t stored = (uint8_t)(len - run);
+
+  // The epoch has to be re-stated when it no longer describes this frame. A
+  // one-byte offset carries 255 ms, which at 2 Mbps is some 290 frames.
+  const bool needEpoch = !streamEpoch_ || pipe != streamPipe_ ||
+                         (uint32_t)(stamp - streamBase_) > 255;
+  if (streamOpen_ && needEpoch) streamEnd();
+
+  uint8_t rec[7 + 3 + 32 + 1];
+  uint8_t n = 0;
+  if (!streamOpen_) {
+    if (needEpoch) {
+      rec[n++] = RX_RUN_NEW;
+      rec[n++] = pipe;
+      rec[n++] = len;                       // what a frame is, unless it says otherwise
+      rec[n++] = (uint8_t)(stamp);
+      rec[n++] = (uint8_t)(stamp >> 8);
+      rec[n++] = (uint8_t)(stamp >> 16);
+      rec[n++] = (uint8_t)(stamp >> 24);
+      streamPipe_ = pipe;
+      streamLen_ = len;
+      streamBase_ = stamp;
+      streamEpoch_ = true;
+    } else {
+      // Same pipe, same minute: the run before it said all of that already.
+      rec[n++] = RX_RUN_MORE;
+    }
+    streamOpen_ = true;
+  }
+
+  const bool longLen = (len != streamLen_);
+  rec[n++] = (uint8_t)(stored | (longLen ? RX_LEN_LONG : 0));
+  if (longLen) rec[n++] = len;
+  rec[n++] = (uint8_t)(stamp - streamBase_);
+  for (uint8_t i = 0; i < stored; i++) rec[n++] = buf[i];
+  if (run) rec[n++] = buf[len - 1];
+  // Over the payload as it was, not as it is being sent: the binary and the
+  // readable shape have to keep saying the same thing about the same bytes, and
+  // a host that rebuilds the tail wrongly should fail this check, not pass it.
+  rec[n++] = crc8(buf, len);
+
+  Serial.write(rec, (size_t)n);
+}
+
+// Close the run, so that whatever is printed next is readable again.
+//
+// RX_RUN_END cannot be mistaken for the first byte of another frame: that byte
+// carries a stored length of at most 32 and one flag, so it never exceeds 0x60.
+// The newline after it is for a person with a terminal open - it terminates
+// nothing, and a reader must go by RX_RUN_END.
+void RadioController::streamEnd() {
+  if (!streamOpen_) return;
+  static const uint8_t tail[2] = {RX_RUN_END, '\n'};
+  Serial.write(tail, sizeof(tail));
+  streamOpen_ = false;
 }
 
 void RadioController::drainRx() {
@@ -355,6 +444,7 @@ void RadioController::drainRx() {
     if (rxMode_ != RX_WIDLATE && (len == 0 || len > 32)) {
       // Say so. This used to discard silently, which in a tool whose whole
       // purpose is to show what arrives is the worst possible failure mode.
+      streamEnd();   // a readable line cannot be printed inside a run
       Serial.print(F("WARN bad payload length "));
       Serial.print(len);
       Serial.print(F(" on p"));
@@ -375,7 +465,8 @@ void RadioController::drainRx() {
     if (rxMode_ == RX_WIDLATE) {
       len = cfg_.dpl ? payloadWidth() : cfg_.plSize;
       if (len == 0 || len > 32) {
-        Serial.print(F("WARN bad payload length "));
+        streamEnd();   // a readable line cannot be printed inside a run
+      Serial.print(F("WARN bad payload length "));
         Serial.print(len);
         Serial.print(F(" on p"));
         Serial.println(pipe);
@@ -422,6 +513,7 @@ void RadioController::drainRx() {
       // One line per pass, whether or not the frame itself is printed: the
       // question a trace answers is what the FIFO did, and a frame suppressed
       // by the repeat filter went through the same FIFO as any other.
+      streamEnd();
       Serial.print(F("DBG n="));
       Serial.print(rxPass_);
       Serial.print(F(" mode="));
@@ -454,62 +546,7 @@ void RadioController::drainRx() {
     }
 
     if (outMode_ == OUT_BIN) {
-      // Sync, length, pipe and run count, timestamp, payload, checksum -
-      // assembled here and handed over in one Serial.write, so the per-byte cost
-      // is a copy into the ring buffer instead of a number being formatted. 0x01
-      // can start a record unambiguously because nothing else this firmware
-      // prints is outside printable ASCII, and the length says where the record
-      // ends, so a payload byte that happens to be 0x01 or a newline decodes as
-      // data.
-      //
-      // The checksum covers exactly the bytes the readable line's `crc=` does -
-      // the payload as it left the FIFO, nothing else. That keeps the two
-      // shapes saying the same thing about the same bytes, so a host can turn
-      // one into the other and everything above it goes on meaning what it
-      // meant. The header rides unprotected, which costs nothing in practice: a
-      // reader that mis-syncs takes a wrong length, and a wrong length fails
-      // this checksum, so it hunts for the next sync byte instead of believing
-      // a shifted frame.
-      //
-      // A repeated tail is sent as one byte and a count. Senders that pad a
-      // static payload out to 32 bytes are most of what this dongle ever sees -
-      // the BTHome sender on this bench ends every frame with twelve bytes of
-      // FF - and that costs the same serial time as twelve bytes of data. The
-      // scan runs backwards over at most 31 bytes, which is nothing against the
-      // 240 us those bytes would take on the wire. A payload with no repeated
-      // tail loses nothing by being asked.
-      uint8_t run = 0;
-      if (len >= RX_RUN_MIN) {
-        const uint8_t fill = buf[len - 1];
-        run = 1;
-        while (run < len - 1 && run < RX_RUN_MAX && buf[len - 1 - run] == fill) run++;
-        if (run < RX_RUN_MIN) run = 0;
-      }
-      const uint8_t stored = (uint8_t)(len - run);
-
-      uint8_t rec[5 + 32 + 3];
-      rec[0] = RX_BIN_SYNC;
-      rec[1] = len;                                  // the length before suppression
-      rec[2] = (uint8_t)(pipe | (run << 3));
-      // The low 16 bits only. Which minute of the dongle's uptime this belongs
-      // to is something the host can work out and the wire should not carry.
-      rec[3] = (uint8_t)(stamp);
-      rec[4] = (uint8_t)(stamp >> 8);
-      for (uint8_t i = 0; i < stored; i++) rec[5 + i] = buf[i];
-      uint8_t n = (uint8_t)(5 + stored);
-      if (run) rec[n++] = buf[len - 1];
-      // Over the payload as it was, not as it is being sent: the two shapes have
-      // to keep saying the same thing about the same bytes, and a host that
-      // rebuilds the tail wrongly should fail this check rather than pass it.
-      rec[n++] = crc8(buf, len);
-      // A newline after the record. It does not make this line-based - a
-      // payload byte can be 0x0A and a reader must go by the length - but it
-      // guarantees the next readable line starts on a fresh one. Without it a
-      // reply printed while frames are arriving comes out glued to the tail of
-      // a record, which is precisely the moment somebody has opened a terminal
-      // to find out what is wrong. One byte of ninety.
-      rec[n++] = '\n';
-      Serial.write(rec, (size_t)n);
+      streamFrame(buf, len, pipe, stamp);
       led(hw_.ledRx, false);
       accrue(usEnter, usRead);
       continue;
@@ -544,6 +581,10 @@ void RadioController::drainRx() {
     led(hw_.ledRx, false);
     accrue(usEnter, usRead);
   }
+  // The run closes with the pass that filled it. Nothing outside this function
+  // has to know about it: by the time a command is read or a reply printed,
+  // there is no open run to interrupt.
+  streamEnd();
   s_rxFlag = false;
 }
 
@@ -615,19 +656,61 @@ void RadioController::beginSequence(const uint8_t *addr, bool noack) {
   seq_.acking = !noack && regRead(0x01) != 0;   // EN_AA, the chip's own answer
 }
 
+bool RadioController::sequenceReady() {
+  if (!seq_.acking) {
+    const uint32_t start = millis();
+    const uint32_t enter = micros();
+    while (regRead(REG_STATUS) & 0x01) {          // TX_FULL
+      if (millis() - start > TX_TIMEOUT_MS) { seq_.failed++; return false; }
+    }
+    seq_.airUs += micros() - enter;
+    return true;
+  }
+  if (!seq_.pipelining) return true;   // the careful path confirms per frame
+
+  const uint32_t start = millis();
+  const uint32_t enter = micros();
+  while (true) {
+    const uint8_t status = regRead(REG_STATUS);
+    if (status & 0x10) {                          // MAX_RT: a frame gave up
+      seq_.retries += regRead(0x08) & 0x0F;
+      seq_.failed++;
+      regWrite(REG_STATUS, 0x10);
+      radio_.flush_tx();
+      seq_.pipelining = false;
+      seq_.gaveUp = true;
+      seq_.airUs += micros() - enter;
+      return false;
+    }
+    if (status & 0x20) {                          // TX_DS: one acknowledged
+      seq_.sent++;
+      seq_.retries += regRead(0x08) & 0x0F;
+      regWrite(REG_STATUS, 0x20);
+    }
+    if (!(status & 0x01)) break;                  // TX_FULL clear: room for one
+    if (millis() - start > TX_TIMEOUT_MS) { seq_.failed++; return false; }
+  }
+  seq_.airUs += micros() - enter;
+  return true;
+}
+
 bool RadioController::sequenceWrite(const uint8_t *data, uint8_t len) {
   seq_.attempted++;
   if (!seq_.acking) {
     // Nothing to wait for, so only the FIFO can hold us up. Three deep: by the
     // time the third is written the first is usually gone.
     const uint32_t start = millis();
+    const uint32_t enter = micros();
     while (regRead(REG_STATUS) & 0x01) {          // TX_FULL
       if (millis() - start > TX_TIMEOUT_MS) {     // CE not wired, or no clock
         seq_.failed++;
         return false;
       }
     }
+    const uint32_t fed = micros();
     radio_.startFastWrite(data, len, true);
+    seq_.airUs += fed - enter;
+    seq_.spiUs += micros() - fed;
     seq_.sent++;
     return true;
   }
@@ -637,6 +720,7 @@ bool RadioController::sequenceWrite(const uint8_t *data, uint8_t len) {
   // wire - 1.28 ms a frame at 2 Mbps where the line's own floor is 0.68.
   if (seq_.pipelining) {
     const uint32_t start = millis();
+    const uint32_t enter = micros();
     while (true) {
       const uint8_t status = regRead(REG_STATUS);
       if (status & 0x10) {                        // MAX_RT: a frame gave up
@@ -664,7 +748,12 @@ bool RadioController::sequenceWrite(const uint8_t *data, uint8_t len) {
         return false;
       }
     }
+    const uint32_t fed = micros();
     radio_.startFastWrite(data, len, false);
+    // The spin above is the air draining the FIFO; the write is the bus. What a
+    // run costs beyond the two is the record arriving over serial.
+    seq_.airUs += fed - enter;
+    seq_.spiUs += micros() - fed;
     return true;
   }
 
