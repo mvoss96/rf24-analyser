@@ -136,7 +136,8 @@ void CommandParser::poll() {
   // once is what unblocks a full window.
   if (now - seqNudgeMs_ > SEQ_NUDGE_MS) {
     seqNudgeMs_ = now;
-    sayAt(seqTaken_);
+    Serial.print(F("OK txseq at="));
+    Serial.println(seqTaken_);
   }
 }
 
@@ -292,32 +293,16 @@ void CommandParser::feedSeqPayload(char *line) {
   if (seqLeft_ == SEQ_IDLE) { endSeq(nullptr); return; }
   // A progress line every so often: a run of three thousand frames is nearly a
   // minute of silence otherwise, and silence is what a hung dongle looks like.
-  if (seqTaken_ % confEvery() == 0) sayAt(seqTaken_);
+  if (seqTaken_ % confEvery() == 0) {
+    Serial.print(F("OK txseq at="));
+    Serial.println(seqTaken_);
+  }
 }
 
 uint16_t CommandParser::confEvery() const {
   if (seqConf_) return seqConf_;
   if (!seqAcking_) return SEQ_PROGRESS_EVERY;
   return seqBin_ ? SEQ_PROGRESS_ACK_BIN : 1;
-}
-
-// The one readable line on the hot path, built and handed to the pacer rather
-// than printed a character at a time.
-//
-// Above the boot rate everything on the wire has to obey the block rule, and
-// `Serial.print` does not know about it. Measured with it printing unpaced: an
-// acknowledged 421-frame transfer took 0.56 s at 1 MBaud against 0.38 at 500000,
-// because a damaged confirmation leaves the host's window shut until the 25 ms
-// nudge repeats it. Nothing was lost - it was just slow, which is the worst way
-// for a fault to present.
-void CommandParser::sayAt(uint16_t n) {
-  char line[24];
-  strcpy_P(line, PSTR("OK txseq at="));
-  utoa(n, line + 12, 10);
-  uint8_t len = (uint8_t)strlen(line);
-  line[len++] = 10;   // the newline, as a number: an escape in this
-                      // position has been eaten by a here-document twice now
-  txWrite((const uint8_t *)line, len);
 }
 
 void CommandParser::feedSeqByte(uint8_t b) {
@@ -348,7 +333,10 @@ void CommandParser::feedSeqByte(uint8_t b) {
   seqLeft_--;
   if (!more) { endSeq(F("gave up")); return; }
   if (seqLeft_ == SEQ_IDLE) { endSeq(nullptr); return; }
-  if (seqTaken_ % confEvery() == 0) sayAt(seqTaken_);
+  if (seqTaken_ % confEvery() == 0) {
+    Serial.print(F("OK txseq at="));
+    Serial.println(seqTaken_);
+  }
 }
 
 void CommandParser::endSeq(const __FlashStringHelper *why) {
@@ -753,8 +741,6 @@ void CommandParser::dispatch(char *line) {
     Serial.end();
     Serial.begin(v);
     baud_ = v;
-    // Everything written from here on is paced for this rate.
-    g_txBaud = v;
   } else if (strcmp(cmd, "txtest") == 0) {
     handleTxTest(rest);
   } else if (strcmp(cmd, "format") == 0) {

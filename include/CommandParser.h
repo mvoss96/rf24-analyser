@@ -86,7 +86,6 @@ private:
   void handleTxTest(char *args);
   void feedSeqPayload(char *line);
   void feedSeqByte(uint8_t b);
-  void sayAt(uint16_t n);
   uint16_t confEvery() const;
   void endSeq(const __FlashStringHelper *why);
 };

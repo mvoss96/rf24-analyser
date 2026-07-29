@@ -841,142 +841,76 @@ protocol.
 At 250 kbps none of this matters - the air alone wants 1252 us of the 2019, and
 the wire is idle two thirds of the time.
 
-#### 1 MBaud does work, in 32-byte blocks with a pause
+#### 1 MBaud, a false dawn, and how it was caught
 
-Four times this file has closed the question of a faster serial rate, the last
-time with a cause rather than a symptom: at 1 MBaud the dongle-to-host direction
-delivers the right number of bytes with the wrong contents, under Windows and
-under Linux alike. The fifth attempt came from a claim about the chip - that its
-1 MBaud is only unreliable when the line runs *continuously*, and that letting it
-breathe between short bursts makes it usable.
+Five times this file has closed the question of a faster serial rate. The fifth
+attempt came from a claim about the chip - that its 1 MBaud is only unreliable
+when the line runs *continuously*, and that letting it breathe between short
+bursts makes it usable - and for a while it looked true.
 
-It is true. `bench/serialbench` gained a block mode for it, and 32768 bytes were
-sent five times per setting:
+`bench/serialbench` gained a block mode, and 32768 bytes sent five times per
+setting said this:
 
 | block | gap | kB/s | clean runs |
 |---|---|---|---|
 | 32 B | 0 us | 93.8 | 0/5 |
-| 32 B | 25 us | 87.7 | 2/5 |
 | 32 B | 40 us | 84.2 | 4/5 |
-| 32 B | 50 us | 82.0 | 3/5 |
 | **32 B** | **60 us** | **80.0** | **5/5** |
-| 32 B | 75 us | 77.1 | 5/5 |
 | 32 B | 100 us | 72.4 | 5/5 |
-| 64 B | anything to 150 us | 78-95 | 0/5, once 1/5 |
+| 64 B | anything to 150 us | 78-95 | 0/5 |
 
-**80.0 kB/s with nothing damaged, against 50.1 kB/s at 500000 baud - sixty
-percent more on the direction that binds the receiver.**
+Eighty kilobytes a second with nothing damaged, against fifty at 500000, and 32
+bytes being the CH340's bulk endpoint made it look like a mechanism rather than a
+coincidence.
 
-Two details worth keeping. **The block size is not a tuning knob**: 64 bytes fail
-at every gap tried, 32 succeed, and 32 bytes is the CH340's bulk endpoint. And
-**the gap threshold is sharp but not where two runs said it was** - an earlier
-pass called 50 us clean on the strength of two measurements, and five say 3/5.
-Anything at or above 60 us was clean five times out of five.
+**It was a coincidence.** Asked again with smaller bursts and longer pauses, over
+8192 bytes, three runs each:
 
-The first attempt at this measured 23.4 kB/s at 500000 *and* at 1 MBaud -
-identical, which is the signature of a limit that is not the wire. It was writing
-a byte at a time with a flush between blocks, so the test measured its own
-overhead. Building the block and handing it over in one write is what made the
-question answerable.
-
-It was then built into the receive path, at 100 us rather than the 60 that first
-passed - the difference costs 7.6 kB/s and buys margin on a failure that is
-silent. **Twice, and only the second way works.**
-
-| receiver | frames of 512, 1 Mbps unacked | `us_out` |
+| block | gap | damaged bytes, three runs |
 |---|---|---|
-| 500000 baud, continuous | 467-469 | 660 us |
-| 1 MBaud, a block per record | 411-412 | 850 us |
-| 1 MBaud, blocks aligned to 32 bytes | 451-459 | 735 us |
+| 4 B | 1000 us | 0, 0, 0 |
+| **6 B** | **1000 us** | **0, 1, 1** |
+| 8 B | 500 us | 700, 1, 3772 |
+| 16 B | 500 us | 0, 0, 0 |
+| 24 B | 500 us | 4157, 4893, 1 |
+| 32 B | 500 us | 0, 0, 0 |
+| **32 B** | **100 us** | **0, 0, 8165** |
 
-The first attempt paid the pause twice for a 35-byte record, because a record is
-one block and a bit. Accumulating into a 32-byte buffer so the pause falls once
-per block on the wire recovered most of that - and it is still behind.
+There is no pattern. Six-byte bursts with a full millisecond of idle line between
+them produce single flipped bytes. Twenty-four with half a millisecond are
+catastrophic twice and nearly clean once. And 32 with 100 us - the setting that
+had been clean five times out of five - has a run with 8165 bytes wrong.
 
-**Reliability at 1 MBaud requires `Serial.flush()`, and flushing is what costs.**
-At 500000 `Serial.write` returns as soon as the bytes are in the ring buffer and
-the UART empties it by interrupt, so the drain loop does its 187 us of SPI work
-*while* the line is busy. A flush ends that: the loop waits for every block, and
-the overlap it gives up is worth more than the extra bandwidth. The bench
-measured 72 kB/s at this setting because a bench has nothing else to do; a
-receiver has 187 us of work per frame that used to hide behind the wire.
+**1 MBaud on this CH340 is unreliable, and block size and pause only modulate the
+rate.** Everything built on the earlier reading is withdrawn.
 
-**The pause does not have to be waited for.** It only has to be there on the
-wire. So the frames go into a queue of the firmware's own, and a pacer hands the
-UART one block whenever the line has been idle for 100 us - called from the main
-loop and from inside the drain loop, never blocking. The pause then falls in time
-the dongle would have spent waiting for the next frame anyway.
+#### And the measurement that let it stand for an hour
 
-| receiver | 1 Mbps air | 2 Mbps air |
-|---|---|---|
-| 500000 baud, continuous | 467-469 of 512 | 451-463 |
-| **1 MBaud, paced** | **489** | **487-495** |
+Between those two, a pacer was built: a queue in the firmware and a rule that
+hands the UART one block whenever the line has been idle 100 us, so the pause
+costs nothing. Measured against the receiver's frame counter it looked like the
+best result of the day - 489 frames of 512 at 1 MBaud against 468 at 500000.
 
-Twenty to thirty frames, on top of everything else this branch did to the same
-column.
+**That counter is the dongle's own.** It says what the radio took out of the
+FIFO, not what survived the trip to the host. Asked the only question that
+matters - transfer the 13 kB image and compare the bytes:
 
-**One measurement in this sequence was a lie and worth recording as one.** The
-first paced version reported 512 of 512 at *both* baud rates - too good, and it
-was: `txPump()` had been placed inside the loop that reads serial bytes, which
-cost the *sending* dongle 8 % (0.84 s to 0.93 for the 13 kB image). The receiver
-was not keeping up better; less was arriving. Moving the call out of that loop
-restored the sender to 0.40 s and left the receive gain standing on its own.
+| receiver | frames the host reassembled | checksum failures | image |
+|---|---|---|---|
+| 500000 | 421/421 | 0 | identical |
+| 1 MBaud | **107/421** | 11 | **wrong** |
 
-#### And 1 MBaud on the *sending* side is slower, twice measured
+The dongle had received 489 and the host had 107 of them. Reverted, all of it.
 
-The pacing works for a receiving dongle. The obvious next question is the other
-role: host to dongle at 1 MBaud was always clean, and the bench measured it at
-70-77 % of the line, which is 77 kB/s against 45 at 500000. A transfer should
-therefore be faster.
+The lesson is one this file has learned before in another costume: **counting is
+not verifying.** Twice earlier a duplicate-frame hunt counted frames instead of
+identifying their sender and produced two false alarms. This counted frames at
+one end of a link whose fault is at the other. The image comparison is the
+measurement that cannot be fooled that way, and it should have been the first one
+run rather than the last.
 
-It is not. A 421-frame acknowledged transfer of the 13 kB image:
-
-| sender | 1 Mbps air | 2 Mbps air |
-|---|---|---|
-| 500000 baud | 0.38 s | 0.39-0.40 s |
-| 1 MBaud, confirmation unpaced | 0.56 s | 0.66 s |
-| 1 MBaud, confirmation paced | 0.62 s | 0.62 s |
-
-Every run completed with `sent=421/421` and nothing lost, so this is slowness
-rather than damage - which is the worse way for a fault to present, and the
-reason it needed measuring rather than reasoning about.
-
-The payload direction is genuinely faster, and the slowdown is not explained.
-The first explanation offered here was that the confirmation - which travels
-dongle-to-host, the direction that needs pacing - arrives damaged and the host
-waits for the 25 ms nudge. **That does not hold**: `OK txseq at=421` is 17 bytes,
-already well inside the 32-byte block the chip wants, with 1.76 ms of idle line
-between one and the next at `conf=4`. There is nothing there to corrupt.
-
-So the measurement stands and the mechanism does not. What is known: the runs all
-complete with every frame acknowledged, the firmware's own clock agrees with the
-host's, and it is reproducible under control - the receiver pinned at 500000,
-three runs per setting, and 500000 measured again afterwards to show nothing had
-drifted.
-
-> One intermediate measurement said the opposite - 0.37 s at 1 MBaud, faster than
-> 500000 - and it was wrong. The receiving dongle had been left at 1 MBaud by an
-> earlier script while its host read it at 500000. Pinning both ends explicitly
-> is what settled it, and the run afterwards at 500000 is what proves the bench
-> had not simply changed underneath.
-
-**On the window, and why it is seven.** The host may run a fixed number of
-records ahead before waiting, and that number is not a tuning constant: it is the
-dongle's 256-byte serial receive buffer divided by a 34-byte record. Sixteen
-records is 544 bytes and only works because confirmations keep the amount
-actually in flight lower - measured, it is worth 3 % at 500000 (0.37 s against
-0.38) and fails every time at 1 MBaud. Thirty-two records fails at both.
-
-The failure is worth naming, because it is the same one that turns up
-intermittently elsewhere in this file: the buffer overruns, a record's framing is
-lost, and the payload bytes behind it are read as a command line - `ERR line too
-long`, or `ERR unknown cmd` if they happen to look like one. A window that is too
-large and a dongle that stops reading its port while the radio blocks produce
-exactly the same wreckage.
-
-**So the two roles have opposite answers.** A receiving dongle gains from
-1 MBaud, measurably and repeatably; a sending one loses, measurably and
-repeatably, for a reason not yet established. 500000 stays for transmitting.
+`bench/serialbench` keeps the block mode. The measurement was worth having even
+though its first reading was wrong, and it is what disproved itself.
 
 #### A quarter of the wire is idle, and it is not the confirmation
 

@@ -401,7 +401,7 @@ void RadioController::streamFrame(const uint8_t *buf, uint8_t len, uint8_t pipe,
   // a host that rebuilds the tail wrongly should fail this check, not pass it.
   rec[n++] = crc8(buf, len);
 
-  txWrite(rec, (size_t)n);
+  Serial.write(rec, (size_t)n);
 }
 
 // Close the run, so that whatever is printed next is readable again.
@@ -413,10 +413,7 @@ void RadioController::streamFrame(const uint8_t *buf, uint8_t len, uint8_t pipe,
 void RadioController::streamEnd() {
   if (!streamOpen_) return;
   static const uint8_t tail[2] = {RX_RUN_END, '\n'};
-  txWrite(tail, sizeof(tail));
-  // Give the pacer a chance immediately: a run that has just ended is the
-  // moment there is most queued and least else to do.
-  txPump();
+  Serial.write(tail, sizeof(tail));
   streamOpen_ = false;
 }
 
@@ -432,9 +429,6 @@ void RadioController::drainRx() {
   }
 
   for (uint8_t guard = 0; guard < 8; guard++) {
-    // The pacer has to keep running while frames are being read out, or a run of
-    // them would sit in the queue until the main loop came back round.
-    txPump();
     const uint8_t fifoPre = regRead(REG_FIFO_STATUS);
     if (fifoPre & FIFO_RX_EMPTY) {
       break;
