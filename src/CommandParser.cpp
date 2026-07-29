@@ -95,9 +95,20 @@ static void reportMissing(uint8_t have) {
 // --- Line assembly ---------------------------------------------------------
 
 void CommandParser::feed(char c) {
-  // Before anything looks for a line terminator: a binary payload byte may be
-  // any value at all, newline included, and assembling it into lines would
-  // corrupt the very first payload that happened to contain one.
+  // Before anything else, including the check below: a run that stopped early
+  // leaves payloads in flight behind it, and those are not commands however
+  // much some of them look like one. They are dropped until the port goes
+  // quiet, which is what tells the two apart - nothing else can, because a
+  // payload byte may be any value at all.
+  if (draining_) {
+    drainLastMs_ = millis();
+    if (dropped_ != 0xFFFF) dropped_++;
+    return;
+  }
+
+  // A binary payload byte may be any value, newline included, and assembling
+  // it into lines would corrupt the very first payload that happened to
+  // contain one.
   if (seqLeft_ != SEQ_IDLE && seqBin_) { feedSeqByte((uint8_t)c); return; }
 
   // Accept CR, LF or CRLF as the line terminator, so any terminal works
@@ -126,6 +137,18 @@ void CommandParser::feed(char c) {
 }
 
 void CommandParser::poll() {
+  if (draining_) {
+    if (millis() - drainLastMs_ <= SEQ_DRAIN_MS) return;
+    draining_ = false;
+    // Said rather than done silently, and with the count: a host waiting for
+    // this knows exactly when the port is listening for commands again, and
+    // the number is the measurement - how far ahead of the dongle the host had
+    // got when the run stopped. Zero means the run ended with nothing in
+    // flight, which is what a `truncated` run looks like.
+    Serial.print(F("OK txseq idle dropped="));
+    Serial.println(dropped_);
+    return;
+  }
   if (seqLeft_ == SEQ_IDLE) return;
   const uint32_t now = millis();
   if (now - seqLastMs_ > SEQ_QUIET_MS) { endSeq(F("truncated")); return; }
@@ -345,6 +368,7 @@ void CommandParser::endSeq(const __FlashStringHelper *why) {
   seqBin_ = false;
   binLen_ = 0;
   len_ = 0;               // whatever the byte stream left in the line buffer
+  overlong_ = false;      // and whatever it left of a line's length
   const RadioController::TxResult r = radio_.endSequence();
   Serial.print(F("OK txseq sent="));
   Serial.print(r.sent);
@@ -379,6 +403,16 @@ void CommandParser::endSeq(const __FlashStringHelper *why) {
   Serial.print(F("ms n="));
   Serial.print(r.attempted);
   Serial.println();
+
+  // A run that ran to its count consumed every payload the host wrote, so
+  // there is nothing behind it. Any other ending stopped while the host was
+  // still writing, and what it wrote next has to go nowhere - said after the
+  // line above, so the closing report is out before the port stops answering.
+  if (why != nullptr) {
+    draining_ = true;
+    dropped_ = 0;
+    drainLastMs_ = millis();
+  }
 }
 
 // --- Command handlers ------------------------------------------------------

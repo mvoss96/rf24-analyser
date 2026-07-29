@@ -106,7 +106,7 @@ MAX_FRAMES = 5000
 # 1.7.0 needs firmware 3.10.0, which flushes the RX FIFO only after a payload
 #       shorter than the slot. A dongle receiving 32-byte frames went from 50%
 #       to 99% of them; short payloads keep the protection they had.
-APP_VERSION = "1.8.0"
+APP_VERSION = "1.9.0"
 
 # Python imports a module once and keeps it: editing nrf24_parsers.py while the
 # server runs changes nothing until the process is restarted. That cost a real
@@ -191,6 +191,20 @@ SEND_CONFIRM_BIN = 4
 # exceptional - but a run that keeps breaking at the same place is a fault, not
 # a hiccup, and should be reported instead of retried forever.
 SEND_RETRIES = 8
+
+# How many times a refused `txseq` header may be said again. A header is refused
+# when the dongle was not reading commands at the moment it arrived, which is a
+# question of timing rather than of the header - so it is worth asking again,
+# and the transfer only fails if asking stops working.
+SEND_HEADER_RETRIES = 3
+
+# How long the dongle is given to start reading commands again after a run
+# ended early. It answers `OK txseq idle` when it has, and until then anything
+# written is dropped along with the payloads that were still in flight. The
+# timeout is the fallback for firmware older than 3.16.0, which has no such
+# marker: it is longer than the 500 ms of silence that ends a run there, so
+# waiting it out leaves the port in command mode either way.
+SEND_IDLE_WAIT = 0.75
 
 # How many heartbeats may go unanswered before the dongle counts as gone. The
 # poll was already measuring this and throwing the result away: after a suspend
@@ -800,8 +814,23 @@ class Session:
         done = 0
         attempts = 0
         while True:
-            reply = self._send_attempt(q, address, payloads[done:], ack,
-                                       on_progress, window, confirm, done, total)
+            try:
+                reply = self._send_attempt(q, address, payloads[done:], ack,
+                                           on_progress, window, confirm,
+                                           done, total)
+            except Exception:
+                # However this ended, the dongle may still be reading payloads
+                # this host had already written. Whoever asks it something next
+                # would be answered for those instead of for their own command,
+                # so the failure is not left on the port for them to find.
+                self._await_drain(q)
+                raise
+            # A run that stopped early stopped with payloads in flight behind
+            # it. Wait for the dongle to say it has finished dropping them
+            # before saying anything else - the retry below is the first thing
+            # that would otherwise be answered by the wreckage.
+            if "stopped=" in reply:
+                self._await_drain(q)
             match = re.search(r"sent=(\d+)", reply)
             sent = int(match.group(1)) if match else 0
             done += sent
@@ -818,29 +847,14 @@ class Session:
     def _send_attempt(self, q, address, payloads, ack, on_progress, window,
                       confirm, done, total):
         """One `txseq`, from the first payload given to wherever it stops."""
-        # Binary payloads first, and fall back to hex on refusal. That
-        # is the whole negotiation: firmware older than 3.9.0 answers
-        # `ERR unknown key`, which asks and answers the question in one
-        # round trip, and one that has it echoes ` bin` back.
         head = f"txseq {address} {len(payloads)} {'ack' if ack else 'noack'}"
         if confirm is None:
             confirm = SEND_CONFIRM_BIN
-        # The confirmation goes with `bin`, not with `ack`. A record is half a
-        # hex line, which is what makes the host able to outrun the air: at
-        # 250 kbps a frame needs 1.32 ms on air and 0.68 ms on the wire, so an
-        # unacknowledged run filled the transmit FIFO, the firmware stopped
-        # reading its port while it waited, and the input buffer overran. That
-        # ended runs at frame 23 with `stopped=bad payload` - the same failure
-        # the acknowledged path had, uncovered on the other path by making the
-        # payloads smaller. Hex lines hid it: at 1.38 ms each the host could
-        # never get far enough ahead.
-        reply = self.command(f"{head} conf={confirm} bin", timeout=5.0,
-                             lock=False, q=q)
-        binary = reply.startswith("OK txseq ready") and reply.endswith(" bin")
-        if not binary:
-            reply = self.command(head, timeout=5.0, lock=False, q=q)
-        if not reply.startswith("OK txseq ready"):
-            raise RuntimeError(reply)
+        # Nothing below this line runs unless the dongle said it is listening
+        # for payloads. Writing them into a refused header is what turned one
+        # bad header into a burst of them: the dongle was still reading
+        # commands, and read a few hundred bytes of payload as a few commands.
+        binary = self._open_sequence(q, head, confirm)
         # A record is 34 bytes against a hex line's 69, so more of them
         # fit in the same 256-byte input buffer.
         if window is None:
@@ -883,6 +897,119 @@ class Session:
         if closing is not None:
             return closing
         return self._await_sequence(q, len(payloads), None)
+
+    def _open_sequence(self, q, head, confirm):
+        """Puts the dongle into sequence mode; True if it took the records.
+
+        A refused header used to be the caller's problem, and it is not one the
+        caller can do anything about: the dongle refuses a header when it was
+        not reading commands at the moment it arrived, which says nothing about
+        the transfer being asked for. Measured over a parameter sweep, six of
+        thirty-two acknowledged 512-frame transfers failed this way, every one
+        of them behind a run that had ended early with payloads still in
+        flight. So it is said again instead, after waiting for the port.
+        """
+        binary = True
+        asked = 0
+        while True:
+            # Whatever the dongle said before this point belongs to whatever
+            # came before it. The queue outlives one attempt, so an ERR left in
+            # it by an abandoned run would be handed back as the answer to this
+            # header - which is how a refused header was diagnosed in the first
+            # place, and how a perfectly good one came to look refused.
+            self._drain(q)
+            # Binary payloads first, and fall back to hex on refusal. That is
+            # the whole negotiation: firmware older than 3.9.0 answers `ERR
+            # unknown key`, which asks and answers the question in one round
+            # trip, and one that has it echoes ` bin` back.
+            #
+            # The confirmation goes with `bin`, not with `ack`. A record is
+            # half a hex line, which is what makes the host able to outrun the
+            # air: at 250 kbps a frame needs 1.32 ms on air and 0.68 ms on the
+            # wire, so an unacknowledged run filled the transmit FIFO, the
+            # firmware stopped reading its port while it waited, and the input
+            # buffer overran. That ended runs at frame 23 with `stopped=bad
+            # payload` - the same failure the acknowledged path had, uncovered
+            # on the other path by making the payloads smaller. Hex lines hid
+            # it: at 1.38 ms each the host could never get far enough ahead.
+            line = f"{head} conf={confirm} bin" if binary else head
+            try:
+                reply = self.command(line, timeout=5.0, lock=False, q=q)
+            except TimeoutError as exc:
+                # A header can go unanswered because the dongle is still
+                # dropping the payloads behind an earlier run, and it drops
+                # this with them. That is a wait, not a fault.
+                reply = f"ERR {exc}"
+            if reply.startswith("OK txseq ready"):
+                return reply.endswith(" bin")
+            # Only this one answer means "no bin". Any other refusal is about
+            # the moment rather than the keyword, and asking without `bin`
+            # would give up the halved traffic for nothing.
+            if binary and "unknown key" in reply:
+                binary = False
+                continue
+            # An answer this host cannot use may not be an answer at all. A
+            # line the dongle wrote before the header arrived is claimed by it
+            # regardless - so what settles the question is what comes next: the
+            # dongle saying it is idle, which means the refusal was real, or
+            # the acceptance this header was owed all along. Reading the first
+            # as the second is what wrote hex lines into a run opened for
+            # records, and reported that as a completed transfer.
+            settled = self._await_drain(q)
+            if settled is not None and settled.startswith("OK txseq ready"):
+                return settled.endswith(" bin")
+            if asked >= SEND_HEADER_RETRIES:
+                raise RuntimeError(reply)
+            asked += 1
+            self.hub.publish({
+                "type": "line", "kind": "warn",
+                "text": f"txseq header refused ({reply}) - asking again "
+                        f"({asked}/{SEND_HEADER_RETRIES})"})
+
+    def _drain(self, q):
+        """Throws away whatever the dongle said before now."""
+        while True:
+            try:
+                q.get_nowait()
+            except queue.Empty:
+                return
+
+    def _await_drain(self, q, timeout=SEND_IDLE_WAIT):
+        """Waits for the dongle to settle; returns the line that said it had.
+
+        A run that ends early ends with a window of payloads already written -
+        up to seven records, which the dongle drops rather than reading as the
+        commands they are not. `OK txseq idle` says when it has finished, and
+        that is the moment the port is worth talking to.
+
+        `OK txseq ready` ends the wait too, and it is the more interesting of
+        the two: it means a header this host had already given up on was in
+        fact taken, and the refusal it read belonged to something else. The
+        caller needs to know which line arrived, so both are returned rather
+        than swallowed.
+
+        Firmware older than 3.16.0 says neither, and is covered by the timeout
+        instead - which is longer than the silence that ends a run there. Every
+        path leaves the queue empty, so the next command is answered by its own
+        reply and not by the wreckage of this one.
+        """
+        deadline = time.monotonic() + timeout
+        try:
+            while True:
+                remaining = deadline - time.monotonic()
+                if remaining <= 0:
+                    return None
+                try:
+                    event = q.get(timeout=remaining)
+                except queue.Empty:
+                    continue
+                if event.get("type") != "line":
+                    continue
+                text = event.get("text", "")
+                if text.startswith(("OK txseq idle", "OK txseq ready")):
+                    return text
+        finally:
+            self._drain(q)
 
     def _await_frame(self, q, timeout=5.0):
         """Waits for the dongle to confirm what it has transmitted so far.
