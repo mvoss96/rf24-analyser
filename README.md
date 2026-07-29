@@ -455,7 +455,7 @@ interleaved rounds: `low` 1.96 ms with 1-2 retransmissions, `high` 2.06 with
 together and full power overloads the receiver's front end; `low` is both the
 default and the optimum here.
 
-Now at **fw 3.19.0**, three interleaved rounds per row, median. **Each rate on
+Now at **fw 3.20.0**, three interleaved rounds per row, median. **Each rate on
 its own best channel** — 250 kbps on 14, 1 and 2 Mbps on 88 — because the choice
 turned out to be worth more than anything in the firmware and to differ by rate:
 channel 14 is the quietest for 250 kbps and among the worst for 2 Mbps, the
@@ -464,12 +464,12 @@ what arrived can be checked. The Δ is against fw 3.14.0 on the same channels.
 
 | air rate | | measured | Δ ms | air used | wire used | seen by observer | Δ |
 |---|---|---|---|---|---|---|---|
-| 250 kbps | acknowledged | 1.99 ms, 16.1 kB/s | −0.01 | 94 % | 34 % | 512/512 | +0 |
-| 250 kbps | not | 1.31 ms, 24.5 kB/s | +0.01 | 101 % | 52 % | 512/512 | +6 |
-| 1 Mbps | acknowledged | 0.94 ms, 33.9 kB/s | −0.01 | 70 % | 72 % | 512/512 | +0 |
-| 1 Mbps | not | 0.88 ms, 36.4 kB/s | +0.01 | 37 % | 77 % | 487/512 | **+21** |
-| 2 Mbps | acknowledged | 0.94 ms, 34.1 kB/s | −0.02 | 49 % | 72 % | 512/512 | +0 |
-| 2 Mbps | not | 0.88 ms, 36.4 kB/s | +0.01 | 19 % | 77 % | 485/512 | **+22** |
+| 250 kbps | acknowledged | 1.95 ms, 16.4 kB/s | −0.04 | 96 % | 35 % | 512/512 | +0 |
+| 250 kbps | not | 1.33 ms, 24.0 kB/s | +0.02 | 99 % | 51 % | 512/512 | +0 |
+| 1 Mbps | acknowledged | 0.95 ms, 33.8 kB/s | +0.01 | 70 % | 72 % | 512/512 | +0 |
+| 1 Mbps | not | 0.89 ms, 36.1 kB/s | +0.01 | 37 % | 77 % | 473/512 | −14 |
+| 2 Mbps | acknowledged | 0.96 ms, 33.4 kB/s | +0.02 | 48 % | 71 % | 512/512 | +0 |
+| 2 Mbps | not | 0.90 ms, 35.7 kB/s | +0.02 | 18 % | 76 % | 467/512 | −18 |
 
 The sending times stand still, which is right and has been right three times
 running: that path is bound by the serial line, so neither a shorter record nor
@@ -840,6 +840,138 @@ protocol.
 
 At 250 kbps none of this matters - the air alone wants 1252 us of the 2019, and
 the wire is idle two thirds of the time.
+
+#### 1 MBaud, a false dawn, and how it was caught
+
+Five times this file has closed the question of a faster serial rate. The fifth
+attempt came from a claim about the chip - that its 1 MBaud is only unreliable
+when the line runs *continuously*, and that letting it breathe between short
+bursts makes it usable - and for a while it looked true.
+
+`bench/serialbench` gained a block mode, and 32768 bytes sent five times per
+setting said this:
+
+| block | gap | kB/s | clean runs |
+|---|---|---|---|
+| 32 B | 0 us | 93.8 | 0/5 |
+| 32 B | 40 us | 84.2 | 4/5 |
+| **32 B** | **60 us** | **80.0** | **5/5** |
+| 32 B | 100 us | 72.4 | 5/5 |
+| 64 B | anything to 150 us | 78-95 | 0/5 |
+
+Eighty kilobytes a second with nothing damaged, against fifty at 500000, and 32
+bytes being the CH340's bulk endpoint made it look like a mechanism rather than a
+coincidence.
+
+**It was a coincidence.** Asked again with smaller bursts and longer pauses, over
+8192 bytes, three runs each:
+
+| block | gap | damaged bytes, three runs |
+|---|---|---|
+| 4 B | 1000 us | 0, 0, 0 |
+| **6 B** | **1000 us** | **0, 1, 1** |
+| 8 B | 500 us | 700, 1, 3772 |
+| 16 B | 500 us | 0, 0, 0 |
+| 24 B | 500 us | 4157, 4893, 1 |
+| 32 B | 500 us | 0, 0, 0 |
+| **32 B** | **100 us** | **0, 0, 8165** |
+
+There is no pattern. Six-byte bursts with a full millisecond of idle line between
+them produce single flipped bytes. Twenty-four with half a millisecond are
+catastrophic twice and nearly clean once. And 32 with 100 us - the setting that
+had been clean five times out of five - has a run with 8165 bytes wrong.
+
+**1 MBaud on this CH340 is unreliable, and block size and pause only modulate the
+rate.** Everything built on the earlier reading is withdrawn.
+
+#### And the measurement that let it stand for an hour
+
+Between those two, a pacer was built: a queue in the firmware and a rule that
+hands the UART one block whenever the line has been idle 100 us, so the pause
+costs nothing. Measured against the receiver's frame counter it looked like the
+best result of the day - 489 frames of 512 at 1 MBaud against 468 at 500000.
+
+**That counter is the dongle's own.** It says what the radio took out of the
+FIFO, not what survived the trip to the host. Asked the only question that
+matters - transfer the 13 kB image and compare the bytes:
+
+| receiver | frames the host reassembled | checksum failures | image |
+|---|---|---|---|
+| 500000 | 421/421 | 0 | identical |
+| 1 MBaud | **107/421** | 11 | **wrong** |
+
+The dongle had received 489 and the host had 107 of them. Reverted, all of it.
+
+The lesson is one this file has learned before in another costume: **counting is
+not verifying.** Twice earlier a duplicate-frame hunt counted frames instead of
+identifying their sender and produced two false alarms. This counted frames at
+one end of a link whose fault is at the other. The image comparison is the
+measurement that cannot be fooled that way, and it should have been the first one
+run rather than the last.
+
+`bench/serialbench` keeps the block mode. The measurement was worth having even
+though its first reading was wrong, and it is what disproved itself.
+
+#### A quarter of the wire is idle, and it is not the confirmation
+
+Put the two numbers next to each other. A record is 34 bytes, so 680 us of a
+500000-baud line. A frame takes 922 us. **The wire is busy 74 % of the time** -
+where the serial bench, an empty firmware driven with the same window and the
+same confirmation interval, reaches 88 %.
+
+The obvious suspect was the flow control. The host may run seven records ahead
+and then waits, and `at=` is the message that lets it go again - and it was said
+*after* the radio work, so the dongle delayed by its own 218 us the very thing
+that unblocked the host. `at=` only claims that a record is whole and its
+checksum passed, which is true the moment the checksum is checked, so saying it
+first costs nothing and cannot overrun anything: the window is seven records and
+the serial receive buffer holds seven and a half.
+
+Measured over three transfers at each rate:
+
+| | after the radio work | **before it** |
+|---|---|---|
+| 250 kbps | 823, 822 ms | 826, 820, 825 ms |
+| 1 Mbps | 396, 395 ms | 396, 396, 395 ms |
+| 2 Mbps | 387, 389 ms | 389, 391, 394 ms |
+
+**Nothing at all**, and reverted. The host was not waiting on the confirmation,
+so that explanation of the idle quarter is wrong and is written down here as
+wrong rather than left standing as a plausible story.
+
+What remains true is the measurement: the wire is idle a quarter of the time and
+the reason is not known. The serial bench says a host driving this pattern over
+this hardware leaves 12 % of the line unused on its own; where the other 14 %
+goes has not been found, and five changes to this path have now failed to move
+it.
+
+#### The payload into the FIFO over our own SPI path
+
+The last item the sending path accounts for: 138 us a frame to put 33 bytes into
+the transmit FIFO, where the bus at 8 MHz is 33 of them. The rest is
+`RF24::startFastWrite` - `digitalWrite` on CSN twice and the library's own
+bookkeeping - and the receive path already showed what that costs. The same
+measure, on the other path:
+
+| | `us_spi` per frame | a 421-frame transfer |
+|---|---|---|
+| `RF24::startFastWrite` | 138 us | 0.39-0.41 s |
+| **our own W_TX_PAYLOAD** | **109 us** | 0.39-0.40 s |
+
+Stable to within a millisecond over 421 frames and across runs, so the 29 us is
+real. The transfer time is not visibly better, because the radio environment
+moved further than that between the runs - the retransmission count went from 46
+to 56 at 2 Mbps in the same hour.
+
+**Streaming the payload into the FIFO as it arrives was considered and not
+built.** It would take the 109 us to nearly nothing, and it cannot be done
+safely: a record's checksum is its *last* byte, so bytes clocked into the FIFO as
+they arrive are already committed by the time the checksum says whether they were
+intact - CE is high through a run, and a payload in the FIFO of a keyed radio is
+on its way. Holding CE low to keep it revocable stalls the radio for the whole
+660 us the record takes to arrive, which costs six times what it saves. The
+guarantee the image test demonstrates - byte-identical, three rates, three runs -
+is worth more than 109 us a frame.
 
 #### Waiting for the radio while the record is still arriving
 

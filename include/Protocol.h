@@ -88,7 +88,7 @@
 // rather than the next frame. In this direction, at 500000 baud, no damaged byte
 // has ever been measured; at 1 MBaud they are constant, and 1 MBaud does not
 // work for other reasons.
-#define FW_VERSION "3.19.0"
+#define FW_VERSION "3.20.0"
 #define API_VERSION 7
 
 // The rate a dongle always boots at. `baud` can raise it for a session, but a

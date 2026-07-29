@@ -299,6 +299,24 @@ private:
   inline void csnLow()  { *csnOut_ &= (uint8_t)~csnBit_; }
   inline void csnHigh() { *csnOut_ |= csnBit_; }
 
+  // CE, resolved the same way. Keying the radio is one bit; going through
+  // digitalWrite for it costs four microseconds on the one path where a frame
+  // is already accounted for to the microsecond.
+  volatile uint8_t *ceOut_ = nullptr;
+  uint8_t ceBit_ = 0;
+  inline void ceHigh() { *ceOut_ |= ceBit_; }
+
+  // The payload into the transmit FIFO, over our own SPI path.
+  //
+  // `RF24::startFastWrite` does the same thing and costs 138 us a frame where
+  // the bus itself is 33: the rest is digitalWrite on CSN twice and the
+  // library's own bookkeeping. The receive path already took that back; this is
+  // the same measure on the other one.
+  //
+  // Pads to the configured payload size when dynamic payloads are off, because
+  // that is what the chip expects and what the library did.
+  void writeTxPayload(const uint8_t *data, uint8_t len, bool noack);
+
   RF24 radio_; // pinless constructor: pins are supplied at begin() time
   RadioConfig cfg_;
   HwConfig hw_;

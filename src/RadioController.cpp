@@ -36,6 +36,8 @@ constexpr uint8_t CMD_R_REGISTER = 0x00;
 constexpr uint8_t CMD_R_RX_PL_WID = 0x60;
 constexpr uint8_t CMD_R_RX_PAYLOAD = 0x61;
 constexpr uint8_t CMD_FLUSH_RX = 0xE2;
+constexpr uint8_t CMD_W_TX_PAYLOAD = 0xA0;
+constexpr uint8_t CMD_W_TX_PAYLOAD_NOACK = 0xB0;
 constexpr uint8_t REG_STATUS = 0x07;
 constexpr uint8_t REG_FIFO_STATUS = 0x17;
 constexpr uint8_t FIFO_RX_EMPTY = 0x01;
@@ -149,6 +151,8 @@ bool RadioController::setHardware(const HwConfig &hw) {
   // it, so this only has to survive until the first transaction of our own.
   csnOut_ = portOutputRegister(digitalPinToPort(hw_.csn));
   csnBit_ = digitalPinToBitMask(hw_.csn);
+  ceOut_ = portOutputRegister(digitalPinToPort(hw_.ce));
+  ceBit_ = digitalPinToBitMask(hw_.ce);
 
   // An IRQ pin that cannot raise an interrupt is not fatal - polling works,
   // it just reacts a little later. Say so rather than pretending.
@@ -656,6 +660,20 @@ void RadioController::beginSequence(const uint8_t *addr, bool noack) {
   seq_.acking = !noack && regRead(0x01) != 0;   // EN_AA, the chip's own answer
 }
 
+void RadioController::writeTxPayload(const uint8_t *data, uint8_t len, bool noack) {
+  const uint8_t width = cfg_.dpl ? len : cfg_.plSize;
+  SPI.beginTransaction(NRF_SPI);
+  csnLow();
+  SPI.transfer(noack ? CMD_W_TX_PAYLOAD_NOACK : CMD_W_TX_PAYLOAD);
+  for (uint8_t i = 0; i < len; i++) SPI.transfer(data[i]);
+  for (uint8_t i = len; i < width; i++) SPI.transfer(0);
+  csnHigh();
+  SPI.endTransaction();
+  // Keying the radio. In a run this is already high and stays there, so the
+  // write costs one OR of a port register rather than a state change.
+  ceHigh();
+}
+
 bool RadioController::sequenceReady() {
   if (!seq_.acking) {
     const uint32_t start = millis();
@@ -708,7 +726,7 @@ bool RadioController::sequenceWrite(const uint8_t *data, uint8_t len) {
       }
     }
     const uint32_t fed = micros();
-    radio_.startFastWrite(data, len, true);
+    writeTxPayload(data, len, true);
     seq_.airUs += fed - enter;
     seq_.spiUs += micros() - fed;
     seq_.sent++;
@@ -749,7 +767,7 @@ bool RadioController::sequenceWrite(const uint8_t *data, uint8_t len) {
       }
     }
     const uint32_t fed = micros();
-    radio_.startFastWrite(data, len, false);
+    writeTxPayload(data, len, false);
     // The spin above is the air draining the FIFO; the write is the bus. What a
     // run costs beyond the two is the record arriving over serial.
     seq_.airUs += fed - enter;
