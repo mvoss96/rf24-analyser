@@ -455,7 +455,7 @@ interleaved rounds: `low` 1.96 ms with 1-2 retransmissions, `high` 2.06 with
 together and full power overloads the receiver's front end; `low` is both the
 default and the optimum here.
 
-Now at **fw 3.19.0**, three interleaved rounds per row, median. **Each rate on
+Now at **fw 3.20.0**, three interleaved rounds per row, median. **Each rate on
 its own best channel** — 250 kbps on 14, 1 and 2 Mbps on 88 — because the choice
 turned out to be worth more than anything in the firmware and to differ by rate:
 channel 14 is the quietest for 250 kbps and among the worst for 2 Mbps, the
@@ -464,12 +464,12 @@ what arrived can be checked. The Δ is against fw 3.14.0 on the same channels.
 
 | air rate | | measured | Δ ms | air used | wire used | seen by observer | Δ |
 |---|---|---|---|---|---|---|---|
-| 250 kbps | acknowledged | 1.99 ms, 16.1 kB/s | −0.01 | 94 % | 34 % | 512/512 | +0 |
-| 250 kbps | not | 1.31 ms, 24.5 kB/s | +0.01 | 101 % | 52 % | 512/512 | +6 |
-| 1 Mbps | acknowledged | 0.94 ms, 33.9 kB/s | −0.01 | 70 % | 72 % | 512/512 | +0 |
-| 1 Mbps | not | 0.88 ms, 36.4 kB/s | +0.01 | 37 % | 77 % | 487/512 | **+21** |
-| 2 Mbps | acknowledged | 0.94 ms, 34.1 kB/s | −0.02 | 49 % | 72 % | 512/512 | +0 |
-| 2 Mbps | not | 0.88 ms, 36.4 kB/s | +0.01 | 19 % | 77 % | 485/512 | **+22** |
+| 250 kbps | acknowledged | 1.95 ms, 16.4 kB/s | −0.04 | 96 % | 35 % | 512/512 | +0 |
+| 250 kbps | not | 1.33 ms, 24.0 kB/s | +0.02 | 99 % | 51 % | 512/512 | +0 |
+| 1 Mbps | acknowledged | 0.95 ms, 33.8 kB/s | +0.01 | 70 % | 72 % | 512/512 | +0 |
+| 1 Mbps | not | 0.89 ms, 36.1 kB/s | +0.01 | 37 % | 77 % | 473/512 | −14 |
+| 2 Mbps | acknowledged | 0.96 ms, 33.4 kB/s | +0.02 | 48 % | 71 % | 512/512 | +0 |
+| 2 Mbps | not | 0.90 ms, 35.7 kB/s | +0.02 | 18 % | 76 % | 467/512 | −18 |
 
 The sending times stand still, which is right and has been right three times
 running: that path is bound by the serial line, so neither a shorter record nor
@@ -840,6 +840,34 @@ protocol.
 
 At 250 kbps none of this matters - the air alone wants 1252 us of the 2019, and
 the wire is idle two thirds of the time.
+
+#### The payload into the FIFO over our own SPI path
+
+The last item the sending path accounts for: 138 us a frame to put 33 bytes into
+the transmit FIFO, where the bus at 8 MHz is 33 of them. The rest is
+`RF24::startFastWrite` - `digitalWrite` on CSN twice and the library's own
+bookkeeping - and the receive path already showed what that costs. The same
+measure, on the other path:
+
+| | `us_spi` per frame | a 421-frame transfer |
+|---|---|---|
+| `RF24::startFastWrite` | 138 us | 0.39-0.41 s |
+| **our own W_TX_PAYLOAD** | **109 us** | 0.39-0.40 s |
+
+Stable to within a millisecond over 421 frames and across runs, so the 29 us is
+real. The transfer time is not visibly better, because the radio environment
+moved further than that between the runs - the retransmission count went from 46
+to 56 at 2 Mbps in the same hour.
+
+**Streaming the payload into the FIFO as it arrives was considered and not
+built.** It would take the 109 us to nearly nothing, and it cannot be done
+safely: a record's checksum is its *last* byte, so bytes clocked into the FIFO as
+they arrive are already committed by the time the checksum says whether they were
+intact - CE is high through a run, and a payload in the FIFO of a keyed radio is
+on its way. Holding CE low to keep it revocable stalls the radio for the whole
+660 us the record takes to arrive, which costs six times what it saves. The
+guarantee the image test demonstrates - byte-identical, three rates, three runs -
+is worth more than 109 us a frame.
 
 #### Waiting for the radio while the record is still arriving
 
