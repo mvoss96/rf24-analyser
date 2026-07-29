@@ -24,7 +24,7 @@ nohw ──hwset──► unconfigured ──listen k=v...──► listening �
 ```
 
 (A dongle with a stored wiring boots straight into `unconfigured` — see
-[Greeting](#greeting). The radio parameters are never remembered.)
+[Greeting](#greeting-and-status). The radio parameters are never remembered.)
 
 Two reasons. First, a sniffer that quietly comes up on some compiled-in channel
 invites the worst kind of error: concluding *"nothing is being transmitted"* when
@@ -69,7 +69,7 @@ terminal works unconfigured. Every command is answered with `OK ...` or `ERR ...
 ### Greeting and `status`
 
 ```
-NRF24ANALYSER fw=3.6.0 api=5 state=unconfigured hw=connected ce=9 csn=10 irq=2 led_rx=8 led_tx=A1 t=133 rx=0 fifofull=0
+NRF24ANALYSER fw=3.21.0 api=7 state=unconfigured hw=connected ce=9 csn=10 irq=2 led_rx=8 led_tx=A1 t=133 rx=0 fifofull=0
 ```
 
 Printed once at boot, and identically by **`status`** at any time. The greeting
@@ -96,7 +96,7 @@ than reporting them separately. When a wiring fails, the reason is stated in a
 
 ```
 WARN stored wiring: ce pin does not key the radio
-NRF24ANALYSER fw=3.6.0 api=5 state=nohw hw=failed ce=8 csn=10 irq=2 led_rx=8 led_tx=A1
+NRF24ANALYSER fw=3.21.0 api=7 state=nohw hw=failed ce=8 csn=10 irq=2 led_rx=8 led_tx=A1
 ```
 
 ### Commands
@@ -114,10 +114,11 @@ NRF24ANALYSER fw=3.6.0 api=5 state=nohw hw=failed ce=8 csn=10 irq=2 led_rx=8 led
 | `scan live [passes]` | keep scanning, one report per N sweeps (default 8) |
 | `scan off` | stop a live scan and resume whatever was running |
 | `repeats <0\|1>` | `0` suppresses identical back-to-back frames |
-| `format <bin\|text>` | how received frames leave: readable lines (default) or [binary records](#format-bin-the-same-frames-in-half-the-time) |
-| `baud <rate>` | raise the serial rate for this session; a reset restores 500000 — [and it buys nothing yet](#baud-and-why-it-buys-nothing-yet) |
+| `format <bin\|text\|none>` | how received frames leave: readable lines (default), [a binary stream](#format-bin-the-same-frames-in-half-the-time), or nothing at all — `none` counts them and prints nothing, which is what a dongle on the receiving end of a transfer wants |
+| `baud <rate>` | raise the serial rate for this session; a reset restores 500000. **Do not** — above 500000 this hardware corrupts the dongle-to-host direction, [measured six times and finally with a cause](#1-mbaud-a-false-dawn-and-how-it-was-caught) |
 | `tx <addr> <hex...> [ack\|noack] [x<n>] [gap=<ms>]` | transmit a payload (default `noack`), optionally `n` copies `gap` ms apart |
-| `txseq <addr> <count> [ack\|noack]` | read the next `count` lines as payloads and transmit them in order — [see below](#sending-more-than-one-frame-txseq) |
+| `txseq <addr> <count> [ack\|noack] [bin] [conf=<n>]` | read the next `count` payloads and transmit them in order; answers with `sent=`, `retries=` and where the run's time went (`us=`, `us_air=`, `us_spi=`) — [see below](#sending-more-than-one-frame-txseq) |
+| `txtest <addr> <count> [ack\|noack] [size=<n>]` | the same run with the payload taken from flash instead of the serial line, so what is measured is the radio alone — [see below](#the-same-thing-without-the-uart) |
 | `rxmode <0..4>` | how a payload is taken out of the RX FIFO — diagnosis only, see below |
 | `rxdbg <0\|1>` | one `DBG` line per drain pass with the FIFO registers |
 | `regs` | dump the chip's registers by name |
@@ -1420,7 +1421,7 @@ listening`, and the host asks `info` as it always did.
 ### Example session
 
 ```
-NRF24ANALYSER fw=3.6.0 api=5 state=nohw hw=none t=91 rx=0 fifofull=0
+NRF24ANALYSER fw=3.21.0 api=7 state=nohw hw=none t=91 rx=0 fifofull=0
 > hwset ce=9 csn=10 irq=2 led_rx=8 led_tx=A1
 OK hw connected saved state=unconfigured ce=9 csn=10 irq=2 led_rx=8 led_tx=A1
 > listen ch=100 rate=250 crc=16 aw=5 pa=low ack=0 dpl=1 pipe1=42:54:48:4D:45
@@ -1632,7 +1633,7 @@ next starts on its own line. Without it a reply lands glued to the tail of a
 record -
 
 ```
-...Èð«NRF24ANALYSER fw=3.8.0 api=5 state=listening ...
+...Èð«NRF24ANALYSER fw=3.21.0 api=7 state=listening ...
 ```
 
 - which is exactly the state somebody is in when they have opened a terminal to
@@ -1674,7 +1675,7 @@ correctness and lift the full-slot case to the air rate. That is a change to
 the one behaviour in this firmware arrived at purely empirically, so it is
 written down here rather than made quietly.
 
-#### `baud`, and why it buys nothing yet
+#### `baud`, and why it should stay where it is
 
 `baud 250000|500000|1000000|2000000` raises the serial rate for a session; a
 reset returns to 500000, so a host that does not know the command - or a
@@ -1691,17 +1692,18 @@ Measured against the greeting, 100 exchanges each:
 | 1000000 | 99/100 |
 | 2000000 | **0/100** |
 
-2 MBaud does not work on this hardware at all. 1 MBaud does, at about one
-corrupted byte in a hundred lines - and **it changes nothing end to end**: a
-512-frame transfer arrived 51 % at 500000 and 50 % at 1000000. That is not a
-disappointment, it is the earlier finding restated. Once `format bin` removed
-the printing, the serial line stopped being what binds; the flush did. Doubling
-a rate that is not the constraint buys exactly nothing, and here it costs 0.8 %
-of frames to their checksum.
+2 MBaud does not work on this hardware at all, and this early reading of 1 MBaud
+- 99 of 100 greetings intact - is what made it look like a rate that merely was
+not worth using. It is worse than that. Asked with real traffic rather than a
+greeting, the dongle-to-host direction delivers the right *number* of bytes with
+the wrong contents, and no arrangement of block sizes and pauses fixes it:
+[the whole arc, including an hour spent believing it had been
+fixed](#1-mbaud-a-false-dawn-and-how-it-was-caught).
 
-The command stays because it is the instrument that established this, and
-because the moment the flush is addressed the line becomes the constraint again
-- 0.66 ms of the remaining 0.83 ms per frame is wire time.
+**Do not raise this above 500000.** The command stays because it is the
+instrument that established that, and because a different bridge chip would
+answer differently - but on a CH340 the only honest setting is the one it boots
+at.
 
 | 512 frames, sender at 1.5 ms/frame | received |
 |---|---|
