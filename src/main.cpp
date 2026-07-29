@@ -24,6 +24,13 @@
 #include "HwStore.h"
 #include "Protocol.h"
 
+// One copy for every translation unit's txWrite() and txPump().
+long g_txBaud = BOOT_BAUD;
+uint8_t g_txQ[TX_QUEUE];
+uint8_t g_txHead = 0;
+uint8_t g_txTail = 0;
+uint32_t g_txIdleAt = 0;
+
 static RadioController g_radio;
 static CommandParser g_parser(g_radio);
 
@@ -55,9 +62,15 @@ void setup() {
 }
 
 void loop() {
+  // Deliberately not inside this loop. Pumping per byte read cost the *sending*
+  // path 5 to 8 % - 0.84 s to 0.93 for a 13 kB transfer - and the receiver's
+  // apparent gain from it was only the sender feeding it more slowly. The pacer
+  // runs once per pass instead, which is often enough: this loop empties in
+  // microseconds whenever the line is not saturated.
   while (Serial.available()) {
     g_parser.feed((char)Serial.read());
   }
   g_parser.poll();   // a txseq whose payloads stopped arriving has to end
   g_radio.poll();
+  txPump();
 }

@@ -881,7 +881,7 @@ question answerable.
 
 It was then built into the receive path, at 100 us rather than the 60 that first
 passed - the difference costs 7.6 kB/s and buys margin on a failure that is
-silent. **And it made the receiver worse.**
+silent. **Twice, and only the second way works.**
 
 | receiver | frames of 512, 1 Mbps unacked | `us_out` |
 |---|---|---|
@@ -901,10 +901,26 @@ the overlap it gives up is worth more than the extra bandwidth. The bench
 measured 72 kB/s at this setting because a bench has nothing else to do; a
 receiver has 187 us of work per frame that used to hide behind the wire.
 
-So the finding stands and the application does not. `bench/serialbench` keeps the
-block mode, because the measurement is worth having: **1 MBaud is usable on this
-hardware, in 32-byte blocks with a pause, for anything that is only moving
-bytes.** A receiving dongle is not that. Reverted.
+**The pause does not have to be waited for.** It only has to be there on the
+wire. So the frames go into a queue of the firmware's own, and a pacer hands the
+UART one block whenever the line has been idle for 100 us - called from the main
+loop and from inside the drain loop, never blocking. The pause then falls in time
+the dongle would have spent waiting for the next frame anyway.
+
+| receiver | 1 Mbps air | 2 Mbps air |
+|---|---|---|
+| 500000 baud, continuous | 467-469 of 512 | 451-463 |
+| **1 MBaud, paced** | **489** | **487-495** |
+
+Twenty to thirty frames, on top of everything else this branch did to the same
+column.
+
+**One measurement in this sequence was a lie and worth recording as one.** The
+first paced version reported 512 of 512 at *both* baud rates - too good, and it
+was: `txPump()` had been placed inside the loop that reads serial bytes, which
+cost the *sending* dongle 8 % (0.84 s to 0.93 for the 13 kB image). The receiver
+was not keeping up better; less was arriving. Moving the call out of that loop
+restored the sender to 0.40 s and left the receive gain standing on its own.
 
 #### A quarter of the wire is idle, and it is not the confirmation
 

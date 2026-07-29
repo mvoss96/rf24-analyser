@@ -741,6 +741,8 @@ void CommandParser::dispatch(char *line) {
     Serial.end();
     Serial.begin(v);
     baud_ = v;
+    // Everything written from here on is paced for this rate.
+    g_txBaud = v;
   } else if (strcmp(cmd, "txtest") == 0) {
     handleTxTest(rest);
   } else if (strcmp(cmd, "format") == 0) {

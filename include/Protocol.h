@@ -88,7 +88,7 @@
 // rather than the next frame. In this direction, at 500000 baud, no damaged byte
 // has ever been measured; at 1 MBaud they are constant, and 1 MBaud does not
 // work for other reasons.
-#define FW_VERSION "3.20.0"
+#define FW_VERSION "3.21.0"
 #define API_VERSION 7
 
 // The rate a dongle always boots at. `baud` can raise it for a session, but a
@@ -109,6 +109,72 @@ inline uint8_t nrf24_crc8(const uint8_t *data, uint8_t len) {
     }
   }
   return crc;
+}
+
+// Above the boot rate the line is written in 32-byte blocks with it left idle
+// between them, because the CH340 does not survive 1 MBaud run continuously.
+//
+// Measured over 32 kB, five runs per setting, dongle to host: continuous at
+// 1 MBaud damages some 25000 bytes of 32768 every time. In 32-byte blocks it is
+// clean from a 60 us gap upward - 5/5 at 60, 75, 100 and 150 - and unreliable
+// below: 3/5 at 50 us, 2/5 at 25. In 64-byte blocks it is never clean at any gap
+// up to 150 us, which is the tell: 32 bytes is the chip's bulk endpoint, so this
+// is the shape of the hardware rather than a tuning knob. 100 us is used rather
+// than the 60 that first passed, because the margin costs 7.6 kB/s and the
+// failure it guards against is silent.
+//
+// **The pause must not be waited for.** Producing it with Serial.flush() was
+// tried and measured: the receiving dongle went from 468 frames of 512 to 411,
+// because at 500000 Serial.write returns as soon as the bytes are in the ring
+// buffer and the drain loop does its 187 us of SPI work while the line runs. A
+// flush ends that overlap, and the overlap is worth more than the bandwidth.
+//
+// So the bytes go into a queue of our own and a pacer hands the UART one block
+// whenever the line has been idle long enough. Nothing waits: the pause falls in
+// the time the dongle would have spent waiting for the next frame anyway.
+#define TX_BLOCK 32
+#define TX_GAP_US 100
+#define TX_QUEUE 128            // a power of two, so the indices wrap by masking
+
+extern long g_txBaud;           // what `baud` last set; BOOT_BAUD until then
+extern uint8_t g_txQ[TX_QUEUE];
+extern uint8_t g_txHead;        // written by the producer
+extern uint8_t g_txTail;        // read by the pacer
+extern uint32_t g_txIdleAt;     // when the line was seen idle; 0 = it is not
+
+inline uint8_t txQueued() {
+  return (uint8_t)((g_txHead - g_txTail) & (TX_QUEUE - 1));
+}
+
+// Hand over at most one block, if the line is idle and has been for long enough.
+// Called from the main loop and from the drain loop, so a run keeps flowing while
+// the radio is being read.
+inline void txPump() {
+  if (g_txBaud <= BOOT_BAUD || !txQueued()) return;
+  // Not empty yet: the ring still holds bytes, so the line is busy.
+  if (Serial.availableForWrite() < SERIAL_TX_BUFFER_SIZE - 1) { g_txIdleAt = 0; return; }
+  const uint32_t now = micros();
+  if (g_txIdleAt == 0) { g_txIdleAt = now | 1; return; }   // the pause starts here
+  if ((uint32_t)(now - g_txIdleAt) < TX_GAP_US) return;
+
+  uint8_t n = txQueued();
+  if (n > TX_BLOCK) n = TX_BLOCK;
+  for (uint8_t i = 0; i < n; i++) {
+    Serial.write(g_txQ[g_txTail]);
+    g_txTail = (uint8_t)((g_txTail + 1) & (TX_QUEUE - 1));
+  }
+  g_txIdleAt = 0;
+}
+
+inline void txWrite(const uint8_t *data, size_t n) {
+  if (g_txBaud <= BOOT_BAUD) { Serial.write(data, n); return; }
+  while (n--) {
+    // Full only if the pacer has fallen behind, which means the line is the
+    // constraint - the same thing Serial.write does when its ring fills.
+    while (txQueued() >= TX_QUEUE - 1) txPump();
+    g_txQ[g_txHead] = *data++;
+    g_txHead = (uint8_t)((g_txHead + 1) & (TX_QUEUE - 1));
+  }
 }
 
 // A run of binary frames. All three are outside printable ASCII, which nothing
