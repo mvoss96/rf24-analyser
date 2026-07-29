@@ -841,6 +841,50 @@ protocol.
 At 250 kbps none of this matters - the air alone wants 1252 us of the 2019, and
 the wire is idle two thirds of the time.
 
+#### 1 MBaud does work, in 32-byte blocks with a pause
+
+Four times this file has closed the question of a faster serial rate, the last
+time with a cause rather than a symptom: at 1 MBaud the dongle-to-host direction
+delivers the right number of bytes with the wrong contents, under Windows and
+under Linux alike. The fifth attempt came from a claim about the chip - that its
+1 MBaud is only unreliable when the line runs *continuously*, and that letting it
+breathe between short bursts makes it usable.
+
+It is true. `bench/serialbench` gained a block mode for it, and 32768 bytes were
+sent five times per setting:
+
+| block | gap | kB/s | clean runs |
+|---|---|---|---|
+| 32 B | 0 us | 93.8 | 0/5 |
+| 32 B | 25 us | 87.7 | 2/5 |
+| 32 B | 40 us | 84.2 | 4/5 |
+| 32 B | 50 us | 82.0 | 3/5 |
+| **32 B** | **60 us** | **80.0** | **5/5** |
+| 32 B | 75 us | 77.1 | 5/5 |
+| 32 B | 100 us | 72.4 | 5/5 |
+| 64 B | anything to 150 us | 78-95 | 0/5, once 1/5 |
+
+**80.0 kB/s with nothing damaged, against 50.1 kB/s at 500000 baud - sixty
+percent more on the direction that binds the receiver.**
+
+Two details worth keeping. **The block size is not a tuning knob**: 64 bytes fail
+at every gap tried, 32 succeed, and 32 bytes is the CH340's bulk endpoint. And
+**the gap threshold is sharp but not where two runs said it was** - an earlier
+pass called 50 us clean on the strength of two measurements, and five say 3/5.
+Anything at or above 60 us was clean five times out of five.
+
+The first attempt at this measured 23.4 kB/s at 500000 *and* at 1 MBaud -
+identical, which is the signature of a limit that is not the wire. It was writing
+a byte at a time with a flush between blocks, so the test measured its own
+overhead. Building the block and handing it over in one write is what made the
+question answerable.
+
+What it would take to use: the receive path writes in 32-byte blocks with a 60 us
+pause, at 1 MBaud. A 35-byte frame record then costs 437 us of line instead of
+700, which puts the receiver's per-frame budget at about 546 us against the 850
+a frame arrives in - under it with room, where today it is over. That is the
+prize, and it is the largest single lever this file has found.
+
 #### A quarter of the wire is idle, and it is not the confirmation
 
 Put the two numbers next to each other. A record is 34 bytes, so 680 us of a

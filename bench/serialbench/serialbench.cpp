@@ -24,7 +24,7 @@
 
 #include <Arduino.h>
 
-static const char VERSION[] = "1.0.0";
+static const char VERSION[] = "1.2.0";
 
 // Long enough that no gap inside a run can be mistaken for the end of one, and
 // short enough that a measurement is not mostly waiting.
@@ -56,14 +56,43 @@ static void report(const char *tag, uint32_t n, uint32_t us, uint32_t bad) {
 // Write n bytes and time the writing. The count is announced first and the
 // result last, so the host can read exactly n bytes in between and time them
 // from its own side; the two clocks disagreeing is itself a finding.
-static void source(uint32_t n) {
+//
+// With `block` set, the bytes go out in groups of that many with `gapUs`
+// microseconds of idle line between them. This exists to test a claim about the
+// CH340: that its 1 MBaud is only unreliable when the line runs continuously,
+// and that letting it breathe between short bursts makes it usable. The flush
+// is what makes the gap real - without it the transmit ring buffer would smooth
+// the pause away and the line would never idle at all.
+static void source(uint32_t n, uint16_t block, uint16_t gapUs) {
   Serial.print(F("OK src n="));
-  Serial.println(n);
+  Serial.print(n);
+  Serial.print(F(" block="));
+  Serial.print(block);
+  Serial.print(F(" gap="));
+  Serial.println(gapUs);
   Serial.flush();   // the announcement must not be part of what is timed
 
+  // A block is built and handed over in one write. Doing it a byte at a time
+  // costs more than the line does: byte-by-byte plus a flush measured 23.4 kB/s
+  // at 500000 *and* at 1 MBaud - identical, which is the signature of a limit
+  // that is not the wire, and it made the whole test meaningless.
+  uint8_t chunk[64];
+  const uint16_t size = block ? (block > sizeof(chunk) ? sizeof(chunk) : block) : 0;
   const uint32_t t0 = micros();
   uint8_t v = 0;
-  for (uint32_t i = 0; i < n; i++) Serial.write(v++);
+  if (!size) {
+    for (uint32_t i = 0; i < n; i++) Serial.write(v++);
+  } else {
+    uint32_t left = n;
+    while (left) {
+      const uint16_t take = left < size ? (uint16_t)left : size;
+      for (uint16_t i = 0; i < take; i++) chunk[i] = v++;
+      Serial.write(chunk, take);
+      Serial.flush();                 // the line must actually idle
+      if (gapUs) delayMicroseconds(gapUs);
+      left -= take;
+    }
+  }
   Serial.flush();   // and neither may the tail still sitting in the buffer
   const uint32_t us = micros() - t0;
 
@@ -160,11 +189,18 @@ static void setBaud(long v) {
 static void handle(char *s) {
   while (*s == ' ') s++;
   const char c = *s++;
-  const long arg = strtol(s, nullptr, 10);
+  char *rest = nullptr;
+  const long arg = strtol(s, &rest, 10);
+  // `s <n> [block] [gap_us]` - the two extra numbers are optional and default
+  // to the continuous stream this started as.
+  const long arg2 = rest ? strtol(rest, &rest, 10) : 0;
+  const long arg3 = rest ? strtol(rest, nullptr, 10) : 0;
 
   switch (c) {
     case 'v': info(); break;
-    case 's': source(arg > 0 ? (uint32_t)arg : 1000UL); break;
+    case 's': source(arg > 0 ? (uint32_t)arg : 1000UL,
+                     arg2 > 0 ? (uint16_t)arg2 : 0,
+                     arg3 > 0 ? (uint16_t)arg3 : 0); break;
     case 'r': Serial.println(F("OK sink")); sink(0); break;
     case 'w': Serial.print(F("OK win k=")); Serial.println(arg);
               sink(arg > 0 ? (uint16_t)arg : 1); break;
