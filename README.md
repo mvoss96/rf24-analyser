@@ -941,19 +941,42 @@ Every run completed with `sent=421/421` and nothing lost, so this is slowness
 rather than damage - which is the worse way for a fault to present, and the
 reason it needed measuring rather than reasoning about.
 
-The payload direction is genuinely faster. What is not is the loop that controls
-it: the host runs a window of records and waits for `OK txseq at=`, and that
-travels dongle-to-host, the direction that needs pacing. Unpaced it arrives
-damaged, the window stays shut, and the 25 ms nudge repeats it - 180 ms over some
-105 confirmations, which is 1.7 ms apiece and matches. Paced it is worse still,
-because the pacer runs from the main loop and a `txseq` keeps that loop busy
-reading bytes, so the confirmation waits in the queue instead of on the wire.
+The payload direction is genuinely faster, and the slowdown is not explained.
+The first explanation offered here was that the confirmation - which travels
+dongle-to-host, the direction that needs pacing - arrives damaged and the host
+waits for the 25 ms nudge. **That does not hold**: `OK txseq at=421` is 17 bytes,
+already well inside the 32-byte block the chip wants, with 1.76 ms of idle line
+between one and the next at `conf=4`. There is nothing there to corrupt.
 
-**So the two roles have opposite answers, and the reason is the same in both: not
-how many bytes fit, but whether the work overlaps.** A receiving dongle gains
-from 1 MBaud because its pauses fall in time it was going to spend waiting
-anyway. A sending dongle loses, because its pauses fall in the middle of the
-handshake that paces it. 500000 stays for transmitting.
+So the measurement stands and the mechanism does not. What is known: the runs all
+complete with every frame acknowledged, the firmware's own clock agrees with the
+host's, and it is reproducible under control - the receiver pinned at 500000,
+three runs per setting, and 500000 measured again afterwards to show nothing had
+drifted.
+
+> One intermediate measurement said the opposite - 0.37 s at 1 MBaud, faster than
+> 500000 - and it was wrong. The receiving dongle had been left at 1 MBaud by an
+> earlier script while its host read it at 500000. Pinning both ends explicitly
+> is what settled it, and the run afterwards at 500000 is what proves the bench
+> had not simply changed underneath.
+
+**On the window, and why it is seven.** The host may run a fixed number of
+records ahead before waiting, and that number is not a tuning constant: it is the
+dongle's 256-byte serial receive buffer divided by a 34-byte record. Sixteen
+records is 544 bytes and only works because confirmations keep the amount
+actually in flight lower - measured, it is worth 3 % at 500000 (0.37 s against
+0.38) and fails every time at 1 MBaud. Thirty-two records fails at both.
+
+The failure is worth naming, because it is the same one that turns up
+intermittently elsewhere in this file: the buffer overruns, a record's framing is
+lost, and the payload bytes behind it are read as a command line - `ERR line too
+long`, or `ERR unknown cmd` if they happen to look like one. A window that is too
+large and a dongle that stops reading its port while the radio blocks produce
+exactly the same wreckage.
+
+**So the two roles have opposite answers.** A receiving dongle gains from
+1 MBaud, measurably and repeatably; a sending one loses, measurably and
+repeatably, for a reason not yet established. 500000 stays for transmitting.
 
 #### A quarter of the wire is idle, and it is not the confirmation
 
