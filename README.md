@@ -804,6 +804,43 @@ receive path was touched, and a check run says so: 2 Mbps unacknowledged with th
 receiver printing measures 0.88 ms a frame and 439 of 512, against 0.87 and 440
 before; padded payloads stay at 512 of 512.
 
+#### Where a transmitted frame's time actually goes
+
+Three attempts to speed the sending path up measured as exactly zero - SPI from
+4 to 8 MHz, CSN by port write, batching the writes - and each time the
+explanation was "that path is bound by the serial line". True, but it was never
+taken apart. `txseq` now reports the split, by the firmware's own clock: `us_air`
+is the spin waiting for room in the transmit FIFO, `us_spi` is the payload going
+out over the bus, and whatever a run takes beyond the two is the record arriving
+over serial.
+
+A 13452-byte JPEG, 421 acknowledged frames, per frame:
+
+| air rate | total | waiting for the FIFO | SPI | the rest |
+|---|---|---|---|---|
+| 250 kbps | 2019 us | **1252 us** | 126 us | 641 us |
+| 1 Mbps | 929 us | 107 us | 135 us | **687 us** |
+| 2 Mbps | 948 us | 121 us | 140 us | **687 us** |
+
+**A 34-byte record at 500000 baud needs 680 us.** The remainder above is 687 -
+the serial line and essentially nothing else, which is the first direct
+confirmation of a claim this file has been making for a while.
+
+But read the rows again. At 1 and 2 Mbps the three parts **add up**: 687 + 107 +
+135 = 929. They are sequential, not overlapped - the firmware waits for a whole
+record, then spins for FIFO room, then writes it out, and only then starts
+waiting for the next. The UART fills its ring buffer by interrupt throughout, so
+the 242 us of radio work is time the wire could have been busy and was not.
+
+That is worth about **a quarter of the sending path**, and it is the first
+concrete lever found on it since the window. Not attempted here: it means writing
+frame N to the radio while the bytes of frame N+1 are still arriving, which is a
+change to how `feedSeqByte` and `sequenceWrite` are ordered rather than to any
+protocol.
+
+At 250 kbps none of this matters - the air alone wants 1252 us of the 2019, and
+the wire is idle two thirds of the time.
+
 #### The frames as a stream
 
 The record `format bin` sent was self-contained: a sync byte, a length, the pipe,

@@ -191,6 +191,13 @@ public:
     // longer be exact - see sequenceWrite().
     bool pipelining = true;
     bool gaveUp = false;
+    // Where a frame's time went while the radio had it. `airUs` is the spin
+    // waiting for room in the transmit FIFO, which is the air draining it;
+    // `spiUs` is the payload going out over the bus. Whatever a run takes beyond
+    // these two is the record arriving over serial and the parser reading it -
+    // the split that says which of the three to work on next.
+    uint32_t airUs = 0;
+    uint32_t spiUs = 0;
   };
 
   // Transmits `count` copies of one payload to `addr`, `gapMs` apart. noack=true

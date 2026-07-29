@@ -72,6 +72,9 @@ private:
   uint8_t binGot_ = 0;
   long baud_ = BOOT_BAUD;   // what the port is running at, for `info` to report
   uint16_t seqTaken_ = 0;
+  // When the run began, so its total can be reported against the two parts of
+  // it the radio accounts for.
+  uint32_t seqStartMs_ = 0;
   uint32_t seqLastMs_ = 0;
   uint32_t seqNudgeMs_ = 0;
 

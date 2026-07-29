@@ -662,13 +662,17 @@ bool RadioController::sequenceWrite(const uint8_t *data, uint8_t len) {
     // Nothing to wait for, so only the FIFO can hold us up. Three deep: by the
     // time the third is written the first is usually gone.
     const uint32_t start = millis();
+    const uint32_t enter = micros();
     while (regRead(REG_STATUS) & 0x01) {          // TX_FULL
       if (millis() - start > TX_TIMEOUT_MS) {     // CE not wired, or no clock
         seq_.failed++;
         return false;
       }
     }
+    const uint32_t fed = micros();
     radio_.startFastWrite(data, len, true);
+    seq_.airUs += fed - enter;
+    seq_.spiUs += micros() - fed;
     seq_.sent++;
     return true;
   }
@@ -678,6 +682,7 @@ bool RadioController::sequenceWrite(const uint8_t *data, uint8_t len) {
   // wire - 1.28 ms a frame at 2 Mbps where the line's own floor is 0.68.
   if (seq_.pipelining) {
     const uint32_t start = millis();
+    const uint32_t enter = micros();
     while (true) {
       const uint8_t status = regRead(REG_STATUS);
       if (status & 0x10) {                        // MAX_RT: a frame gave up
@@ -705,7 +710,12 @@ bool RadioController::sequenceWrite(const uint8_t *data, uint8_t len) {
         return false;
       }
     }
+    const uint32_t fed = micros();
     radio_.startFastWrite(data, len, false);
+    // The spin above is the air draining the FIFO; the write is the bus. What a
+    // run costs beyond the two is the record arriving over serial.
+    seq_.airUs += fed - enter;
+    seq_.spiUs += micros() - fed;
     return true;
   }
 

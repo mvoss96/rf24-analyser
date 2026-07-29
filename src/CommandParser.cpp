@@ -186,6 +186,7 @@ void CommandParser::handleTxSeq(char *args) {
   binLen_ = 0;
   seqTaken_ = 0;
   seqLastMs_ = millis();
+  seqStartMs_ = seqLastMs_;
   seqNudgeMs_ = seqLastMs_;
   radio_.beginSequence(addr, noack);
   // Said before the payloads, so a host knows the dongle is listening for them
@@ -359,6 +360,18 @@ void CommandParser::endSeq(const __FlashStringHelper *why) {
     Serial.print(F(" stopped="));
     Serial.print(why);
   }
+  // Where the run's time went, by the firmware's own clock. `us` is the whole of
+  // it; `us_air` is the radio draining the transmit FIFO and `us_spi` the payload
+  // going out over the bus. The remainder - and it is the large one - is the
+  // records arriving over the serial line, which is what actually binds here.
+  Serial.print(F(" us="));
+  Serial.print(millis() - seqStartMs_);
+  Serial.print(F("ms us_air="));
+  Serial.print(r.airUs / 1000);
+  Serial.print(F("ms us_spi="));
+  Serial.print(r.spiUs / 1000);
+  Serial.print(F("ms n="));
+  Serial.print(r.attempted);
   Serial.println();
 }
 
