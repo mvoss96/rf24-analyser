@@ -922,6 +922,39 @@ cost the *sending* dongle 8 % (0.84 s to 0.93 for the 13 kB image). The receiver
 was not keeping up better; less was arriving. Moving the call out of that loop
 restored the sender to 0.40 s and left the receive gain standing on its own.
 
+#### And 1 MBaud on the *sending* side is slower, twice measured
+
+The pacing works for a receiving dongle. The obvious next question is the other
+role: host to dongle at 1 MBaud was always clean, and the bench measured it at
+70-77 % of the line, which is 77 kB/s against 45 at 500000. A transfer should
+therefore be faster.
+
+It is not. A 421-frame acknowledged transfer of the 13 kB image:
+
+| sender | 1 Mbps air | 2 Mbps air |
+|---|---|---|
+| 500000 baud | 0.38 s | 0.39-0.40 s |
+| 1 MBaud, confirmation unpaced | 0.56 s | 0.66 s |
+| 1 MBaud, confirmation paced | 0.62 s | 0.62 s |
+
+Every run completed with `sent=421/421` and nothing lost, so this is slowness
+rather than damage - which is the worse way for a fault to present, and the
+reason it needed measuring rather than reasoning about.
+
+The payload direction is genuinely faster. What is not is the loop that controls
+it: the host runs a window of records and waits for `OK txseq at=`, and that
+travels dongle-to-host, the direction that needs pacing. Unpaced it arrives
+damaged, the window stays shut, and the 25 ms nudge repeats it - 180 ms over some
+105 confirmations, which is 1.7 ms apiece and matches. Paced it is worse still,
+because the pacer runs from the main loop and a `txseq` keeps that loop busy
+reading bytes, so the confirmation waits in the queue instead of on the wire.
+
+**So the two roles have opposite answers, and the reason is the same in both: not
+how many bytes fit, but whether the work overlaps.** A receiving dongle gains
+from 1 MBaud because its pauses fall in time it was going to spend waiting
+anyway. A sending dongle loses, because its pauses fall in the middle of the
+handshake that paces it. 500000 stays for transmitting.
+
 #### A quarter of the wire is idle, and it is not the confirmation
 
 Put the two numbers next to each other. A record is 34 bytes, so 680 us of a
