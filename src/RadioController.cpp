@@ -656,6 +656,44 @@ void RadioController::beginSequence(const uint8_t *addr, bool noack) {
   seq_.acking = !noack && regRead(0x01) != 0;   // EN_AA, the chip's own answer
 }
 
+bool RadioController::sequenceReady() {
+  if (!seq_.acking) {
+    const uint32_t start = millis();
+    const uint32_t enter = micros();
+    while (regRead(REG_STATUS) & 0x01) {          // TX_FULL
+      if (millis() - start > TX_TIMEOUT_MS) { seq_.failed++; return false; }
+    }
+    seq_.airUs += micros() - enter;
+    return true;
+  }
+  if (!seq_.pipelining) return true;   // the careful path confirms per frame
+
+  const uint32_t start = millis();
+  const uint32_t enter = micros();
+  while (true) {
+    const uint8_t status = regRead(REG_STATUS);
+    if (status & 0x10) {                          // MAX_RT: a frame gave up
+      seq_.retries += regRead(0x08) & 0x0F;
+      seq_.failed++;
+      regWrite(REG_STATUS, 0x10);
+      radio_.flush_tx();
+      seq_.pipelining = false;
+      seq_.gaveUp = true;
+      seq_.airUs += micros() - enter;
+      return false;
+    }
+    if (status & 0x20) {                          // TX_DS: one acknowledged
+      seq_.sent++;
+      seq_.retries += regRead(0x08) & 0x0F;
+      regWrite(REG_STATUS, 0x20);
+    }
+    if (!(status & 0x01)) break;                  // TX_FULL clear: room for one
+    if (millis() - start > TX_TIMEOUT_MS) { seq_.failed++; return false; }
+  }
+  seq_.airUs += micros() - enter;
+  return true;
+}
+
 bool RadioController::sequenceWrite(const uint8_t *data, uint8_t len) {
   seq_.attempted++;
   if (!seq_.acking) {

@@ -311,6 +311,12 @@ void CommandParser::feedSeqByte(uint8_t b) {
     if (b < 1 || b > 32) { endSeq(F("bad length")); return; }
     binLen_ = b;
     binGot_ = 0;
+    // The payload is still on its way - some 660 us of it at 500000 baud - so
+    // this is the moment to wait for the radio, not after the record is whole.
+    // Measured, the wait used to be added to the wire time rather than hidden
+    // behind it: 687 us of record plus 107 of waiting plus 135 of bus, in that
+    // order, for a frame that only ever needed the first of the three.
+    if (!radio_.sequenceReady()) { endSeq(F("gave up")); return; }
     return;
   }
   if (binGot_ < binLen_) { buf_[binGot_++] = (char)b; return; }

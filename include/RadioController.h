@@ -223,6 +223,12 @@ public:
   // frames after a lost one are worth nothing until it is resent.
   void beginSequence(const uint8_t *addr, bool noack);
   bool sequenceWrite(const uint8_t *data, uint8_t len);   // false: gave up here
+  // Wait for room in the transmit FIFO and reap what has completed, without
+  // having a payload to hand yet. Called while the record is still arriving over
+  // serial, which is the whole point: that wait used to happen after the record
+  // was complete, so it was added to the wire time instead of hidden behind it.
+  // Idempotent - sequenceWrite still checks, and then finds nothing to wait for.
+  bool sequenceReady();                                   // false: gave up here
   TxResult endSequence();
 
   // Energy scan across all 126 channels, `passes` sweeps. Prints hits.

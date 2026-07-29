@@ -455,7 +455,7 @@ interleaved rounds: `low` 1.96 ms with 1-2 retransmissions, `high` 2.06 with
 together and full power overloads the receiver's front end; `low` is both the
 default and the optimum here.
 
-Now at **fw 3.17.0**, three interleaved rounds per row, median. **Each rate on
+Now at **fw 3.19.0**, three interleaved rounds per row, median. **Each rate on
 its own best channel** — 250 kbps on 14, 1 and 2 Mbps on 88 — because the choice
 turned out to be worth more than anything in the firmware and to differ by rate:
 channel 14 is the quietest for 250 kbps and among the worst for 2 Mbps, the
@@ -464,12 +464,12 @@ what arrived can be checked. The Δ is against fw 3.14.0 on the same channels.
 
 | air rate | | measured | Δ ms | air used | wire used | seen by observer | Δ |
 |---|---|---|---|---|---|---|---|
-| 250 kbps | acknowledged | 2.00 ms, 16.0 kB/s | +0.00 | 94 % | 34 % | 512/512 | +0 |
-| 250 kbps | not | 1.30 ms, 24.5 kB/s | −0.03 | 101 % | 52 % | 506/512 | +0 |
-| 1 Mbps | acknowledged | 0.95 ms, 33.6 kB/s | −0.03 | 70 % | 71 % | 512/512 | +0 |
-| 1 Mbps | not | 0.87 ms, 36.8 kB/s | +0.00 | 38 % | 78 % | 466/512 | **+12** |
-| 2 Mbps | acknowledged | 0.96 ms, 33.3 kB/s | +0.01 | 48 % | 71 % | 512/512 | +0 |
-| 2 Mbps | not | 0.87 ms, 37.0 kB/s | −0.01 | 19 % | 79 % | 463/512 | **+16** |
+| 250 kbps | acknowledged | 1.99 ms, 16.1 kB/s | −0.01 | 94 % | 34 % | 512/512 | +0 |
+| 250 kbps | not | 1.31 ms, 24.5 kB/s | +0.01 | 101 % | 52 % | 512/512 | +6 |
+| 1 Mbps | acknowledged | 0.94 ms, 33.9 kB/s | −0.01 | 70 % | 72 % | 512/512 | +0 |
+| 1 Mbps | not | 0.88 ms, 36.4 kB/s | +0.01 | 37 % | 77 % | 487/512 | **+21** |
+| 2 Mbps | acknowledged | 0.94 ms, 34.1 kB/s | −0.02 | 49 % | 72 % | 512/512 | +0 |
+| 2 Mbps | not | 0.88 ms, 36.4 kB/s | +0.01 | 19 % | 77 % | 485/512 | **+22** |
 
 The sending times stand still, which is right and has been right three times
 running: that path is bound by the serial line, so neither a shorter record nor
@@ -478,8 +478,8 @@ observer gained another 14 and 7 frames from CSN by direct port write, and the
 acknowledged rows needed fewer retransmissions again (1 Mbps 71 → 64, 2 Mbps
 133 → 125), because a receiver that keeps up goes on acknowledging.
 
-Cumulative over the three changes to the receive path: on the rows where the
-observer is the constraint, **1 Mbps 426 → 466 of 512 and 2 Mbps 422 → 463**,
+Cumulative over this branch's work on the receive path: on the rows where the
+observer is the constraint, **1 Mbps 426 → 487 of 512 and 2 Mbps 422 → 485**,
 and padded sensor frames go from about 426 to 512 of 512 at both rates.
 
 Against a **silent** receiver the same six rows read 1.31 / 1.99 / 0.88 / 0.90 /
@@ -840,6 +840,35 @@ protocol.
 
 At 250 kbps none of this matters - the air alone wants 1252 us of the 2019, and
 the wire is idle two thirds of the time.
+
+#### Waiting for the radio while the record is still arriving
+
+The split above says the sending path spends 687 us receiving a record, 107
+waiting for room in the transmit FIFO and 135 writing it out - in that order, one
+after the other. The middle one does not need a payload to hand, so it now
+happens as soon as a record's *length* byte has arrived, with the other 33 bytes
+still on the wire.
+
+| | 250 kbps | 1 Mbps | 2 Mbps |
+|---|---|---|---|
+| before | 0.88 s, `us_air` 527 ms | 0.40 s, 45 ms | 0.41 s, 51 ms |
+| **after** | **0.83 s, 508 ms** | 0.40 s, **30 ms** | 0.40 s, **39 ms** |
+
+**It did what it was built to do and mostly did not matter.** The wait moved and
+shrank by a third, and the total only followed at 250 kbps - six percent, where
+the air is the constraint and the wire has time to spare. At 1 and 2 Mbps
+nothing: the binding terms there are the 687 us of record and the 135 us of bus,
+and the wait was never on the critical path. The prediction of "about a quarter
+of the sending path" was wrong, and this is the third estimate in this file to
+overshoot the same way.
+
+What it did fix is a number. `OBSERVE_TX` holds the retransmission count of the
+*current* transaction and is overwritten by the next, so reading it well after a
+frame completed could report a later packet's count. Reaping each `TX_DS` as it
+lands reads it while it still belongs to the frame that finished: the reported
+count over a 421-frame transfer fell from 47 to 8 at 1 Mbps and from 97 to 46 at
+2 Mbps, stable to within one across three runs. That is not fewer
+retransmissions - it is the right ones being counted.
 
 #### The frames as a stream
 
